@@ -97,8 +97,11 @@ async function loadPage({ random = () => 1, storage = {}, inject = true } = {}) 
       const blocks = page.blocks();
       return blocks.reduce((n, b) => n + b.text.length, 0) + Math.max(0, blocks.length - 1);
     },
+    // Blocks in screen order. Bullets live inside a shared ul, so they are
+    // listed as the li elements themselves.
     blocks() {
-      return Array.from($('#cover').children).map((el) => ({ type: el.tagName.toLowerCase(), text: el.textContent }));
+      return Array.from($('#cover').querySelectorAll(':scope > p, :scope > h2, :scope > ul > li'))
+        .map((el) => ({ type: el.tagName.toLowerCase(), text: el.textContent }));
     },
     peeking() { return d.body.classList.contains('peek'); },
     // Hold Ctrl past the threshold and read the real text off the screen.
@@ -132,7 +135,7 @@ async function loadPage({ random = () => 1, storage = {}, inject = true } = {}) 
 // Mirrors the engine's rules so the tests can state expectations without
 // hard-coding the story: markers are consumed at a block start, '\n' is a
 // paragraph break, the end of the text is a break followed by a loop.
-const MARKERS = [{ prefix: '## ', type: 'h2' }];
+const MARKERS = [{ prefix: '## ', type: 'h2' }, { prefix: '- ', type: 'li' }];
 function expectedBlocks(coverText, n) {
   const blocks = [];
   let pos = 0;
@@ -670,6 +673,115 @@ test('covers/book.js is a valid ES module with the shared shape, at least 1,500 
   assert.ok((c.text.match(/^## /gm) || []).length >= 2, 'chapter headings present');
   const src = readFileSync(path.join(ROOT, 'covers', 'book.js'), 'utf8');
   assert.match(src, /fictional/i, 'the file says its names are fictional');
+});
+
+test('switching to work loads that cover: sans chrome, static "Last edited just now", a decorative toolbar, no word count', async () => {
+  const p = await loadPage({ storage: { 'coverStory.cover': 'work', 'coverStory.introSeen': '1' } });
+  try {
+    assert.equal(p.w.CoverStory.coverId(), 'work');
+    assert.equal(p.d.title, 'Q3 planning notes');
+    assert.equal(p.$('#header-left').textContent, 'Q3 planning notes');
+    assert.ok(p.d.body.classList.contains('font-sans') && p.d.body.classList.contains('cover-work'));
+    assert.ok(!p.d.body.classList.contains('font-serif') && !p.d.body.classList.contains('cover-book'));
+    assert.equal(p.$('#last-edited').textContent, 'Last edited just now');
+    assert.equal(p.$('#word-count'), null, 'no word count on the work document');
+    const toolbar = p.$('#toolbar');
+    assert.equal(toolbar.getAttribute('aria-hidden'), 'true');
+    assert.equal(toolbar.querySelectorAll('button, a, input, select').length, 0, 'nothing in the toolbar is a control');
+    assert.ok(toolbar.querySelectorAll('.ic').length >= 6, 'icon placeholders present');
+    assert.match(HTML, /body\.cover-work \.toolbar \{ display: flex; \}/, 'toolbar shown with the work cover');
+    assert.match(HTML, /\.toolbar \{\n\s+display: none;/, 'and hidden otherwise');
+    const typed = 'Hello there, typing on the work document now.';
+    p.type(typed);
+    assert.equal(p.$('#last-edited').textContent, 'Last edited just now', 'the static text does not change');
+    assert.deepEqual(p.blocks(), expectedBlocks(p.w.CoverStory.coverText(), typed.length));
+    assert.equal(await p.readReal(), typed, 'the real buffer is unaffected by the cover');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('a cover line starting with "- " renders inside a list item; bullets share one list; headings render as headings; Backspace walks back out', async () => {
+  const p = await loadPage({ storage: { 'coverStory.cover': 'work', 'coverStory.introSeen': '1', 'coverStory.customText': '## Agenda\n- first item\n- second item\n\nClosing line' } });
+  try {
+    assert.equal(p.w.CoverStory.coverText(), '## Agenda\n- first item\n- second item\nClosing line');
+    const h2 = { type: 'h2', text: 'Agenda' };
+    p.type('123456');
+    assert.deepEqual(p.blocks(), [h2]);
+    assert.equal(p.$('#cover > h2').textContent, 'Agenda', 'heading line renders as a heading');
+    p.type('7');
+    assert.deepEqual(p.blocks(), [h2, { type: 'li', text: '' }]);
+    assert.equal(p.d.querySelectorAll('#cover > ul > li').length, 1, 'the bullet sits inside a ul');
+    p.type('first item');
+    p.type('x');
+    p.type('second item');
+    assert.equal(p.d.querySelectorAll('#cover > ul').length, 1, 'consecutive bullets share one list');
+    assert.equal(p.d.querySelectorAll('#cover > ul > li').length, 2);
+    p.type('x');
+    p.type('Closing');
+    assert.deepEqual(p.blocks(), [h2, { type: 'li', text: 'first item' }, { type: 'li', text: 'second item' }, { type: 'p', text: 'Closing' }]);
+    assert.deepEqual(Array.from(p.$('#cover').children).map((e) => e.tagName), ['H2', 'UL', 'P']);
+    assert.deepEqual(p.blocks(), expectedBlocks(p.w.CoverStory.coverText(), 37), 'reference model agrees');
+    for (let i = 0; i < 8; i++) p.press('Backspace');     // "Closing" and its break
+    assert.deepEqual(p.blocks(), [h2, { type: 'li', text: 'first item' }, { type: 'li', text: 'second item' }]);
+    assert.deepEqual(Array.from(p.$('#cover').children).map((e) => e.tagName), ['H2', 'UL']);
+    for (let i = 0; i < 12; i++) p.press('Backspace');    // second bullet and its break
+    assert.deepEqual(p.blocks(), [h2, { type: 'li', text: 'first item' }]);
+    assert.equal(p.d.querySelectorAll('#cover > ul').length, 1, 'the list stays while it has an item');
+    for (let i = 0; i < 11; i++) p.press('Backspace');    // first bullet and its break
+    assert.deepEqual(p.blocks(), [h2]);
+    assert.equal(p.d.querySelectorAll('#cover > ul').length, 0, 'an emptied list is removed');
+    assert.equal(await p.readReal(), '123456', '37 keystrokes minus 31 backspaces');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('picking another look on the intro switches the cover in place and keeps the real text', async () => {
+  const p = await loadPage();
+  try {
+    p.start();
+    p.type('abc');
+    p.$('#btn-help').click();
+    assert.equal(p.$('input[name="mode"][value="book"]').checked, true);
+    assert.equal(p.$('input[name="mode"][value="work"]').disabled, false, 'the work document can be picked');
+    p.$('input[name="mode"][value="work"]').checked = true;
+    p.start();
+    await p.settle();
+    assert.deepEqual(p.loads, ['book', 'work'], 'the page asked the loader for the work cover');
+    assert.equal(p.w.CoverStory.coverId(), 'work');
+    assert.equal(p.w.localStorage.getItem('coverStory.cover'), 'work');
+    assert.equal(p.d.title, 'Q3 planning notes');
+    assert.ok(p.d.body.classList.contains('cover-work'));
+    assert.deepEqual(p.blocks(), expectedBlocks(p.w.CoverStory.coverText(), 3), 'the screen is rebuilt for the three keystrokes');
+    assert.equal(await p.readReal(), 'abc');
+    p.$('#btn-help').click();
+    assert.equal(p.$('input[name="mode"][value="work"]').checked, true, 'the intro shows the current cover');
+    p.$('input[name="mode"][value="book"]').checked = true;
+    p.start();
+    await p.settle();
+    assert.deepEqual(p.loads, ['book', 'work', 'book']);
+    assert.equal(p.w.CoverStory.coverId(), 'book');
+    assert.equal(p.d.title, 'Untitled draft');
+    assert.equal(await p.readReal(), 'abc');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('covers/work.js: a sans work document of at least 1,200 words with headings, bullets, owners and a decisions section', async () => {
+  const c = await importCover('work');
+  assert.equal(c.id, 'work');
+  assert.equal(c.font, 'sans');
+  assert.equal(c.tabTitle, 'Q3 planning notes');
+  assert.equal(c.header.left, 'Q3 planning notes');
+  assert.deepEqual(c.header.right, ['last edited']);
+  const words = (c.text.replace(/^(## |- )/gm, '').match(/\S+/g) || []).length;
+  assert.ok(words >= 1200, 'at least 1,200 words, got ' + words);
+  assert.ok((c.text.match(/^## /gm) || []).length >= 4, 'short headings');
+  assert.ok((c.text.match(/^- /gm) || []).length >= 10, 'bullet lists');
+  assert.match(c.text, /^## Decisions$/m, 'a decisions section');
+  assert.match(c.text, /^## Action items$/m);
+  assert.ok((c.text.match(/Owner: /g) || []).length >= 5, 'action items carry owners');
+  const src = readFileSync(path.join(ROOT, 'covers', 'work.js'), 'utf8');
+  assert.match(src, /fictional/i, 'the file says its company and people are fictional');
 });
 
 // ---------------------------------------------------------------------------

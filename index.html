@@ -40,15 +40,59 @@
   body.font-sans { font-family: var(--sans); }
   body.font-academic { font-family: "Times New Roman", Times, "Liberation Serif", serif; }
 
-  /* Header bar */
+  /* Header chrome: the bar, plus the fake toolbar of the work document */
+  .chrome { position: sticky; top: 0; z-index: 2; background: var(--paper); border-bottom: 1px solid var(--rule); }
   .bar {
-    position: sticky; top: 0; z-index: 2;
     display: flex; justify-content: space-between; align-items: center; gap: 12px;
     padding: 10px 20px;
     font: 13px/1.4 var(--sans);
     color: var(--muted);
-    background: var(--paper);
-    border-bottom: 1px solid var(--rule);
+  }
+  .toolbar {
+    display: none; align-items: center; gap: 6px; flex-wrap: wrap;
+    padding: 5px 20px 7px; border-top: 1px solid var(--rule);
+    color: #b3b3ae; font: 12px/1 var(--sans); user-select: none;
+  }
+  body.cover-work .toolbar { display: flex; }
+  /* Toolbar icon placeholders, drawn with CSS. None of them do anything. */
+  .ic { position: relative; display: inline-block; width: 18px; height: 18px; flex-shrink: 0; }
+  .ic-sep { display: inline-block; width: 1px; height: 16px; background: var(--rule); margin: 0 4px; }
+  .ic-pill { position: relative; display: inline-block; padding: 3px 20px 3px 8px; border: 1px solid var(--rule); border-radius: 4px; white-space: nowrap; }
+  .ic-pill::after { content: ""; position: absolute; right: 6px; top: 8px; border: 4px solid transparent; border-top-color: #b3b3ae; }
+  .ic-text { font: 700 13px/18px var(--sans); text-align: center; }
+  .ic-i { font-style: italic; font-weight: 400; font-family: Georgia, serif; }
+  .ic-u { text-decoration: underline; font-weight: 400; }
+  .ic-undo::before, .ic-redo::before { content: ""; position: absolute; top: 5px; width: 6px; height: 6px; border-left: 2px solid currentColor; border-bottom: 2px solid currentColor; }
+  .ic-undo::before { left: 3px; transform: rotate(45deg); }
+  .ic-redo::before { right: 3px; transform: rotate(-135deg); }
+  .ic-undo::after, .ic-redo::after { content: ""; position: absolute; top: 7px; width: 9px; height: 6px; border-top: 2px solid currentColor; border-radius: 6px 6px 0 0; }
+  .ic-undo::after { left: 6px; border-right: 2px solid currentColor; border-top-left-radius: 0; }
+  .ic-redo::after { right: 6px; border-left: 2px solid currentColor; border-top-right-radius: 0; }
+  .ic-link::before, .ic-link::after { content: ""; position: absolute; top: 5px; width: 7px; height: 6px; border: 2px solid currentColor; border-radius: 4px; }
+  .ic-link::before { left: 0; }
+  .ic-link::after { left: 7px; }
+  .ic-image { border: 2px solid currentColor; border-radius: 2px; }
+  .ic-image::before { content: ""; position: absolute; left: 3px; top: 3px; width: 3px; height: 3px; border-radius: 50%; background: currentColor; }
+  .ic-image::after { content: ""; position: absolute; left: 2px; bottom: 1px; border-left: 5px solid transparent; border-right: 5px solid transparent; border-bottom: 5px solid currentColor; }
+  .ic-align {
+    background:
+      linear-gradient(currentColor, currentColor) 0 3px / 15px 2px no-repeat,
+      linear-gradient(currentColor, currentColor) 0 8px / 10px 2px no-repeat,
+      linear-gradient(currentColor, currentColor) 0 13px / 15px 2px no-repeat;
+  }
+  .ic-list {
+    background:
+      radial-gradient(circle, currentColor 1.5px, transparent 2px) 0 2px / 4px 4px no-repeat,
+      linear-gradient(currentColor, currentColor) 6px 3px / 11px 2px no-repeat,
+      radial-gradient(circle, currentColor 1.5px, transparent 2px) 0 10px / 4px 4px no-repeat,
+      linear-gradient(currentColor, currentColor) 6px 11px / 11px 2px no-repeat;
+  }
+  .ic-numbered {
+    background:
+      linear-gradient(currentColor, currentColor) 0 2px / 3px 4px no-repeat,
+      linear-gradient(currentColor, currentColor) 6px 3px / 11px 2px no-repeat,
+      linear-gradient(currentColor, currentColor) 0 10px / 3px 4px no-repeat,
+      linear-gradient(currentColor, currentColor) 6px 11px / 11px 2px no-repeat;
   }
   .bar-left { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
   .bar-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
@@ -67,6 +111,15 @@
     text-align: center; margin: 2.4em 0 1.6em;
   }
   .doc h2:first-child { margin-top: 0; }
+  .doc ul { margin: 0 0 1em; padding-left: 1.4em; }
+  .doc li { margin: 0 0 .35em; }
+
+  /* The work document: a modern editor look. Sans, white, a narrower measure. */
+  body.cover-work { background: #fff; color: #202124; font-size: 16px; line-height: 1.6; }
+  body.cover-work .chrome { background: #fff; }
+  body.cover-work .bar-left { color: var(--ink); font-size: 15px; }
+  body.cover-work .page { max-width: 620px; padding-top: 40px; }
+  body.cover-work .doc h2 { text-align: left; text-transform: none; letter-spacing: 0; font-size: 1.25em; font-weight: 600; margin: 1.6em 0 .6em; }
 
   /* The caret is an empty element: it must never add text to the cover. */
   .caret {
@@ -159,14 +212,31 @@
 </head>
 <body class="font-serif">
 
-<header class="bar">
-  <div class="bar-left" id="header-left">Untitled draft</div>
-  <div class="bar-right">
-    <!-- Header widgets live in #header-meta. The word count counts the COVER
-         text shown on screen, never the hidden real text. -->
-    <span id="header-meta"></span>
-    <button id="btn-save" type="button" title="Download your text as an encrypted .cover file">Save</button>
-    <button id="btn-open" type="button" title="Open a .cover file">Open</button>
+<header class="chrome">
+  <div class="bar">
+    <div class="bar-left" id="header-left">Untitled draft</div>
+    <div class="bar-right">
+      <!-- Header widgets live in #header-meta. The word count counts the COVER
+           text shown on screen, never the hidden real text. "Last edited just
+           now" on the work document is static decoration. -->
+      <span id="header-meta"></span>
+      <button id="btn-save" type="button" title="Download your text as an encrypted .cover file">Save</button>
+      <button id="btn-open" type="button" title="Open a .cover file">Open</button>
+    </div>
+  </div>
+  <!-- Fake toolbar, shown with the work-document cover only. Pure decoration:
+       the shapes are drawn with CSS, nothing here is a control, and it is
+       hidden from assistive technology. -->
+  <div id="toolbar" class="toolbar" aria-hidden="true">
+    <span class="ic ic-undo"></span><span class="ic ic-redo"></span>
+    <span class="ic-sep"></span>
+    <span class="ic-pill">Normal text</span><span class="ic-pill">11</span>
+    <span class="ic-sep"></span>
+    <span class="ic ic-text">B</span><span class="ic ic-text ic-i">I</span><span class="ic ic-text ic-u">U</span>
+    <span class="ic-sep"></span>
+    <span class="ic ic-link"></span><span class="ic ic-image"></span>
+    <span class="ic-sep"></span>
+    <span class="ic ic-align"></span><span class="ic ic-list"></span><span class="ic ic-numbered"></span>
   </div>
 </header>
 
@@ -196,13 +266,13 @@
       <li><strong>Save and open.</strong> Save downloads your text as a <code>.cover</code> file encrypted with AES-256-GCM, the key derived from your password with PBKDF2 (SHA-256, 310,000 rounds). Open restores it and replaces what is on the page. There is no way to recover a forgotten password.</li>
     </ol>
     <p class="note">Reloading or closing the tab erases the hidden text. Save first if you need it. The header belongs to the cover: its word count counts the text on screen, not your words.</p>
-    <!-- Mode selector. The work-document and research-paper covers arrive in the
-         next waves; until then their radios are disabled. The choice is kept in
-         localStorage under coverStory.cover. -->
+    <!-- Mode selector. The research-paper cover arrives in the next wave; until
+         then its radio is disabled. The choice is kept in localStorage under
+         coverStory.cover. -->
     <fieldset class="modes">
       <legend><strong>What the screen should show</strong></legend>
       <label><input type="radio" name="mode" value="book" checked> <span>A novel</span></label>
-      <label><input type="radio" name="mode" value="work" disabled> <span>A work document</span></label>
+      <label><input type="radio" name="mode" value="work"> <span>A work document</span></label>
       <label><input type="radio" name="mode" value="paper" disabled> <span>A research paper</span></label>
     </fieldset>
     <label for="custom-text"><strong>Your own cover text</strong> (optional)</label>
@@ -250,10 +320,11 @@
   };
   const COVER_IDS = ['book', 'work', 'paper'];
   const FONTS = ['serif', 'sans', 'academic'];
-  // Block markers recognised at the start of a cover line. The work-document
-  // cover adds '- ' bullets in a later wave.
+  // Block markers recognised at the start of a cover line: a heading and a
+  // bullet. The marker itself is never typed; it costs no keystrokes.
   const MARKERS = [
-    { prefix: '## ', type: 'h2' }
+    { prefix: '## ', type: 'h2' },
+    { prefix: '- ', type: 'li' }
   ];
   // Keys next to each letter on a QWERTY keyboard, for simulated typos.
   const NEIGHBORS = {
@@ -292,7 +363,8 @@
   let coverText = '';        // normalised cover prose: blocks separated by \n, markers kept
   let customText = '';       // the user's own cover text, if any
   let pos = 0;               // index of the next cover character to show
-  let blocks = [];           // [{ type: 'p' | 'h2', text }] mirrors the children of #cover
+  let blocks = [];           // [{ type: 'p' | 'h2' | 'li', text }] in screen order
+  let blockEls = [];         // the element holding each block's text (bullets sit inside a shared ul)
   let steps = [];            // one entry per keystroke that changed the screen: { posBefore, kind }
   let pendingTypo = false;   // a wrong letter is on screen; the next keystroke removes it
   let afterCorrection = false; // the keystroke after a correction always types the right letter
@@ -347,7 +419,7 @@
 
   function placeCaret() {
     if (!domEnabled) return;
-    const el = coverEl.lastElementChild;
+    const el = blockEls[blockEls.length - 1];
     if (el) el.appendChild(caret);
   }
 
@@ -358,45 +430,62 @@
     const type = marker ? marker.type : 'p';
     blocks.push({ type, text: '' });
     if (domEnabled) {
-      const el = document.createElement(type);
-      el.appendChild(document.createTextNode(''));
-      coverEl.appendChild(el);
+      attachBlockElement(type);
       placeCaret();
     }
+  }
+
+  // Creates the element for a new block. Consecutive bullets share one list.
+  function attachBlockElement(type) {
+    const el = document.createElement(type);
+    el.appendChild(document.createTextNode(''));
+    if (type === 'li') {
+      let list = coverEl.lastElementChild;
+      if (!list || list.tagName !== 'UL') {
+        list = document.createElement('ul');
+        coverEl.appendChild(list);
+      }
+      list.appendChild(el);
+    } else {
+      coverEl.appendChild(el);
+    }
+    blockEls.push(el);
+    return el;
   }
 
   function appendChar(ch) {
     const b = currentBlock();
     b.text += ch;
-    if (domEnabled) coverEl.lastElementChild.firstChild.nodeValue = b.text;
+    if (domEnabled) blockEls[blockEls.length - 1].firstChild.nodeValue = b.text;
   }
 
   function removeChar() {
     const b = currentBlock();
     b.text = b.text.slice(0, -1);
-    if (domEnabled) coverEl.lastElementChild.firstChild.nodeValue = b.text;
+    if (domEnabled) blockEls[blockEls.length - 1].firstChild.nodeValue = b.text;
   }
 
   function removeBlock() {
     blocks.pop();
     if (domEnabled) {
-      coverEl.removeChild(coverEl.lastElementChild);
+      const el = blockEls.pop();
+      const parent = el.parentNode;
+      parent.removeChild(el);
+      if (parent !== coverEl && parent.childElementCount === 0) coverEl.removeChild(parent);
       placeCaret();
     }
   }
 
   function renderAll() {
     coverEl.textContent = '';
-    for (const b of blocks) {
-      const el = document.createElement(b.type);
-      el.appendChild(document.createTextNode(b.text));
-      coverEl.appendChild(el);
-    }
+    blockEls = [];
+    for (const b of blocks) attachBlockElement(b.type).firstChild.nodeValue = b.text;
     placeCaret();
   }
 
   function resetCover() {
     blocks = [];
+    blockEls = [];
     steps = [];
     pos = 0;
     pendingTypo = false;
@@ -498,8 +587,8 @@
   function applyCover(c) {
     cover = c;
     document.title = c.tabTitle;
-    for (const cls of Array.from(body.classList)) if (cls.startsWith('font-')) body.classList.remove(cls);
-    body.classList.add('font-' + c.font);
+    for (const cls of Array.from(body.classList)) if (cls.startsWith('font-') || cls.startsWith('cover-')) body.classList.remove(cls);
+    body.classList.add('font-' + c.font, 'cover-' + c.id);
     headerLeft.textContent = c.header.left;
     headerMeta.textContent = '';
     wordCountEl = null;
@@ -510,7 +599,14 @@
         wordCountEl.title = 'Word count of the text on screen';
         headerMeta.appendChild(wordCountEl);
       }
-      // 'last edited' and 'page x of y' arrive with their covers in later waves.
+      if (widget === 'last edited') {
+        // Decorative. The text never changes: it is part of the cover, not a timestamp.
+        const el = document.createElement('span');
+        el.id = 'last-edited';
+        el.textContent = 'Last edited just now';
+        headerMeta.appendChild(el);
+      }
+      // 'page x of y' arrives with the research-paper cover in the next wave.
     }
     setCoverText(customText || c.text);
     rebuildCoverForLength(real.length);
@@ -942,7 +1038,7 @@
   // A small public surface for the console and the tests. Nothing on it
   // returns the hidden text.
   window.CoverStory = Object.freeze({
-    version: '0.2.0',
+    version: '0.3.0',
     coverIds: COVER_IDS.slice(),
     coverId: () => (cover ? cover.id : null),
     coverText: () => coverText,
