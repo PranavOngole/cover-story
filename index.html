@@ -1,0 +1,984 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!--
+  Cover Story. A static page: whatever you type goes into a hidden buffer while
+  the screen shows a plausible document being written.
+
+  No server, no analytics, no network calls. The policy on the next line is
+  enforced by the browser itself: default-src 'none' blocks fetch, XHR, beacons,
+  web sockets and third-party scripts even if a bug tried to use them. Scripts
+  may only run inline or from this same origin.
+-->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<title>Untitled draft</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='2.5' y='1.5' width='11' height='13' rx='1.5' fill='%23fff' stroke='%23888'/%3E%3Cpath d='M5 5h6M5 8h6M5 11h4' stroke='%23888' stroke-linecap='round'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --paper: #fbfaf7;
+    --ink: #2a2a2a;
+    --muted: #8a8a85;
+    --rule: #e6e3dc;
+    --accent: #3a5a8c;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, Menlo, Consolas, "Liberation Mono", monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-size: 19px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  /* Typography per cover. Only the serif novel exists in this wave. */
+  body.font-serif { font-family: Georgia, "Iowan Old Style", "Palatino Linotype", "Book Antiqua", "Times New Roman", serif; }
+  body.font-sans { font-family: var(--sans); }
+  body.font-academic { font-family: "Times New Roman", Times, "Liberation Serif", serif; }
+
+  /* Header bar */
+  .bar {
+    position: sticky; top: 0; z-index: 2;
+    display: flex; justify-content: space-between; align-items: center; gap: 12px;
+    padding: 10px 20px;
+    font: 13px/1.4 var(--sans);
+    color: var(--muted);
+    background: var(--paper);
+    border-bottom: 1px solid var(--rule);
+  }
+  .bar-left { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .bar-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+  .bar button {
+    font: inherit; color: var(--muted); background: none;
+    border: 1px solid var(--rule); border-radius: 4px;
+    padding: 3px 10px; cursor: pointer;
+  }
+  .bar button:hover, .bar button:focus-visible { color: var(--ink); border-color: var(--muted); outline: none; }
+
+  /* The page */
+  .page { max-width: 680px; margin: 0 auto; padding: 64px 24px 50vh; }
+  .doc p { margin: 0 0 1em; }
+  .doc h2 {
+    font-size: 1.05em; font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
+    text-align: center; margin: 2.4em 0 1.6em;
+  }
+  .doc h2:first-child { margin-top: 0; }
+
+  /* The caret is an empty element: it must never add text to the cover. */
+  .caret {
+    display: inline-block; width: 1px; height: 1.05em; margin-left: 1px;
+    background: var(--ink); vertical-align: -0.15em;
+    animation: blink 1.1s steps(1) infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* Peek: hide the cover, show the real text. Toggled by the peek class on body. */
+  #real {
+    display: none; white-space: pre-wrap; overflow-wrap: anywhere;
+    font: 15px/1.55 var(--mono);
+    background: #fff; border: 1px dashed var(--muted); border-radius: 6px; padding: 16px;
+    min-height: 4em;
+  }
+  #real:empty::before { content: "Nothing typed yet."; color: var(--muted); }
+  body.peek #cover { display: none; }
+  body.peek #real { display: block; }
+  body.peek .caret { display: none; }
+
+  /* Help button, toast */
+  .help {
+    position: fixed; right: 18px; bottom: 18px; z-index: 3;
+    width: 30px; height: 30px; border-radius: 50%;
+    border: 1px solid var(--rule); background: var(--paper); color: var(--muted);
+    font: 15px/28px var(--sans); text-align: center; cursor: pointer; padding: 0;
+  }
+  .help:hover, .help:focus-visible { color: var(--ink); border-color: var(--muted); outline: none; }
+  #toast {
+    position: fixed; left: 50%; bottom: 28px; z-index: 20;
+    transform: translateX(-50%) translateY(8px);
+    background: #333; color: #fff; padding: 8px 14px; border-radius: 6px;
+    font: 13px/1.4 var(--sans); max-width: calc(100vw - 32px);
+    opacity: 0; transition: opacity .15s, transform .15s; pointer-events: none;
+  }
+  #toast.show { opacity: 1; transform: translateX(-50%); }
+
+  /* Dialogs: the intro and the password prompt */
+  .overlay {
+    position: fixed; inset: 0; z-index: 10;
+    background: rgba(251, 250, 247, .97);
+    display: flex; align-items: flex-start; justify-content: center;
+    overflow: auto; padding: 40px 16px;
+  }
+  .overlay[hidden] { display: none; }
+  .card {
+    width: 100%; max-width: 560px;
+    background: #fff; border: 1px solid var(--rule); border-radius: 8px;
+    padding: 28px 32px; margin: 0;
+    font: 15px/1.55 var(--sans); color: var(--ink);
+  }
+  .card h1 { font-size: 22px; margin: 0 0 8px; }
+  .card p { margin: 0 0 12px; }
+  .card ol { padding-left: 20px; margin: 0 0 12px; }
+  .card li { margin: 8px 0; }
+  .card kbd {
+    font: 12px var(--mono); background: #f2f1ed; border: 1px solid var(--rule);
+    border-bottom-width: 2px; border-radius: 4px; padding: 1px 5px;
+  }
+  .card label { display: block; margin: 16px 0 6px; }
+  .card textarea {
+    width: 100%; min-height: 110px; display: block;
+    font: 13px/1.5 var(--mono); padding: 8px;
+    border: 1px solid var(--rule); border-radius: 6px; resize: vertical;
+  }
+  .card input[type="password"] {
+    width: 100%; display: block; font: 16px var(--sans); padding: 8px 10px;
+    border: 1px solid var(--rule); border-radius: 6px;
+  }
+  .row { display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap; margin-top: 16px; }
+  .btn { font: inherit; padding: 8px 16px; border-radius: 6px; border: 1px solid var(--rule); background: #fff; cursor: pointer; color: var(--ink); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .note { color: var(--muted); font-size: 13px; }
+  .card .note { margin-top: 6px; }
+
+  @media (max-width: 600px) {
+    body { font-size: 17px; }
+    .bar { padding: 8px 12px; }
+    .page { padding: 32px 16px 40vh; }
+    .card { padding: 20px 18px; }
+    .overlay { padding: 16px 12px; }
+  }
+</style>
+</head>
+<body class="font-serif">
+
+<header class="bar">
+  <div class="bar-left" id="header-left">Untitled draft</div>
+  <div class="bar-right">
+    <!-- Header widgets live in #header-meta. The word count counts the COVER
+         text shown on screen, never the hidden real text. -->
+    <span id="header-meta"></span>
+    <button id="btn-save" type="button" title="Download your text as an encrypted .cover file">Save</button>
+    <button id="btn-open" type="button" title="Open a .cover file">Open</button>
+  </div>
+</header>
+
+<main class="page">
+  <!-- The cover: the document people see. Filled one character per keystroke. -->
+  <div id="cover" class="doc"></div>
+  <!-- The real text. Empty except while peeking. -->
+  <div id="real" aria-label="Your real text"></div>
+</main>
+
+<button id="btn-help" class="help" type="button" aria-label="How this page works">?</button>
+<div id="toast" role="status" aria-live="polite"></div>
+<input id="file-input" type="file" accept=".cover,application/json" hidden>
+
+<!-- Intro: shown on the first visit and whenever the ? button is pressed. -->
+<div id="intro" class="overlay" role="dialog" aria-modal="true" aria-labelledby="intro-title" hidden>
+  <div class="card">
+    <h1 id="intro-title">Cover Story</h1>
+    <p>Whatever you type on this page goes into a hidden buffer. The screen shows a document being written instead. Nothing you type leaves this page: there is no server, no account and no analytics, and the page never sends what you type anywhere.</p>
+    <ol>
+      <li><strong>Peek.</strong> Hold <kbd data-mod>Ctrl</kbd> for about a second to see what you actually wrote. Let go to hide it again.</li>
+      <li><strong>Copy.</strong> While peeking, press <kbd data-mod>Ctrl</kbd> + <kbd>C</kbd> to copy your real text to the clipboard.</li>
+      <li><strong>Clear.</strong> Press <kbd>Esc</kbd> to erase the hidden text and the screen. The page also clears itself after 10 minutes in a background tab.</li>
+      <li><strong>Save and open.</strong> Save downloads your text as a <code>.cover</code> file encrypted with AES-256-GCM, the key derived from your password with PBKDF2 (SHA-256, 310,000 rounds). Open restores it and replaces what is on the page. There is no way to recover a forgotten password.</li>
+    </ol>
+    <p class="note">Reloading or closing the tab erases the hidden text. Save first if you need it. The screen shows a story, not your words, so the word count in the header counts the story.</p>
+    <label for="custom-text"><strong>Your own cover text</strong> (optional)</label>
+    <textarea id="custom-text" spellcheck="false" placeholder="Paste text here to replace the built-in story. Blank lines separate paragraphs. A line that starts with ## becomes a heading."></textarea>
+    <p class="note">Stored only in this browser (localStorage). Leave it blank to use the built-in story.</p>
+    <div class="row">
+      <button id="btn-start" class="btn primary" type="button">Start writing</button>
+    </div>
+  </div>
+</div>
+
+<!-- Password prompt for Save and Open. A real dialog, so the password is never shown in plain text. -->
+<div id="pw" class="overlay" role="dialog" aria-modal="true" aria-labelledby="pw-title" hidden>
+  <form id="pw-form" class="card" autocomplete="off">
+    <h1 id="pw-title">Password</h1>
+    <p id="pw-hint" class="note"></p>
+    <input id="pw-input" type="password" autocomplete="new-password" spellcheck="false" aria-label="Password">
+    <div class="row">
+      <button id="pw-cancel" class="btn" type="button">Cancel</button>
+      <button id="pw-ok" class="btn primary" type="submit">OK</button>
+    </div>
+  </form>
+</div>
+
+<script>
+(() => {
+  'use strict';
+
+  // ------------------------------------------------------------------
+  // Cover data. Version 1: a novel. Moves to covers/book.js in the next
+  // wave; the shape below is the shape every cover will have.
+  //
+  // The story is original prose written for this project. All names,
+  // places and events in it are fictional.
+  // ------------------------------------------------------------------
+  const BOOK_COVER = {
+    id: 'book',
+    label: 'A novel',
+    tabTitle: 'Untitled draft',
+    font: 'serif',
+    header: { left: 'Untitled draft', right: ['word count'] },
+    text: `## One
+
+The house smelled of cold coffee and lemon oil, which was how Mara knew her grandmother had been dead for exactly nine days. Signe had polished the dining table every Sunday for sixty years, and the oil took about a week and a half to fade. Mara stood in the hallway with her coat still on and counted backward to the Sunday, and then she stopped counting, because it was not a useful thing to know.
+
+The realtor had left a folder on the hall table. Dale Mercer, in a brown suit the color of a paper bag, had walked her through the rooms that morning as though she had never seen them, pointing out the radiators and the good light and the original floors. He used the word original four times. Mara had nodded and looked at the floors and thought about the summer she was eleven and had dropped a jar of pickled beets in the kitchen, and how the stain had never quite come out of the boards by the stove, and how Signe had put a rag rug over it and called the matter closed.
+
+"You'll want to clear the personal effects before the photographs," Dale had said. "Buyers like to imagine themselves in a place. Hard to do with someone else's spoons in the drawer."
+
+So she began with the spoons.
+
+There were more of them than any one woman could have needed. Soup spoons with a pattern of wheat along the handle, teaspoons that did not match, a single enormous serving spoon with a dent in the bowl. Mara laid them on the table in rows, the way she laid out everything at work, and found that the rows did not help. There was nothing to decide. They were spoons. She put them in a box.
+
+By evening she had done the kitchen and most of the front room, and the boxes stood along the wall like people waiting for a bus. She made tea with the last of the loose leaves and sat at the polished table and opened the drawer in the sideboard where Signe kept the things that did not belong anywhere else. Rubber bands. A lighter with no fluid. Receipts from a hardware store that had closed before Mara was born. And at the back, pressed flat under a tin of buttons, a green ledger with a cloth spine.
+
+She knew the ledger. Everyone in the family knew the ledger, in the way one knows about a neighbor's dog without ever having touched it. Signe wrote in it after supper, a few lines at a time, with the fountain pen she refused to replace. Mara had always assumed it was household accounts. Gas, water, the coal man in the years when there was still a coal man.
+
+It was not household accounts.
+
+The first page was dated the year Signe's husband died, which was also the year Mara's mother had moved to the coast and stopped calling on Sundays. The entries were short. A name, a date, a thing, and sometimes a number.
+
+Harold Pruitt. March. Fixed the radiator in the back bedroom. Would not take money.
+
+Noor Haddad. April. Two loaves and a cake when I was ill. Owe her.
+
+Mrs. Alvarsson. June. Drove me to the clinic and waited. Owe her a great deal.
+
+And so on, page after page, for thirty years. Some entries had a line drawn through them with a note in the margin: Paid. Brought him the jam. Sat with her after the funeral. But many did not. Mara turned the pages with the tea going cold at her elbow, and the house went dark around her, and she did not get up to turn on a lamp.
+
+## Two
+
+Harold Pruitt was still alive, which surprised her. He lived three doors down in a house with a porch that leaned very slightly toward the lake, as though it were listening for something. Mara stood on the step for a full minute before she knocked.
+
+He was smaller than she remembered, and he remembered her, which she had not expected. "The beet girl," he said, and let her in.
+
+The front room was warm and full of radio noise. He turned it down but not off. Mara sat on the edge of a chair with the ledger in her lap and explained, badly, why she had come. That her grandmother had kept a record. That he was in it. That she wanted to settle it, whatever that meant, before the house was sold.
+
+Harold listened with his hands folded. When she had finished he was quiet for long enough that she wondered whether he had heard.
+
+"Your grandmother," he said finally, "paid me for that radiator in 1994. She paid me with a pie every Thursday for a year. I gained eleven pounds." He said this with no expression at all, and then his face cracked into something that was nearly a smile. "She knew I wouldn't take cash. So she found a way around me. That's what she did with everyone."
+
+"The ledger says she still owes you."
+
+"The ledger," Harold said, "is wrong about that." He stood, with effort, and went to a shelf beside the radio, and came back with a small notebook of his own. It was blue, with a rubber band around it. He did not open it. "Everybody on this street kept one, you know. Not everyone wrote it down. But everyone kept one."
+
+Mara did not know what to say to that, so she said nothing, and after a moment he put the notebook away.
+
+She went next to the bakery, which was now a shop that sold phone cases, and asked the young man behind the counter whether he knew where Noor Haddad had gone. He did not. But the woman buying a charger beside her did, and wrote an address on the back of Mara's hand with a ballpoint pen, because neither of them had any paper.
+
+Noor lived above a laundromat on the far side of the falls. She was seventy-one and had bad knees and remembered Signe perfectly. "She came in every morning for a small rye and never once asked for a discount," Noor said. "Do you know how rare that is? People think a bakery is a charity. Your grandmother thought it was a bakery."
+
+Mara showed her the entry. Two loaves and a cake when I was ill. Owe her.
+
+Noor read it twice and then laughed, a short dry sound. "The cake was a disaster. It was the first time I tried the recipe. She ate the whole thing out of politeness and told me it was good, and I knew she was lying, and I loved her for it." She handed the ledger back. "There is nothing to settle. Tell her that, if you believe in telling people things."
+
+Mara did not know whether she believed in that. She walked back along the lake road with the ledger under her arm and the ink of the address fading on her hand, and she thought about what it would mean to carry a debt for thirty years that the other person had never once considered a debt.
+
+She visited four more people that week. Mrs. Alvarsson had died, but her son had the house, and he gave Mara a cup of coffee and told her about the clinic visit as though it had happened the previous month. The man who had replaced the porch step did not remember doing it. The woman who had taught Signe to use the library computer wept, briefly and without embarrassment, and then asked whether Mara wanted the recipe for the rye bread, which she had gotten from Noor, who had gotten it from someone else.
+
+None of them wanted anything. All of them talked for an hour.
+
+## Three
+
+The last entry in the ledger was dated the previous autumn. The handwriting had changed by then, grown larger and less certain, the letters leaning on each other for support. Mara had saved it for last without admitting to herself that she was doing so.
+
+Mara. October. Came for the weekend and fixed the kitchen tap and did not say anything about the state of the garden. Owe her.
+
+She read it at the polished table on her final night in the house, with the boxes sealed and labeled and the spoons long gone to the charity shop on the corner. She read it several times. Then she closed the ledger and sat with her hands flat on the cover.
+
+She had not fixed the tap, in fact. She had tightened something under the sink and it had stopped dripping for a day and then started again, and Signe had never mentioned it, and Mara had assumed she had not noticed. The garden had been a wilderness. Mara had looked at it through the window and said nothing because she had not known what to say, and because she had a train to catch, and because it had been easier.
+
+It occurred to her, sitting there, that the ledger was not a record of debts at all. It was a record of attention. Her grandmother had written down, for thirty years, every time someone had done a thing for her that she had not asked for, and she had kept the list not to balance it but to remember that it was there. The lines drawn through the entries were not payments. They were visits.
+
+Mara found the fountain pen in the drawer with the rubber bands. It still had ink, which seemed impossible. She opened the ledger to the page after the last entry and sat for a long moment with the pen above the paper.
+
+Then she wrote the date, and under it a single line.
+
+Harold Pruitt. Noor Haddad. The Alvarsson boy. The woman from the library whose name I never learned. Told me who my grandmother was. Owe them.
+
+In the morning Dale Mercer came for the keys. He looked at the empty rooms and the original floors and said the place would photograph well. Mara agreed that it would. She did not tell him about the beet stain under the rag rug, which she had left exactly where it was. She put the ledger in her bag, and the pen beside it, and she walked down to the lake road one more time before the train, past the house with the listening porch, where a radio was playing quietly behind the glass.`
+  };
+
+  // ------------------------------------------------------------------
+  // Constants
+  // ------------------------------------------------------------------
+  const PEEK_HOLD_MS = 900;            // hold Ctrl or Cmd this long to peek
+  const TYPO_RATE = 0.035;             // chance of a simulated typo at a word start
+  const HIDDEN_WIPE_MS = 10 * 60 * 1000; // wipe after this long in a hidden tab
+  const PBKDF2_ITERATIONS = 310000;
+  const MAX_ITERATIONS_ACCEPTED = 2000000; // refuse files that ask for more; a huge count would hang the tab
+  const STORAGE = {
+    intro: 'coverStory.introSeen',
+    custom: 'coverStory.customText'
+  };
+  // Block markers recognised at the start of a cover line. The work-document
+  // cover adds '- ' bullets in a later wave.
+  const MARKERS = [
+    { prefix: '## ', type: 'h2' }
+  ];
+  // Keys next to each letter on a QWERTY keyboard, for simulated typos.
+  const NEIGHBORS = {
+    q: 'wa', w: 'qes', e: 'wrd', r: 'etf', t: 'ryg', y: 'tuh', u: 'yij', i: 'uok', o: 'ipl', p: 'ol',
+    a: 'qsz', s: 'awdz', d: 'sefx', f: 'drgc', g: 'fthv', h: 'gyjb', j: 'hukn', k: 'jilm', l: 'kop',
+    z: 'asx', x: 'zsdc', c: 'xdfv', v: 'cfgb', b: 'vghn', n: 'bhjm', m: 'njk'
+  };
+
+  // ------------------------------------------------------------------
+  // Elements
+  // ------------------------------------------------------------------
+  const $ = (sel) => document.querySelector(sel);
+  const body = document.body;
+  const coverEl = $('#cover');
+  const realEl = $('#real');
+  const headerLeft = $('#header-left');
+  const headerMeta = $('#header-meta');
+  const toastEl = $('#toast');
+  const introEl = $('#intro');
+  const customTextEl = $('#custom-text');
+  const pwEl = $('#pw');
+  const pwForm = $('#pw-form');
+  const pwTitle = $('#pw-title');
+  const pwHint = $('#pw-hint');
+  const pwInput = $('#pw-input');
+  const fileInput = $('#file-input');
+  const caret = document.createElement('span');
+  caret.className = 'caret';
+  caret.setAttribute('aria-hidden', 'true');
+
+  // ------------------------------------------------------------------
+  // State
+  // ------------------------------------------------------------------
+  let cover = null;          // the active cover object
+  let coverText = '';        // normalised cover prose: blocks separated by \n, markers kept
+  let customText = '';       // the user's own cover text, if any
+  let pos = 0;               // index of the next cover character to show
+  let blocks = [];           // [{ type: 'p' | 'h2', text }] mirrors the children of #cover
+  let steps = [];            // one entry per keystroke that changed the screen: { posBefore, kind }
+  let pendingTypo = false;   // a wrong letter is on screen; the next keystroke removes it
+  let afterCorrection = false; // the keystroke after a correction always types the right letter
+  let typosAllowed = true;   // off while rebuilding the screen from a saved file
+  let domEnabled = true;     // off while rebuilding, then renderAll() once
+  let wordCountEl = null;
+
+  // The hidden buffer. It lives only in this closure. It is written to the
+  // page only while peeking, and nothing on window returns it.
+  let real = '';
+
+  // ------------------------------------------------------------------
+  // Cover text
+  // ------------------------------------------------------------------
+  // Blank lines separate blocks. A line that starts with a marker is a block
+  // of its own. Any other line continues the paragraph before it (so prose can
+  // be soft-wrapped in the source) unless that block is a heading.
+  function normalizeCoverText(raw) {
+    const lines = String(raw).replace(/\r\n?/g, '\n').split('\n');
+    const out = [];
+    let cur = null;
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line) { cur = null; continue; }
+      const marker = markerFor(line);
+      if (marker || !cur || cur.marker) {
+        cur = { marker: Boolean(marker), text: line };
+        out.push(cur);
+      } else {
+        cur.text += ' ' + line;
+      }
+    }
+    return out.map((b) => b.text).join('\n');
+  }
+
+  function markerFor(str, at = 0) {
+    for (const m of MARKERS) if (str.startsWith(m.prefix, at)) return m;
+    return null;
+  }
+
+  function setCoverText(text) {
+    const normalised = normalizeCoverText(text);
+    coverText = normalised || normalizeCoverText(cover.text);
+  }
+
+  // ------------------------------------------------------------------
+  // The screen (cover display)
+  // ------------------------------------------------------------------
+  function currentBlock() { return blocks[blocks.length - 1]; }
+
+  function placeCaret() {
+    if (!domEnabled) return;
+    const el = coverEl.lastElementChild;
+    if (el) el.appendChild(caret);
+  }
+
+  // Start a new block at pos, consuming a marker if there is one.
+  function startBlock() {
+    const marker = markerFor(coverText, pos);
+    if (marker) pos += marker.prefix.length;
+    const type = marker ? marker.type : 'p';
+    blocks.push({ type, text: '' });
+    if (domEnabled) {
+      const el = document.createElement(type);
+      el.appendChild(document.createTextNode(''));
+      coverEl.appendChild(el);
+      placeCaret();
+    }
+  }
+
+  function appendChar(ch) {
+    const b = currentBlock();
+    b.text += ch;
+    if (domEnabled) coverEl.lastElementChild.firstChild.nodeValue = b.text;
+  }
+
+  function removeChar() {
+    const b = currentBlock();
+    b.text = b.text.slice(0, -1);
+    if (domEnabled) coverEl.lastElementChild.firstChild.nodeValue = b.text;
+  }
+
+  function removeBlock() {
+    blocks.pop();
+    if (domEnabled) {
+      coverEl.removeChild(coverEl.lastElementChild);
+      placeCaret();
+    }
+  }
+
+  function renderAll() {
+    coverEl.textContent = '';
+    for (const b of blocks) {
+      const el = document.createElement(b.type);
+      el.appendChild(document.createTextNode(b.text));
+      coverEl.appendChild(el);
+    }
+    placeCaret();
+  }
+
+  function resetCover() {
+    blocks = [];
+    steps = [];
+    pos = 0;
+    pendingTypo = false;
+    afterCorrection = false;
+    if (domEnabled) coverEl.textContent = '';
+    startBlock();
+  }
+
+  function atWordStart() {
+    const t = currentBlock().text;
+    return t === '' || /\s$/.test(t);
+  }
+
+  function isLetter(ch) { return /[A-Za-z]/.test(ch); }
+
+  function neighborOf(ch) {
+    const low = ch.toLowerCase();
+    const options = NEIGHBORS[low];
+    if (!options) return null;
+    const i = Math.min(options.length - 1, Math.floor(Math.random() * options.length));
+    const pick = options[i];
+    return ch === low ? pick : pick.toUpperCase();
+  }
+
+  // One keystroke's worth of cover: a character, a paragraph break, or a
+  // simulated typo. Records a step so Backspace can undo it.
+  function advanceCover() {
+    if (pos >= coverText.length) {
+      // The prose ran out: paragraph break, then loop from the top.
+      steps.push({ posBefore: pos, kind: 'break' });
+      pos = 0;
+      startBlock();
+      return;
+    }
+    const ch = coverText[pos];
+    if (ch === '\n') {
+      steps.push({ posBefore: pos, kind: 'break' });
+      pos += 1;
+      startBlock();
+      return;
+    }
+    const mayTypo = typosAllowed && !afterCorrection;
+    afterCorrection = false;
+    if (mayTypo && atWordStart() && isLetter(ch) && Math.random() < TYPO_RATE) {
+      const wrong = neighborOf(ch);
+      if (wrong) {
+        appendChar(wrong);
+        steps.push({ posBefore: pos, kind: 'typo' });
+        pendingTypo = true;
+        return;
+      }
+    }
+    appendChar(ch);
+    steps.push({ posBefore: pos, kind: 'char' });
+    pos += 1;
+  }
+
+  function undoStep() {
+    const s = steps.pop();
+    if (!s) return;
+    if (s.kind === 'break') removeBlock();
+    else removeChar();
+    pos = s.posBefore;
+    pendingTypo = false;
+  }
+
+  // Rebuild the screen as if n keystrokes had been typed, with no typos.
+  function rebuildCoverForLength(n) {
+    domEnabled = false;
+    typosAllowed = false;
+    resetCover();
+    for (let i = 0; i < n; i++) advanceCover();
+    typosAllowed = true;
+    domEnabled = true;
+    renderAll();
+    updateHeader();
+  }
+
+  // ------------------------------------------------------------------
+  // Header
+  // ------------------------------------------------------------------
+  function countWords() {
+    // Counts the words of the cover text on screen. Never the hidden text.
+    let n = 0;
+    for (const b of blocks) {
+      const m = b.text.match(/\S+/g);
+      if (m) n += m.length;
+    }
+    return n;
+  }
+
+  function updateHeader() {
+    if (wordCountEl) {
+      const n = countWords();
+      wordCountEl.textContent = n + (n === 1 ? ' word' : ' words');
+    }
+  }
+
+  function applyCover(c) {
+    cover = c;
+    document.title = c.tabTitle;
+    for (const cls of Array.from(body.classList)) if (cls.startsWith('font-')) body.classList.remove(cls);
+    body.classList.add('font-' + c.font);
+    headerLeft.textContent = c.header.left;
+    headerMeta.textContent = '';
+    wordCountEl = null;
+    for (const widget of c.header.right) {
+      if (widget === 'word count') {
+        wordCountEl = document.createElement('span');
+        wordCountEl.id = 'word-count';
+        wordCountEl.title = 'Word count of the text on screen';
+        headerMeta.appendChild(wordCountEl);
+      }
+      // 'last edited' and 'page x of y' arrive with their covers in later waves.
+    }
+    setCoverText(customText || c.text);
+    rebuildCoverForLength(real.length);
+  }
+
+  // ------------------------------------------------------------------
+  // Typing
+  // ------------------------------------------------------------------
+  function typeChar(ch) {
+    real += ch;
+    if (pendingTypo) { undoStep(); afterCorrection = true; }   // the correcting keystroke: the wrong letter goes away
+    else advanceCover();
+    updateHeader();
+  }
+
+  function backspace() {
+    if (real.length) real = real.slice(0, -1);
+    if (steps.length) undoStep();
+    updateHeader();
+  }
+
+  function wipe() {
+    real = '';
+    resetCover();
+    if (peeking) realEl.textContent = '';
+    updateHeader();
+  }
+
+  function dialogOpen() { return !introEl.hidden || !pwEl.hidden; }
+
+  function isEditable(el) {
+    if (!el || !el.tagName) return false;
+    const t = el.tagName;
+    return t === 'INPUT' || t === 'TEXTAREA' || t === 'SELECT' || el.isContentEditable === true;
+  }
+
+  function onKeyDown(e) {
+    if (e.isComposing) return;
+    const key = e.key;
+
+    // Peek: Ctrl or Cmd held on its own.
+    if (key === 'Control' || key === 'Meta') {
+      if (!e.repeat && !dialogOpen()) startPeekTimer();
+      return;
+    }
+
+    // Anything with Ctrl, Cmd or Alt held belongs to the browser and is not
+    // recorded. The one exception: Ctrl+C / Cmd+C while peeking copies the
+    // real text.
+    if (e.ctrlKey || e.metaKey || e.altKey) {
+      if (peeking && !e.altKey && !e.shiftKey && key.toLowerCase() === 'c') {
+        e.preventDefault();
+        copyReal();
+      }
+      return;
+    }
+
+    if (dialogOpen()) {
+      if (key === 'Escape') { e.preventDefault(); closeDialogs(); }
+      return;
+    }
+    if (isEditable(e.target)) return;
+    if (e.target && e.target.tagName === 'BUTTON' && (key === 'Enter' || key === ' ')) return;
+
+    if (key === 'Escape') { e.preventDefault(); wipe(); return; }
+    if (key === 'Backspace') { e.preventDefault(); backspace(); return; }
+    // Shift+Tab stays with the browser so keyboard users can reach the buttons.
+    if (key === 'Tab' && e.shiftKey) return;
+    if (key === 'Enter' || key === 'Tab') { e.preventDefault(); typeChar(key === 'Enter' ? '\n' : '\t'); return; }
+    if (key.length === 1) { e.preventDefault(); typeChar(key); return; }
+    // Arrows, function keys, Shift on its own and the rest go to the browser.
+  }
+
+  // ------------------------------------------------------------------
+  // Peek
+  // ------------------------------------------------------------------
+  let peekTimer = null;
+  let peeking = false;
+
+  function startPeekTimer() {
+    if (peekTimer || peeking) return;
+    peekTimer = setTimeout(() => { peekTimer = null; beginPeek(); }, PEEK_HOLD_MS);
+  }
+  function cancelPeekTimer() {
+    if (peekTimer) { clearTimeout(peekTimer); peekTimer = null; }
+  }
+  function beginPeek() {
+    peeking = true;
+    realEl.textContent = real;
+    body.classList.add('peek');
+  }
+  function endPeek() {
+    cancelPeekTimer();
+    if (!peeking) return;
+    peeking = false;
+    body.classList.remove('peek');
+    realEl.textContent = '';
+  }
+  function onKeyUp(e) {
+    if (e.key === 'Control' || e.key === 'Meta') endPeek();
+  }
+
+  async function copyReal() {
+    if (!real) { toast('Nothing to copy'); return; }
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) await navigator.clipboard.writeText(real);
+      else legacyCopy(real);
+      toast('Copied');
+    } catch (err) {
+      try { legacyCopy(real); toast('Copied'); } catch (err2) { toast('Copy failed'); }
+    }
+  }
+  function legacyCopy(text) {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand && document.execCommand('copy');
+    body.removeChild(ta);
+    if (!ok) throw new Error('copy command failed');
+  }
+
+  // ------------------------------------------------------------------
+  // Hidden tab: wipe after HIDDEN_WIPE_MS away, if there is anything to wipe.
+  // Both a timer and a timestamp check on return, since browsers slow timers
+  // in background tabs.
+  // ------------------------------------------------------------------
+  let hiddenAt = 0;
+  let hiddenTimer = null;
+  let wipedWhileAway = false;
+
+  function onVisibilityChange() {
+    if (document.hidden) {
+      endPeek();
+      if (real && !hiddenAt) {
+        hiddenAt = Date.now();
+        hiddenTimer = setTimeout(wipeAfterAway, HIDDEN_WIPE_MS);
+      }
+    } else {
+      if (hiddenTimer) { clearTimeout(hiddenTimer); hiddenTimer = null; }
+      if (hiddenAt && Date.now() - hiddenAt >= HIDDEN_WIPE_MS) wipeAfterAway();
+      hiddenAt = 0;
+      if (wipedWhileAway) { wipedWhileAway = false; toast('Cleared after 10 minutes in the background'); }
+    }
+  }
+  function wipeAfterAway() {
+    hiddenTimer = null;
+    hiddenAt = 0;
+    wipe();
+    wipedWhileAway = true;
+  }
+
+  // ------------------------------------------------------------------
+  // Save and open. AES-256-GCM; key from the password with PBKDF2 (SHA-256,
+  // 310,000 rounds, 16-byte random salt), 12-byte random IV. All WebCrypto.
+  // ------------------------------------------------------------------
+  function bytesToBase64(bytes) {
+    let s = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) {
+      s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    }
+    return btoa(s);
+  }
+  function base64ToBytes(str) {
+    const bin = atob(str);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+  async function deriveKey(password, salt, iterations) {
+    const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveKey']);
+    return crypto.subtle.deriveKey(
+      { name: 'PBKDF2', salt, iterations, hash: 'SHA-256' },
+      base,
+      { name: 'AES-GCM', length: 256 },
+      false,
+      ['encrypt', 'decrypt']
+    );
+  }
+
+  // Returns the .cover file contents (a JSON string). The plaintext stays here.
+  async function exportEncrypted(password) {
+    if (typeof password !== 'string' || !password) throw new Error('A password is required');
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const key = await deriveKey(password, salt, PBKDF2_ITERATIONS);
+    const data = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(real));
+    return JSON.stringify({
+      format: 'cover-story',
+      version: 1,
+      cipher: 'AES-256-GCM',
+      kdf: 'PBKDF2-SHA-256',
+      iterations: PBKDF2_ITERATIONS,
+      salt: bytesToBase64(salt),
+      iv: bytesToBase64(iv),
+      data: bytesToBase64(new Uint8Array(data))
+    }, null, 2);
+  }
+
+  function looksLikeCoverFile(f) {
+    return Boolean(f) && typeof f === 'object' &&
+      typeof f.salt === 'string' && typeof f.iv === 'string' && typeof f.data === 'string';
+  }
+
+  // Decrypts a .cover file (JSON string or parsed object) and replaces the
+  // hidden buffer with its contents. Throws on a wrong password or a damaged
+  // file; the callers turn that into a toast.
+  async function importEncrypted(file, password) {
+    const f = typeof file === 'string' ? JSON.parse(file) : file;
+    if (!looksLikeCoverFile(f)) throw new Error('Not a .cover file');
+    const iterations = f.iterations === undefined ? PBKDF2_ITERATIONS : Number(f.iterations);
+    if (!Number.isInteger(iterations) || iterations < 1000 || iterations > MAX_ITERATIONS_ACCEPTED) {
+      throw new Error('Unsupported iteration count');
+    }
+    const salt = base64ToBytes(f.salt);
+    const iv = base64ToBytes(f.iv);
+    const data = base64ToBytes(f.data);
+    if (salt.length !== 16 || iv.length !== 12) throw new Error('Damaged file');
+    const key = await deriveKey(password, salt, iterations);
+    const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, data);
+    real = new TextDecoder().decode(plain);
+    rebuildCoverForLength(real.length);
+    if (peeking) realEl.textContent = real;
+  }
+
+  function fileStamp() {
+    const d = new Date();
+    const p = (n) => String(n).padStart(2, '0');
+    return d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '-' + p(d.getHours()) + p(d.getMinutes());
+  }
+  function downloadText(text, name) {
+    const blob = new Blob([text], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    body.appendChild(a);
+    a.click();
+    body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  async function onSave() {
+    blurActive();
+    if (!real) { toast('Nothing to save yet'); return; }
+    const password = await askPassword('Choose a password for this file', 'The file cannot be opened without it. Longer is better.', 'Save');
+    if (password === null) return;
+    try {
+      const json = await exportEncrypted(password);
+      const slug = cover.tabTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'draft';
+      downloadText(json, slug + '-' + fileStamp() + '.cover');
+      toast('Saved');
+    } catch (err) {
+      toast('Could not save');
+    }
+  }
+
+  async function onFileChosen() {
+    const file = fileInput.files && fileInput.files[0];
+    fileInput.value = '';
+    if (!file) return;
+    let parsed;
+    try {
+      parsed = JSON.parse(await file.text());
+    } catch (err) {
+      toast('That is not a .cover file');
+      return;
+    }
+    if (!looksLikeCoverFile(parsed)) { toast('That is not a .cover file'); return; }
+    const password = await askPassword('Password for this file', 'Opening replaces what is on the page now.', 'Open');
+    if (password === null) return;
+    try {
+      await importEncrypted(parsed, password);
+      toast('Opened');
+    } catch (err) {
+      toast('Wrong password or damaged file');
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Dialogs
+  // ------------------------------------------------------------------
+  let pwResolve = null;
+
+  function askPassword(title, hint, okLabel) {
+    return new Promise((resolve) => {
+      pwResolve = resolve;
+      pwTitle.textContent = title;
+      pwHint.textContent = hint;
+      $('#pw-ok').textContent = okLabel;
+      pwInput.value = '';
+      pwEl.hidden = false;
+      pwInput.focus();
+    });
+  }
+  function finishPassword(value) {
+    blurActive();   // before hiding: a hidden element cannot be blurred
+    pwEl.hidden = true;
+    pwInput.value = '';
+    const resolve = pwResolve;
+    pwResolve = null;
+    if (resolve) resolve(value);
+  }
+
+  function openIntro() {
+    customTextEl.value = customText;
+    introEl.hidden = false;
+    $('#btn-start').focus();
+  }
+  function closeIntro() {
+    const typed = customTextEl.value.trim();
+    if (typed !== customText) {
+      customText = typed;
+      storageSet(STORAGE.custom, customText);
+      setCoverText(customText || cover.text);
+      rebuildCoverForLength(real.length);
+    }
+    blurActive();   // before hiding: a hidden element cannot be blurred
+    introEl.hidden = true;
+    storageSet(STORAGE.intro, '1');
+  }
+  function closeDialogs() {
+    if (!pwEl.hidden) finishPassword(null);
+    if (!introEl.hidden) closeIntro();
+  }
+
+  // ------------------------------------------------------------------
+  // Small helpers
+  // ------------------------------------------------------------------
+  let toastTimer = null;
+  function toast(message) {
+    toastEl.textContent = message;
+    toastEl.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toastEl.classList.remove('show'), 2600);
+  }
+  function blurActive() {
+    const el = document.activeElement;
+    if (el && el !== body && typeof el.blur === 'function') el.blur();
+  }
+  function storageGet(key) {
+    try { return localStorage.getItem(key); } catch (err) { return null; }
+  }
+  function storageSet(key, value) {
+    try {
+      if (value) localStorage.setItem(key, value);
+      else localStorage.removeItem(key);
+    } catch (err) { /* storage blocked: the page still works, nothing is remembered */ }
+  }
+
+  // ------------------------------------------------------------------
+  // Wiring
+  // ------------------------------------------------------------------
+  function init() {
+    const platform = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || '';
+    const modName = /mac|iphone|ipad/i.test(platform) ? 'Cmd' : 'Ctrl';
+    for (const el of document.querySelectorAll('[data-mod]')) el.textContent = modName;
+
+    customText = (storageGet(STORAGE.custom) || '').trim();
+    applyCover(BOOK_COVER);
+
+    document.addEventListener('keydown', onKeyDown);
+    document.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', endPeek);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('beforeunload', (e) => {
+      if (real) { e.preventDefault(); e.returnValue = ''; }
+    });
+
+    $('#btn-save').addEventListener('click', onSave);
+    $('#btn-open').addEventListener('click', () => { blurActive(); fileInput.click(); });
+    fileInput.addEventListener('change', onFileChosen);
+    $('#btn-help').addEventListener('click', () => { blurActive(); openIntro(); });
+    $('#btn-start').addEventListener('click', closeIntro);
+    pwForm.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const value = pwInput.value;
+      if (!value) { pwInput.focus(); return; }
+      finishPassword(value);
+    });
+    $('#pw-cancel').addEventListener('click', () => finishPassword(null));
+
+    if (!storageGet(STORAGE.intro)) openIntro();
+  }
+
+  init();
+
+  // A small public surface for the console and the tests. Nothing on it
+  // returns the hidden text.
+  window.CoverStory = Object.freeze({
+    version: '0.1.0',
+    coverId: () => cover.id,
+    coverText: () => coverText,
+    exportEncrypted,
+    importEncrypted,
+    ready: Promise.resolve()
+  });
+})();
+</script>
+</body>
+</html>
