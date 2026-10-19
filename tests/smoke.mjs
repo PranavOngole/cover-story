@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { webcrypto } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const HTML = readFileSync(path.join(ROOT, 'index.html'), 'utf8');
@@ -22,7 +22,17 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // ---------------------------------------------------------------------------
 // Page harness
 // ---------------------------------------------------------------------------
-function loadPage({ random = () => 1, storage = {} } = {}) {
+// jsdom does not execute <script type="module">, so the harness plays the part
+// of the page's cover loader: it imports covers/<id>.js in node (which also
+// proves the file is a valid ES module) and hands the object to
+// CoverStory.setCover(), exactly as the bridge script does, and it answers the
+// same coverstory:select event when the page asks for another cover.
+async function importCover(id) {
+  const mod = await import(pathToFileURL(path.join(ROOT, 'covers', id + '.js')).href);
+  return mod.default;
+}
+
+async function loadPage({ random = () => 1, storage = {}, inject = true } = {}) {
   const errors = [];
   const downloads = [];
   const copied = [];
@@ -58,8 +68,19 @@ function loadPage({ random = () => 1, storage = {} } = {}) {
   const d = w.document;
   const $ = (sel) => d.querySelector(sel);
 
+  const loads = [];
+  async function loadCover(id) {
+    loads.push(id);
+    try { w.CoverStory.setCover(await importCover(id)); } catch (err) { w.CoverStory.coverFailed(id); }
+  }
+  d.addEventListener('coverstory:select', (e) => { loadCover(e.detail.id); });
+  if (inject) {
+    await loadCover(w.CoverStory.selectedCoverId());
+    await w.CoverStory.ready;
+  }
+
   const page = {
-    w, d, $, errors, downloads, copied,
+    w, d, $, errors, downloads, copied, loads, loadCover,
     press(key, init = {}, target = null) {
       const ev = new w.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...init });
       (target || d.activeElement || d.body).dispatchEvent(ev);
@@ -168,7 +189,7 @@ test('inline scripts parse with node --check', () => {
 });
 
 test('first visit: intro shows, Start hides it, book cover loaded, empty page', async () => {
-  const p = loadPage();
+  const p = await loadPage();
   try {
     assert.equal(p.$('#intro').hidden, false, 'intro visible on first visit');
     assert.equal(p.w.localStorage.getItem('coverStory.introSeen'), null);
@@ -181,7 +202,10 @@ test('first visit: intro shows, Start hides it, book cover loaded, empty page', 
     assert.equal(p.wordCount(), '0 words');
     assert.equal(p.coverText(), '');
     assert.deepEqual(p.blocks(), [{ type: 'h2', text: '' }], 'the story opens with a chapter heading block');
-    assert.equal(p.w.CoverStory.coverId(), 'book');
+    assert.equal(p.w.CoverStory.coverId(), 'book', 'the cover loaded is book');
+    assert.deepEqual(p.loads, ['book'], 'exactly one cover load was requested');
+    assert.equal(p.w.localStorage.getItem('coverStory.cover'), 'book', 'the selection persists');
+    assert.equal(p.$('#load-notice').hidden, true);
     assert.ok(p.w.CoverStory.coverText().length > 1500, 'cover text present');
     assert.equal(p.$('#cover').querySelector('.caret').textContent, '', 'caret adds no text');
     assert.deepEqual(p.errors, []);
@@ -189,7 +213,7 @@ test('first visit: intro shows, Start hides it, book cover loaded, empty page', 
 });
 
 test('typing N printable keys renders exactly N cover characters; real buffer equals what was typed; no peek class', async () => {
-  const p = loadPage();
+  const p = await loadPage();
   try {
     p.start();
     const typed = 'The quick brown fox jumps over the lazy dog, twice; 42!'.slice(0, 40);
@@ -207,7 +231,7 @@ test('typing N printable keys renders exactly N cover characters; real buffer eq
 });
 
 test('Backspace shortens both buffers by one', async () => {
-  const p = loadPage();
+  const p = await loadPage();
   try {
     p.start();
     p.type('abcdefghij');
@@ -224,7 +248,7 @@ test('Backspace shortens both buffers by one', async () => {
 });
 
 test('Esc empties both buffers', async () => {
-  const p = loadPage();
+  const p = await loadPage();
   try {
     p.start();
     p.type('some secret words here');
@@ -241,7 +265,7 @@ test('Esc empties both buffers', async () => {
 });
 
 test('Enter and Tab are recorded and advance one cover character; Shift+Tab is left to the browser', async () => {
-  const p = loadPage();
+  const p = await loadPage();
   try {
     p.start();
     p.type('ab');
@@ -257,7 +281,7 @@ test('Enter and Tab are recorded and advance one cover character; Shift+Tab is l
 });
 
 test('keys with Ctrl, Cmd or Alt held are not recorded and not prevented; isComposing events are ignored', async () => {
-  const p = loadPage();
+  const p = await loadPage();
   try {
     p.start();
     assert.equal(p.press('b', { ctrlKey: true }), false);
@@ -277,7 +301,7 @@ test('keys with Ctrl, Cmd or Alt held are not recorded and not prevented; isComp
 });
 
 test('Ctrl held past 900ms adds peek; keyup removes it; window blur removes it; a short tap does not peek', async () => {
-  const p = loadPage();
+  const p = await loadPage();
   try {
     p.start();
     p.type('hidden text');
@@ -313,7 +337,7 @@ test('Ctrl held past 900ms adds peek; keyup removes it; window blur removes it; 
 });
 
 test('Ctrl+C while peeking copies the real text; Ctrl+C otherwise is left to the browser', async () => {
-  const p = loadPage();
+  const p = await loadPage();
   try {
     p.start();
     p.type('copy me');
@@ -331,7 +355,7 @@ test('Ctrl+C while peeking copies the real text; Ctrl+C otherwise is left to the
 });
 
 test('simulated typo: a wrong neighbouring letter appears at a word start and the next keystroke removes it', async () => {
-  const p = loadPage({ random: () => 0 });   // 0 < 3.5 percent: typo on every word start
+  const p = await loadPage({ random: () => 0 });   // 0 < 3.5 percent: typo on every word start
   try {
     p.start();
     const text = p.w.CoverStory.coverText();
@@ -361,7 +385,7 @@ test('simulated typo: a wrong neighbouring letter appears at a word start and th
 });
 
 test('custom cover text from localStorage is used; when it runs out the cover breaks a paragraph and loops', async () => {
-  const p = loadPage({ storage: { 'coverStory.customText': 'ab cd', 'coverStory.introSeen': '1' } });
+  const p = await loadPage({ storage: { 'coverStory.customText': 'ab cd', 'coverStory.introSeen': '1' } });
   try {
     assert.equal(p.$('#intro').hidden, true, 'intro not shown on a return visit');
     assert.equal(p.w.CoverStory.coverText(), 'ab cd');
@@ -379,7 +403,7 @@ test('custom cover text from localStorage is used; when it runs out the cover br
 });
 
 test('a cover line starting with ## renders as a heading; the marker costs no keystrokes; Backspace walks back through it', async () => {
-  const p = loadPage({ storage: { 'coverStory.customText': '## Title\n\nBody text', 'coverStory.introSeen': '1' } });
+  const p = await loadPage({ storage: { 'coverStory.customText': '## Title\n\nBody text', 'coverStory.introSeen': '1' } });
   try {
     assert.equal(p.w.CoverStory.coverText(), '## Title\nBody text');
     p.type('12345');
@@ -397,7 +421,7 @@ test('a cover line starting with ## renders as a heading; the marker costs no ke
 });
 
 test('the word count counts the cover text on screen, not the real text', async () => {
-  const p = loadPage();
+  const p = await loadPage();
   try {
     p.start();
     p.type('aaaaaaaaaaaaaaaaaaaa');   // one real word, 20 keystrokes
@@ -409,7 +433,7 @@ test('the word count counts the cover text on screen, not the real text', async 
 });
 
 test('exportEncrypted produces JSON with salt (16 bytes), iv (12 bytes) and data; the right password round-trips; a wrong one throws', async () => {
-  const p = loadPage();
+  const p = await loadPage();
   try {
     p.start();
     p.type('hello world');
@@ -448,7 +472,7 @@ test('exportEncrypted produces JSON with salt (16 bytes), iv (12 bytes) and data
 });
 
 test('Save button: password dialog, then a .cover download holding valid JSON; nothing to save shows a toast', async () => {
-  const p = loadPage();
+  const p = await loadPage();
   try {
     p.start();
     p.$('#btn-save').click();
@@ -481,7 +505,7 @@ test('Save button: password dialog, then a .cover download holding valid JSON; n
 });
 
 test('Open: wrong password fails with a toast and no console error; right password restores the text', async () => {
-  const p = loadPage();
+  const p = await loadPage();
   try {
     p.start();
     p.type('first draft');
@@ -513,7 +537,7 @@ test('Open: wrong password fails with a toast and no console error; right passwo
 });
 
 test('a tab hidden for more than 10 minutes with text in the buffer is wiped on return; a short absence is not', async () => {
-  const p = loadPage();
+  const p = await loadPage();
   try {
     p.start();
     p.type('do not keep this');
@@ -540,7 +564,7 @@ test('a tab hidden for more than 10 minutes with text in the buffer is wiped on 
 });
 
 test('while a dialog is open nothing is recorded, Esc closes the dialog instead of wiping, and the ? button reopens the intro', async () => {
-  const p = loadPage();
+  const p = await loadPage();
   try {
     assert.equal(p.$('#intro').hidden, false);
     p.type('abc');
@@ -569,6 +593,83 @@ test('while a dialog is open nothing is recorded, Esc closes the dialog instead 
     assert.deepEqual(p.blocks(), expectedBlocks(p.w.CoverStory.coverText(), 3));
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
+});
+
+test('intro has the three mode radios; book is checked; the selection is written on Start', async () => {
+  const p = await loadPage();
+  try {
+    const radios = Array.from(p.d.querySelectorAll('input[name="mode"]'));
+    assert.deepEqual(radios.map((r) => r.value), ['book', 'work', 'paper']);
+    assert.deepEqual(radios.map((r) => r.checked), [true, false, false]);
+    assert.equal(p.w.localStorage.getItem('coverStory.cover'), null, 'nothing stored before Start');
+    p.start();
+    assert.equal(p.w.localStorage.getItem('coverStory.cover'), 'book');
+    assert.equal(p.w.CoverStory.selectedCoverId(), 'book');
+    assert.deepEqual(p.loads, ['book'], 'picking the cover already on screen requests nothing');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('a remembered cover id is used on the next visit; unknown ids fall back to book', async () => {
+  const p = await loadPage({ storage: { 'coverStory.cover': 'nonsense', 'coverStory.introSeen': '1' } });
+  try {
+    assert.equal(p.w.CoverStory.selectedCoverId(), 'book');
+    assert.equal(p.w.CoverStory.coverId(), 'book');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('before a cover is on screen typing is ignored and left to the browser; a failed load shows the notice; a bad cover object is refused', async () => {
+  const p = await loadPage({ inject: false, storage: { 'coverStory.introSeen': '1' } });
+  try {
+    assert.equal(p.w.CoverStory.coverId(), null);
+    assert.equal(p.press('a'), false, 'not prevented');
+    assert.equal(p.press('Escape'), false);
+    assert.equal(p.$('#cover').children.length, 0);
+    assert.equal(p.$('#load-notice').hidden, true);
+    p.w.CoverStory.coverFailed('book');
+    assert.equal(p.$('#load-notice').hidden, false, 'notice shown');
+    assert.equal(p.toast(), 'Could not load the cover text');
+    assert.throws(() => p.w.CoverStory.setCover({ id: 'book', text: 'x' }), /Not a cover object/);
+    assert.throws(() => p.w.CoverStory.setCover({ id: 'evil', label: 'x', tabTitle: 'x', font: 'serif', header: { left: 'x', right: [] }, text: 'x' }), /Not a cover object/);
+    await p.loadCover('book');
+    assert.equal(p.$('#load-notice').hidden, true, 'notice hidden once a cover arrives');
+    assert.equal(p.w.CoverStory.coverId(), 'book');
+    assert.equal(p.press('a'), true);
+    assert.equal(p.coverLength(), 1);
+    assert.equal(await p.readReal(), 'a');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('the module bridge imports ./covers/<id>.js for the selected id and listens for coverstory:select', () => {
+  const m = HTML.match(/<script type="module">([\s\S]*?)<\/script>/);
+  assert.ok(m, 'module script present');
+  const src = m[1];
+  assert.ok(src.includes("import('./covers/' + id + '.js')"), 'dynamic import of the cover file');
+  assert.ok(src.includes('api.setCover(mod.default)'));
+  assert.ok(src.includes("addEventListener('coverstory:select'"));
+  assert.ok(src.includes('load(api.selectedCoverId())'), 'initial load uses the remembered selection');
+  assert.ok(src.includes('api.coverFailed(id)'), 'failure path reports to the page');
+  assert.equal((HTML.match(/<script type="module">/g) || []).length, 1, 'one module script');
+  assert.ok(!HTML.includes('fetch(') && !HTML.includes('XMLHttpRequest') && !HTML.includes('sendBeacon') && !HTML.includes('WebSocket'), 'no network APIs in the page');
+  assert.ok(!/<script[^>]+src=/.test(HTML), 'no external scripts');
+  assert.ok(!/<link[^>]+rel="stylesheet"/.test(HTML), 'no external stylesheets');
+});
+
+test('covers/book.js is a valid ES module with the shared shape, at least 1,500 words and chapter headings', async () => {
+  const c = await importCover('book');
+  assert.equal(c.id, 'book');
+  assert.equal(typeof c.label, 'string');
+  assert.equal(c.tabTitle, 'Untitled draft');
+  assert.equal(c.font, 'serif');
+  assert.equal(c.header.left, 'Untitled draft');
+  assert.deepEqual(c.header.right, ['word count']);
+  const words = (c.text.replace(/^## .*$/gm, '').match(/\S+/g) || []).length;
+  assert.ok(words >= 1500, 'at least 1,500 words, got ' + words);
+  assert.ok((c.text.match(/^## /gm) || []).length >= 2, 'chapter headings present');
+  const src = readFileSync(path.join(ROOT, 'covers', 'book.js'), 'utf8');
+  assert.match(src, /fictional/i, 'the file says its names are fictional');
 });
 
 // ---------------------------------------------------------------------------

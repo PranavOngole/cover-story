@@ -1,0 +1,12 @@
+# The site is index.html plus covers/. Everything else stays out of the deployment.
+node_modules
+tests
+docs
+package.json
+package-lock.json
+README.md
+CHANGELOG.md
+LICENSE
+.git
+.gitignore
+.DS_Store

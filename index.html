@@ -142,6 +142,11 @@
   .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   .note { color: var(--muted); font-size: 13px; }
   .card .note { margin-top: 6px; }
+  .modes { border: 1px solid var(--rule); border-radius: 6px; padding: 10px 14px 12px; margin: 16px 0 0; }
+  .modes legend { padding: 0 6px; }
+  .modes label { display: inline-flex; align-items: center; gap: 6px; margin: 4px 18px 0 0; }
+  .modes input:disabled + span { color: var(--muted); }
+  #load-notice { max-width: 680px; margin: 0 auto 24px; }
 
   @media (max-width: 600px) {
     body { font-size: 17px; }
@@ -166,6 +171,9 @@
 </header>
 
 <main class="page">
+  <!-- Shown only if the cover module could not be imported (for example when the
+       file is opened directly instead of over http). -->
+  <p id="load-notice" class="note" hidden>The cover text could not be loaded. This page has to be served over http, for example with <code>npx serve</code>; opening the file directly does not work.</p>
   <!-- The cover: the document people see. Filled one character per keystroke. -->
   <div id="cover" class="doc"></div>
   <!-- The real text. Empty except while peeking. -->
@@ -187,10 +195,19 @@
       <li><strong>Clear.</strong> Press <kbd>Esc</kbd> to erase the hidden text and the screen. The page also clears itself after 10 minutes in a background tab.</li>
       <li><strong>Save and open.</strong> Save downloads your text as a <code>.cover</code> file encrypted with AES-256-GCM, the key derived from your password with PBKDF2 (SHA-256, 310,000 rounds). Open restores it and replaces what is on the page. There is no way to recover a forgotten password.</li>
     </ol>
-    <p class="note">Reloading or closing the tab erases the hidden text. Save first if you need it. The screen shows a story, not your words, so the word count in the header counts the story.</p>
+    <p class="note">Reloading or closing the tab erases the hidden text. Save first if you need it. The header belongs to the cover: its word count counts the text on screen, not your words.</p>
+    <!-- Mode selector. The work-document and research-paper covers arrive in the
+         next waves; until then their radios are disabled. The choice is kept in
+         localStorage under coverStory.cover. -->
+    <fieldset class="modes">
+      <legend><strong>What the screen should show</strong></legend>
+      <label><input type="radio" name="mode" value="book" checked> <span>A novel</span></label>
+      <label><input type="radio" name="mode" value="work" disabled> <span>A work document</span></label>
+      <label><input type="radio" name="mode" value="paper" disabled> <span>A research paper</span></label>
+    </fieldset>
     <label for="custom-text"><strong>Your own cover text</strong> (optional)</label>
-    <textarea id="custom-text" spellcheck="false" placeholder="Paste text here to replace the built-in story. Blank lines separate paragraphs. A line that starts with ## becomes a heading."></textarea>
-    <p class="note">Stored only in this browser (localStorage). Leave it blank to use the built-in story.</p>
+    <textarea id="custom-text" spellcheck="false" placeholder="Paste text here to replace the built-in text. Blank lines separate paragraphs. A line that starts with ## becomes a heading."></textarea>
+    <p class="note">Stored only in this browser (localStorage). Leave it blank to use the built-in text of the look you picked.</p>
     <div class="row">
       <button id="btn-start" class="btn primary" type="button">Start writing</button>
     </div>
@@ -214,99 +231,9 @@
 (() => {
   'use strict';
 
-  // ------------------------------------------------------------------
-  // Cover data. Version 1: a novel. Moves to covers/book.js in the next
-  // wave; the shape below is the shape every cover will have.
-  //
-  // The story is original prose written for this project. All names,
-  // places and events in it are fictional.
-  // ------------------------------------------------------------------
-  const BOOK_COVER = {
-    id: 'book',
-    label: 'A novel',
-    tabTitle: 'Untitled draft',
-    font: 'serif',
-    header: { left: 'Untitled draft', right: ['word count'] },
-    text: `## One
-
-The house smelled of cold coffee and lemon oil, which was how Mara knew her grandmother had been dead for exactly nine days. Signe had polished the dining table every Sunday for sixty years, and the oil took about a week and a half to fade. Mara stood in the hallway with her coat still on and counted backward to the Sunday, and then she stopped counting, because it was not a useful thing to know.
-
-The realtor had left a folder on the hall table. Dale Mercer, in a brown suit the color of a paper bag, had walked her through the rooms that morning as though she had never seen them, pointing out the radiators and the good light and the original floors. He used the word original four times. Mara had nodded and looked at the floors and thought about the summer she was eleven and had dropped a jar of pickled beets in the kitchen, and how the stain had never quite come out of the boards by the stove, and how Signe had put a rag rug over it and called the matter closed.
-
-"You'll want to clear the personal effects before the photographs," Dale had said. "Buyers like to imagine themselves in a place. Hard to do with someone else's spoons in the drawer."
-
-So she began with the spoons.
-
-There were more of them than any one woman could have needed. Soup spoons with a pattern of wheat along the handle, teaspoons that did not match, a single enormous serving spoon with a dent in the bowl. Mara laid them on the table in rows, the way she laid out everything at work, and found that the rows did not help. There was nothing to decide. They were spoons. She put them in a box.
-
-By evening she had done the kitchen and most of the front room, and the boxes stood along the wall like people waiting for a bus. She made tea with the last of the loose leaves and sat at the polished table and opened the drawer in the sideboard where Signe kept the things that did not belong anywhere else. Rubber bands. A lighter with no fluid. Receipts from a hardware store that had closed before Mara was born. And at the back, pressed flat under a tin of buttons, a green ledger with a cloth spine.
-
-She knew the ledger. Everyone in the family knew the ledger, in the way one knows about a neighbor's dog without ever having touched it. Signe wrote in it after supper, a few lines at a time, with the fountain pen she refused to replace. Mara had always assumed it was household accounts. Gas, water, the coal man in the years when there was still a coal man.
-
-It was not household accounts.
-
-The first page was dated the year Signe's husband died, which was also the year Mara's mother had moved to the coast and stopped calling on Sundays. The entries were short. A name, a date, a thing, and sometimes a number.
-
-Harold Pruitt. March. Fixed the radiator in the back bedroom. Would not take money.
-
-Noor Haddad. April. Two loaves and a cake when I was ill. Owe her.
-
-Mrs. Alvarsson. June. Drove me to the clinic and waited. Owe her a great deal.
-
-And so on, page after page, for thirty years. Some entries had a line drawn through them with a note in the margin: Paid. Brought him the jam. Sat with her after the funeral. But many did not. Mara turned the pages with the tea going cold at her elbow, and the house went dark around her, and she did not get up to turn on a lamp.
-
-## Two
-
-Harold Pruitt was still alive, which surprised her. He lived three doors down in a house with a porch that leaned very slightly toward the lake, as though it were listening for something. Mara stood on the step for a full minute before she knocked.
-
-He was smaller than she remembered, and he remembered her, which she had not expected. "The beet girl," he said, and let her in.
-
-The front room was warm and full of radio noise. He turned it down but not off. Mara sat on the edge of a chair with the ledger in her lap and explained, badly, why she had come. That her grandmother had kept a record. That he was in it. That she wanted to settle it, whatever that meant, before the house was sold.
-
-Harold listened with his hands folded. When she had finished he was quiet for long enough that she wondered whether he had heard.
-
-"Your grandmother," he said finally, "paid me for that radiator in 1994. She paid me with a pie every Thursday for a year. I gained eleven pounds." He said this with no expression at all, and then his face cracked into something that was nearly a smile. "She knew I wouldn't take cash. So she found a way around me. That's what she did with everyone."
-
-"The ledger says she still owes you."
-
-"The ledger," Harold said, "is wrong about that." He stood, with effort, and went to a shelf beside the radio, and came back with a small notebook of his own. It was blue, with a rubber band around it. He did not open it. "Everybody on this street kept one, you know. Not everyone wrote it down. But everyone kept one."
-
-Mara did not know what to say to that, so she said nothing, and after a moment he put the notebook away.
-
-She went next to the bakery, which was now a shop that sold phone cases, and asked the young man behind the counter whether he knew where Noor Haddad had gone. He did not. But the woman buying a charger beside her did, and wrote an address on the back of Mara's hand with a ballpoint pen, because neither of them had any paper.
-
-Noor lived above a laundromat on the far side of the falls. She was seventy-one and had bad knees and remembered Signe perfectly. "She came in every morning for a small rye and never once asked for a discount," Noor said. "Do you know how rare that is? People think a bakery is a charity. Your grandmother thought it was a bakery."
-
-Mara showed her the entry. Two loaves and a cake when I was ill. Owe her.
-
-Noor read it twice and then laughed, a short dry sound. "The cake was a disaster. It was the first time I tried the recipe. She ate the whole thing out of politeness and told me it was good, and I knew she was lying, and I loved her for it." She handed the ledger back. "There is nothing to settle. Tell her that, if you believe in telling people things."
-
-Mara did not know whether she believed in that. She walked back along the lake road with the ledger under her arm and the ink of the address fading on her hand, and she thought about what it would mean to carry a debt for thirty years that the other person had never once considered a debt.
-
-She visited four more people that week. Mrs. Alvarsson had died, but her son had the house, and he gave Mara a cup of coffee and told her about the clinic visit as though it had happened the previous month. The man who had replaced the porch step did not remember doing it. The woman who had taught Signe to use the library computer wept, briefly and without embarrassment, and then asked whether Mara wanted the recipe for the rye bread, which she had gotten from Noor, who had gotten it from someone else.
-
-None of them wanted anything. All of them talked for an hour.
-
-## Three
-
-The last entry in the ledger was dated the previous autumn. The handwriting had changed by then, grown larger and less certain, the letters leaning on each other for support. Mara had saved it for last without admitting to herself that she was doing so.
-
-Mara. October. Came for the weekend and fixed the kitchen tap and did not say anything about the state of the garden. Owe her.
-
-She read it at the polished table on her final night in the house, with the boxes sealed and labeled and the spoons long gone to the charity shop on the corner. She read it several times. Then she closed the ledger and sat with her hands flat on the cover.
-
-She had not fixed the tap, in fact. She had tightened something under the sink and it had stopped dripping for a day and then started again, and Signe had never mentioned it, and Mara had assumed she had not noticed. The garden had been a wilderness. Mara had looked at it through the window and said nothing because she had not known what to say, and because she had a train to catch, and because it had been easier.
-
-It occurred to her, sitting there, that the ledger was not a record of debts at all. It was a record of attention. Her grandmother had written down, for thirty years, every time someone had done a thing for her that she had not asked for, and she had kept the list not to balance it but to remember that it was there. The lines drawn through the entries were not payments. They were visits.
-
-Mara found the fountain pen in the drawer with the rubber bands. It still had ink, which seemed impossible. She opened the ledger to the page after the last entry and sat for a long moment with the pen above the paper.
-
-Then she wrote the date, and under it a single line.
-
-Harold Pruitt. Noor Haddad. The Alvarsson boy. The woman from the library whose name I never learned. Told me who my grandmother was. Owe them.
-
-In the morning Dale Mercer came for the keys. He looked at the empty rooms and the original floors and said the place would photograph well. Mara agreed that it would. She did not tell him about the beet stain under the rag rug, which she had left exactly where it was. She put the ledger in her bag, and the pen beside it, and she walked down to the lake road one more time before the train, past the house with the listening porch, where a radio was playing quietly behind the glass.`
-  };
+  // The engine. Covers (the text on screen plus a few chrome settings) live in
+  // covers/<id>.js as ES modules and are loaded by the small module script at
+  // the end of this file, which hands them to CoverStory.setCover().
 
   // ------------------------------------------------------------------
   // Constants
@@ -318,8 +245,11 @@ In the morning Dale Mercer came for the keys. He looked at the empty rooms and t
   const MAX_ITERATIONS_ACCEPTED = 2000000; // refuse files that ask for more; a huge count would hang the tab
   const STORAGE = {
     intro: 'coverStory.introSeen',
-    custom: 'coverStory.customText'
+    custom: 'coverStory.customText',
+    cover: 'coverStory.cover'
   };
+  const COVER_IDS = ['book', 'work', 'paper'];
+  const FONTS = ['serif', 'sans', 'academic'];
   // Block markers recognised at the start of a cover line. The work-document
   // cover adds '- ' bullets in a later wave.
   const MARKERS = [
@@ -350,6 +280,7 @@ In the morning Dale Mercer came for the keys. He looked at the empty rooms and t
   const pwHint = $('#pw-hint');
   const pwInput = $('#pw-input');
   const fileInput = $('#file-input');
+  const loadNotice = $('#load-notice');
   const caret = document.createElement('span');
   caret.className = 'caret';
   caret.setAttribute('aria-hidden', 'true');
@@ -368,6 +299,8 @@ In the morning Dale Mercer came for the keys. He looked at the empty rooms and t
   let typosAllowed = true;   // off while rebuilding the screen from a saved file
   let domEnabled = true;     // off while rebuilding, then renderAll() once
   let wordCountEl = null;
+  let readyResolve = null;
+  const ready = new Promise((resolve) => { readyResolve = resolve; });   // settles when the first cover is on screen
 
   // The hidden buffer. It lives only in this closure. It is written to the
   // page only while peeking, and nothing on window returns it.
@@ -583,6 +516,38 @@ In the morning Dale Mercer came for the keys. He looked at the empty rooms and t
     rebuildCoverForLength(real.length);
   }
 
+  // The cover the user picked, always one of COVER_IDS so the loader only ever
+  // imports a known file.
+  function selectedCoverId() {
+    const id = storageGet(STORAGE.cover);
+    return COVER_IDS.includes(id) ? id : 'book';
+  }
+
+  // Called by the module loader with a cover object.
+  function setCover(c) {
+    if (!c || typeof c !== 'object' || !COVER_IDS.includes(c.id) || typeof c.text !== 'string' ||
+        !FONTS.includes(c.font) || !c.header || typeof c.header.left !== 'string' || !Array.isArray(c.header.right) ||
+        typeof c.tabTitle !== 'string' || typeof c.label !== 'string') {
+      throw new Error('Not a cover object');
+    }
+    loadNotice.hidden = true;
+    applyCover(c);
+    if (readyResolve) { readyResolve(c.id); readyResolve = null; }
+  }
+
+  function coverFailed(id) {
+    loadNotice.hidden = false;
+    toast('Could not load the cover text');
+  }
+
+  // Ask the loader for another cover. The loader is the module script at the
+  // end of the file (or the test harness).
+  function requestCover(id) {
+    storageSet(STORAGE.cover, id);
+    if (cover && cover.id === id) return;
+    document.dispatchEvent(new CustomEvent('coverstory:select', { detail: { id } }));
+  }
+
   // ------------------------------------------------------------------
   // Typing
   // ------------------------------------------------------------------
@@ -641,6 +606,7 @@ In the morning Dale Mercer came for the keys. He looked at the empty rooms and t
     }
     if (isEditable(e.target)) return;
     if (e.target && e.target.tagName === 'BUTTON' && (key === 'Enter' || key === ' ')) return;
+    if (!cover) return;   // no cover on screen yet (still loading, or the import failed)
 
     if (key === 'Escape') { e.preventDefault(); wipe(); return; }
     if (key === 'Backspace') { e.preventDefault(); backspace(); return; }
@@ -887,6 +853,8 @@ In the morning Dale Mercer came for the keys. He looked at the empty rooms and t
 
   function openIntro() {
     customTextEl.value = customText;
+    const current = cover ? cover.id : selectedCoverId();
+    for (const radio of document.querySelectorAll('input[name="mode"]')) radio.checked = radio.value === current;
     introEl.hidden = false;
     $('#btn-start').focus();
   }
@@ -895,9 +863,13 @@ In the morning Dale Mercer came for the keys. He looked at the empty rooms and t
     if (typed !== customText) {
       customText = typed;
       storageSet(STORAGE.custom, customText);
-      setCoverText(customText || cover.text);
-      rebuildCoverForLength(real.length);
+      if (cover) {
+        setCoverText(customText || cover.text);
+        rebuildCoverForLength(real.length);
+      }
     }
+    const picked = document.querySelector('input[name="mode"]:checked');
+    if (picked && COVER_IDS.includes(picked.value)) requestCover(picked.value);
     blurActive();   // before hiding: a hidden element cannot be blurred
     introEl.hidden = true;
     storageSet(STORAGE.intro, '1');
@@ -940,7 +912,6 @@ In the morning Dale Mercer came for the keys. He looked at the empty rooms and t
     for (const el of document.querySelectorAll('[data-mod]')) el.textContent = modName;
 
     customText = (storageGet(STORAGE.custom) || '').trim();
-    applyCover(BOOK_COVER);
 
     document.addEventListener('keydown', onKeyDown);
     document.addEventListener('keyup', onKeyUp);
@@ -971,14 +942,34 @@ In the morning Dale Mercer came for the keys. He looked at the empty rooms and t
   // A small public surface for the console and the tests. Nothing on it
   // returns the hidden text.
   window.CoverStory = Object.freeze({
-    version: '0.1.0',
-    coverId: () => cover.id,
+    version: '0.2.0',
+    coverIds: COVER_IDS.slice(),
+    coverId: () => (cover ? cover.id : null),
     coverText: () => coverText,
+    selectedCoverId,
+    setCover,
+    coverFailed,
     exportEncrypted,
     importEncrypted,
-    ready: Promise.resolve()
+    ready
   });
 })();
+</script>
+<!-- Cover loader. Covers are ES modules in covers/<id>.js, imported from this
+     same origin only (the Content-Security-Policy above allows nothing else).
+     The engine asks for a different cover with a coverstory:select event. -->
+<script type="module">
+  const api = window.CoverStory;
+  async function load(id) {
+    try {
+      const mod = await import('./covers/' + id + '.js');
+      api.setCover(mod.default);
+    } catch (err) {
+      api.coverFailed(id);
+    }
+  }
+  document.addEventListener('coverstory:select', (e) => load(e.detail.id));
+  load(api.selectedCoverId());
 </script>
 </body>
 </html>
