@@ -10,7 +10,9 @@
 //   tabTitle  browser tab title
 //   font      'serif' | 'sans' | 'academic'
 //   header    { left: text, right: ['word count' | 'last edited' | 'page x of y'] }
-//   text      the cover prose; blank lines separate paragraphs, '## ' starts a heading
+//   titleBlock optional { title, authors, affiliation }, shown above the text (the paper uses it)
+//   text      the cover prose; blank lines separate paragraphs, '## ' starts a
+//             heading, '- ' starts a bullet, '[n] ' marks a reference entry
 export default {
   id: 'book',
   label: 'A novel',

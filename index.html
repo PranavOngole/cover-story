@@ -114,6 +114,18 @@
   .doc ul { margin: 0 0 1em; padding-left: 1.4em; }
   .doc li { margin: 0 0 .35em; }
 
+  /* The research paper: a manuscript sheet. Academic serif, single column. */
+  body.cover-paper { background: #ececea; color: #111; font-size: 17px; line-height: 1.75; }
+  body.cover-paper .chrome { background: #fff; }
+  body.cover-paper .page { max-width: 760px; background: #fff; margin: 28px auto 0; padding: 72px 76px 50vh; box-shadow: 0 1px 3px rgba(0, 0, 0, .14); }
+  body.cover-paper .doc h2 { text-align: left; text-transform: none; letter-spacing: 0; font-size: 1.05em; font-weight: 700; margin: 1.6em 0 .5em; }
+  .title-block { text-align: center; margin: 0 0 2.2em; }
+  .title-block[hidden] { display: none; }
+  .title-block h1 { font-size: 1.35em; font-weight: 700; line-height: 1.3; margin: 0 0 .7em; }
+  .title-block p { margin: 0; }
+  .title-block .affiliation { font-style: italic; font-size: .95em; color: #333; }
+  .doc p.ref { padding-left: 2.2em; text-indent: -2.2em; font-size: .92em; line-height: 1.5; margin-bottom: .5em; }
+
   /* The work document: a modern editor look. Sans, white, a narrower measure. */
   body.cover-work { background: #fff; color: #202124; font-size: 16px; line-height: 1.6; }
   body.cover-work .chrome { background: #fff; }
@@ -205,6 +217,7 @@
     body { font-size: 17px; }
     .bar { padding: 8px 12px; }
     .page { padding: 32px 16px 40vh; }
+    body.cover-paper .page { padding: 32px 20px 40vh; margin-top: 12px; }
     .card { padding: 20px 18px; }
     .overlay { padding: 16px 12px; }
   }
@@ -244,6 +257,14 @@
   <!-- Shown only if the cover module could not be imported (for example when the
        file is opened directly instead of over http). -->
   <p id="load-notice" class="note" hidden>The cover text could not be loaded. This page has to be served over http, for example with <code>npx serve</code>; opening the file directly does not work.</p>
+  <!-- Title block of the research-paper cover: part of the chrome, not typed.
+       The values come from the cover file, where they are marked as fictional
+       placeholders. -->
+  <div id="title-block" class="title-block" hidden>
+    <h1 id="paper-title"></h1>
+    <p id="paper-authors"></p>
+    <p id="paper-affiliation" class="affiliation"></p>
+  </div>
   <!-- The cover: the document people see. Filled one character per keystroke. -->
   <div id="cover" class="doc"></div>
   <!-- The real text. Empty except while peeking. -->
@@ -266,14 +287,13 @@
       <li><strong>Save and open.</strong> Save downloads your text as a <code>.cover</code> file encrypted with AES-256-GCM, the key derived from your password with PBKDF2 (SHA-256, 310,000 rounds). Open restores it and replaces what is on the page. There is no way to recover a forgotten password.</li>
     </ol>
     <p class="note">Reloading or closing the tab erases the hidden text. Save first if you need it. The header belongs to the cover: its word count counts the text on screen, not your words.</p>
-    <!-- Mode selector. The research-paper cover arrives in the next wave; until
-         then its radio is disabled. The choice is kept in localStorage under
-         coverStory.cover. -->
+    <!-- Mode selector. The choice is kept in localStorage under coverStory.cover
+         and the matching covers/<id>.js is imported. -->
     <fieldset class="modes">
       <legend><strong>What the screen should show</strong></legend>
       <label><input type="radio" name="mode" value="book" checked> <span>A novel</span></label>
       <label><input type="radio" name="mode" value="work"> <span>A work document</span></label>
-      <label><input type="radio" name="mode" value="paper" disabled> <span>A research paper</span></label>
+      <label><input type="radio" name="mode" value="paper"> <span>A research paper</span></label>
     </fieldset>
     <label for="custom-text"><strong>Your own cover text</strong> (optional)</label>
     <textarea id="custom-text" spellcheck="false" placeholder="Paste text here to replace the built-in text. Blank lines separate paragraphs. A line that starts with ## becomes a heading."></textarea>
@@ -320,11 +340,13 @@
   };
   const COVER_IDS = ['book', 'work', 'paper'];
   const FONTS = ['serif', 'sans', 'academic'];
-  // Block markers recognised at the start of a cover line: a heading and a
-  // bullet. The marker itself is never typed; it costs no keystrokes.
+  // Block markers recognised at the start of a cover line. A consumed marker
+  // is never typed and costs no keystrokes. A reference entry ("[3] ...") is
+  // recognised by its shape and typed as ordinary text; only its styling differs.
   const MARKERS = [
-    { prefix: '## ', type: 'h2' },
-    { prefix: '- ', type: 'li' }
+    { type: 'h2', prefix: '## ', consume: true },
+    { type: 'li', prefix: '- ', consume: true },
+    { type: 'ref', pattern: /^\[\d+\] /, consume: false }
   ];
   // Keys next to each letter on a QWERTY keyboard, for simulated typos.
   const NEIGHBORS = {
@@ -352,6 +374,7 @@
   const pwInput = $('#pw-input');
   const fileInput = $('#file-input');
   const loadNotice = $('#load-notice');
+  const titleBlockEl = $('#title-block');
   const caret = document.createElement('span');
   caret.className = 'caret';
   caret.setAttribute('aria-hidden', 'true');
@@ -363,7 +386,7 @@
   let coverText = '';        // normalised cover prose: blocks separated by \n, markers kept
   let customText = '';       // the user's own cover text, if any
   let pos = 0;               // index of the next cover character to show
-  let blocks = [];           // [{ type: 'p' | 'h2' | 'li', text }] in screen order
+  let blocks = [];           // [{ type: 'p' | 'h2' | 'li' | 'ref', text }] in screen order
   let blockEls = [];         // the element holding each block's text (bullets sit inside a shared ul)
   let steps = [];            // one entry per keystroke that changed the screen: { posBefore, kind }
   let pendingTypo = false;   // a wrong letter is on screen; the next keystroke removes it
@@ -402,8 +425,15 @@
     return out.map((b) => b.text).join('\n');
   }
 
+  // Returns { type, skip } for a marker at position `at`, or null.
   function markerFor(str, at = 0) {
-    for (const m of MARKERS) if (str.startsWith(m.prefix, at)) return m;
+    for (const m of MARKERS) {
+      if (m.prefix) {
+        if (str.startsWith(m.prefix, at)) return { type: m.type, skip: m.consume ? m.prefix.length : 0 };
+      } else if (m.pattern.test(str.slice(at, at + 16))) {
+        return { type: m.type, skip: 0 };
+      }
+    }
     return null;
   }
 
@@ -426,7 +456,7 @@
   // Start a new block at pos, consuming a marker if there is one.
   function startBlock() {
     const marker = markerFor(coverText, pos);
-    if (marker) pos += marker.prefix.length;
+    if (marker) pos += marker.skip;
     const type = marker ? marker.type : 'p';
     blocks.push({ type, text: '' });
     if (domEnabled) {
@@ -437,7 +467,8 @@
 
   // Creates the element for a new block. Consecutive bullets share one list.
   function attachBlockElement(type) {
-    const el = document.createElement(type);
+    const el = document.createElement(type === 'ref' ? 'p' : type);
+    if (type === 'ref') el.className = 'ref';
     el.appendChild(document.createTextNode(''));
     if (type === 'li') {
       let list = coverEl.lastElementChild;
@@ -606,7 +637,21 @@
         el.textContent = 'Last edited just now';
         headerMeta.appendChild(el);
       }
-      // 'page x of y' arrives with the research-paper cover in the next wave.
+      if (widget === 'page x of y') {
+        // Decorative. Always "Page 1 of 1"; it does not count anything.
+        const el = document.createElement('span');
+        el.id = 'page-count';
+        el.textContent = 'Page 1 of 1';
+        headerMeta.appendChild(el);
+      }
+    }
+    if (c.titleBlock) {
+      $('#paper-title').textContent = c.titleBlock.title;
+      $('#paper-authors').textContent = c.titleBlock.authors;
+      $('#paper-affiliation').textContent = c.titleBlock.affiliation;
+      titleBlockEl.hidden = false;
+    } else {
+      titleBlockEl.hidden = true;
     }
     setCoverText(customText || c.text);
     rebuildCoverForLength(real.length);
@@ -624,6 +669,9 @@
     if (!c || typeof c !== 'object' || !COVER_IDS.includes(c.id) || typeof c.text !== 'string' ||
         !FONTS.includes(c.font) || !c.header || typeof c.header.left !== 'string' || !Array.isArray(c.header.right) ||
         typeof c.tabTitle !== 'string' || typeof c.label !== 'string') {
+      throw new Error('Not a cover object');
+    }
+    if (c.titleBlock && (typeof c.titleBlock.title !== 'string' || typeof c.titleBlock.authors !== 'string' || typeof c.titleBlock.affiliation !== 'string')) {
       throw new Error('Not a cover object');
     }
     loadNotice.hidden = true;
@@ -1038,7 +1086,7 @@
   // A small public surface for the console and the tests. Nothing on it
   // returns the hidden text.
   window.CoverStory = Object.freeze({
-    version: '0.3.0',
+    version: '0.4.0',
     coverIds: COVER_IDS.slice(),
     coverId: () => (cover ? cover.id : null),
     coverText: () => coverText,

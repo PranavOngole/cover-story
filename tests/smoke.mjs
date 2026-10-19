@@ -101,7 +101,7 @@ async function loadPage({ random = () => 1, storage = {}, inject = true } = {}) 
     // listed as the li elements themselves.
     blocks() {
       return Array.from($('#cover').querySelectorAll(':scope > p, :scope > h2, :scope > ul > li'))
-        .map((el) => ({ type: el.tagName.toLowerCase(), text: el.textContent }));
+        .map((el) => ({ type: el.classList.contains('ref') ? 'ref' : el.tagName.toLowerCase(), text: el.textContent }));
     },
     peeking() { return d.body.classList.contains('peek'); },
     // Hold Ctrl past the threshold and read the real text off the screen.
@@ -135,13 +135,20 @@ async function loadPage({ random = () => 1, storage = {}, inject = true } = {}) 
 // Mirrors the engine's rules so the tests can state expectations without
 // hard-coding the story: markers are consumed at a block start, '\n' is a
 // paragraph break, the end of the text is a break followed by a loop.
-const MARKERS = [{ prefix: '## ', type: 'h2' }, { prefix: '- ', type: 'li' }];
+const MARKERS = [
+  { prefix: '## ', type: 'h2' },
+  { prefix: '- ', type: 'li' },
+  { pattern: /^\[\d+\] /, type: 'ref' }   // typed as text, styled as a reference entry
+];
 function expectedBlocks(coverText, n) {
   const blocks = [];
   let pos = 0;
   const start = () => {
     let type = 'p';
-    for (const m of MARKERS) if (coverText.startsWith(m.prefix, pos)) { pos += m.prefix.length; type = m.type; }
+    for (const m of MARKERS) {
+      if (m.prefix && coverText.startsWith(m.prefix, pos)) { pos += m.prefix.length; type = m.type; break; }
+      if (m.pattern && m.pattern.test(coverText.slice(pos, pos + 16))) { type = m.type; break; }
+    }
     blocks.push({ type, text: '' });
   };
   start();
@@ -782,6 +789,87 @@ test('covers/work.js: a sans work document of at least 1,200 words with headings
   assert.ok((c.text.match(/Owner: /g) || []).length >= 5, 'action items carry owners');
   const src = readFileSync(path.join(ROOT, 'covers', 'work.js'), 'utf8');
   assert.match(src, /fictional/i, 'the file says its company and people are fictional');
+});
+
+test('switching to paper loads that cover: the title block renders, "Page 1 of 1" is static, academic serif, no toolbar', async () => {
+  const p = await loadPage({ storage: { 'coverStory.cover': 'paper', 'coverStory.introSeen': '1' } });
+  try {
+    const c = await importCover('paper');
+    assert.equal(p.w.CoverStory.coverId(), 'paper');
+    assert.equal(p.d.title, 'Manuscript draft');
+    assert.equal(p.$('#header-left').textContent, 'Manuscript draft');
+    assert.ok(p.d.body.classList.contains('font-academic') && p.d.body.classList.contains('cover-paper'));
+    assert.ok(!p.d.body.classList.contains('cover-work'), 'the toolbar class is not on the body');
+    assert.equal(p.$('#title-block').hidden, false, 'title block shown');
+    assert.equal(p.$('#paper-title').textContent, c.titleBlock.title);
+    assert.equal(p.$('#paper-authors').textContent, c.titleBlock.authors);
+    assert.equal(p.$('#paper-affiliation').textContent, c.titleBlock.affiliation);
+    assert.equal(p.$('#page-count').textContent, 'Page 1 of 1');
+    assert.equal(p.$('#word-count'), null);
+    assert.equal(p.$('#last-edited'), null);
+    const typed = 'Typing on the manuscript, a sentence long enough to pass the abstract heading.';
+    p.type(typed);
+    assert.equal(p.$('#page-count').textContent, 'Page 1 of 1', 'static');
+    assert.deepEqual(p.blocks(), expectedBlocks(p.w.CoverStory.coverText(), typed.length));
+    assert.equal(p.blocks()[0].type, 'h2', 'the paper opens with the Abstract heading');
+    assert.equal(await p.readReal(), typed);
+    // Back to the novel: the title block goes away.
+    p.$('#btn-help').click();
+    p.$('input[name="mode"][value="book"]').checked = true;
+    p.start();
+    await p.settle();
+    assert.equal(p.w.CoverStory.coverId(), 'book');
+    assert.equal(p.$('#title-block').hidden, true, 'title block hidden for the novel');
+    assert.equal(p.$('#page-count'), null);
+    assert.equal(await p.readReal(), typed);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('[1] style citations pass through as plain text; reference entries are typed as text and styled as references', async () => {
+  const custom = 'See [1] and [2] for details.\n\n## References\n[1] First reference.\n[2] Second reference.';
+  const p = await loadPage({ storage: { 'coverStory.cover': 'paper', 'coverStory.introSeen': '1', 'coverStory.customText': custom } });
+  try {
+    assert.equal(p.w.CoverStory.coverText(), 'See [1] and [2] for details.\n## References\n[1] First reference.\n[2] Second reference.');
+    p.type('a'.repeat(28));
+    assert.deepEqual(p.blocks(), [{ type: 'p', text: 'See [1] and [2] for details.' }]);
+    assert.equal(p.$('#cover').querySelectorAll('a, sup').length, 0, 'citations are plain text, not links or superscripts');
+    p.type('a'.repeat(1 + 10));                 // break, "References"
+    assert.deepEqual(p.blocks()[1], { type: 'h2', text: 'References' });
+    p.type('a'.repeat(1 + 20));                 // break, "[1] First reference."
+    assert.deepEqual(p.blocks()[2], { type: 'ref', text: '[1] First reference.' }, 'the [1] prefix is typed like any text');
+    assert.equal(p.$('#cover > p.ref').textContent, '[1] First reference.');
+    p.type('a'.repeat(1 + 4));                  // break, "[2] "
+    assert.deepEqual(p.blocks()[3], { type: 'ref', text: '[2] ' });
+    assert.deepEqual(p.blocks(), expectedBlocks(p.w.CoverStory.coverText(), 28 + 11 + 21 + 5), 'reference model agrees');
+    for (let i = 0; i < 5; i++) p.press('Backspace');
+    assert.equal(p.blocks().length, 3);
+    assert.equal(await p.readReal(), 'a'.repeat(28 + 11 + 21));
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('covers/paper.js: academic paper of at least 1,500 words with the required sections, [n] citations and fictional references', async () => {
+  const c = await importCover('paper');
+  assert.equal(c.id, 'paper');
+  assert.equal(c.font, 'academic');
+  assert.equal(c.tabTitle, 'Manuscript draft');
+  assert.deepEqual(c.header.right, ['page x of y']);
+  assert.ok(c.titleBlock && c.titleBlock.title.length > 20 && c.titleBlock.authors && c.titleBlock.affiliation, 'title block present');
+  const body = c.text.replace(/^## .*$/gm, '').replace(/^\[\d+\] /gm, '');
+  const words = (body.match(/\S+/g) || []).length;
+  assert.ok(words >= 1500, 'at least 1,500 words, got ' + words);
+  for (const h of ['## Abstract', '## 1. Introduction', '## 2. Method', '## 3. Results', '## 4. Discussion', '## References']) {
+    assert.ok(new RegExp('^' + h.replace('.', '\\.') + '$', 'm').test(c.text), 'section present: ' + h);
+  }
+  assert.ok((c.text.match(/ \[\d\]/g) || []).length >= 6, 'in-text [n] citations');
+  const refs = c.text.match(/^\[\d+\] .+$/gm) || [];
+  assert.ok(refs.length >= 5, 'reference entries');
+  const cited = new Set((c.text.match(/\[(\d+)\]/g) || []).map((m) => m.slice(1, -1)));
+  for (const r of refs) assert.ok(cited.has(r.match(/^\[(\d+)\]/)[1]), 'every reference is cited: ' + r.slice(0, 12));
+  const src = readFileSync(path.join(ROOT, 'covers', 'paper.js'), 'utf8');
+  assert.match(src, /citations are fictional/i, 'the file states that all citations are fictional');
+  assert.match(src, /PLACEHOLDER/, 'author and affiliation are marked as placeholders in the code');
 });
 
 // ---------------------------------------------------------------------------
