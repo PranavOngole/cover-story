@@ -25,3 +25,7 @@ Deploy and README. The site is deployed with the Vercel CLI as static files (fra
 ## Wave 5, 2026-10-19 (this commit)
 
 Final handoff. This changelog added. No other changes.
+
+## Post-gate fixes, 2026-10-20 (c587c3e)
+
+An independent Delivery Manager gate on 16da45d found no P0 or P1 issues, one P2 and ten P3. Fixed here: the README's broken demo image replaced by a plain placeholder (DM-001); the encryption functions removed from the console object so nothing on it touches the hidden buffer in any form (DM-002); pasted or composed text and Alt, Option and AltGr characters listed as known limitations (DM-003, DM-004); the Shift+Tab sentence corrected for Safari (DM-005); a guard test that localStorage never holds the hidden text (DM-006); a dialog now cancels a pending or active peek (DM-007); a failed cover switch no longer leaves its id in storage (DM-008); Open refuses files whose descriptive fields do not match (DM-009); two story characters renamed (DM-011). Left as is: DM-010, a harmless rendering quirk of custom cover text whose lines are only "- ". Suite now 33 tests.
