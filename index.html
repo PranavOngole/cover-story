@@ -739,9 +739,18 @@
   }
 
   // Erases the hidden text and the screen. An open vault is saved first and
-  // then locked; its encrypted copy stays on the device.
+  // then locked; its encrypted copy stays on the device. The save runs with
+  // the key captured here, so locking does not skip it, and an unlock still
+  // in flight is cancelled.
   function wipe() {
-    if (vaultOpen()) { vaultSaveNow(); vaultLock(); }
+    unlockAttempt += 1;
+    if (vaultOpen()) {
+      const key = vaultKey;
+      const salt = vaultSalt;
+      const text = real;
+      vaultLock();
+      vaultWrite(key, salt, text);
+    }
     real = '';
     resetCover();
     if (peeking) realEl.textContent = '';
@@ -904,9 +913,9 @@
   }
 
   // Encrypts the hidden text under a key and returns the file or vault record.
-  async function encryptRecord(key, salt) {
+  async function encryptRecord(key, salt, text) {
     const iv = crypto.getRandomValues(new Uint8Array(12));
-    const data = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(real));
+    const data = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(text));
     return {
       format: 'plain-sight',
       version: 1,
@@ -924,7 +933,7 @@
     if (typeof password !== 'string' || !password) throw new Error('A password is required');
     const salt = crypto.getRandomValues(new Uint8Array(16));
     const key = await deriveKey(password, salt, PBKDF2_ITERATIONS);
-    return JSON.stringify(await encryptRecord(key, salt), null, 2);
+    return JSON.stringify(await encryptRecord(key, salt, real), null, 2);
   }
 
   // The three byte fields are required. The descriptive fields are optional
@@ -982,6 +991,8 @@
   let vaultSalt = null;
   let vaultSaveTimer = null;
   let unlockArmedAt = 0;
+  let vaultGeneration = 0;   // bumps when the vault is turned off or re-keyed; a write started before that is dropped
+  let unlockAttempt = 0;     // bumps on every chord and on Esc; an unlock started before that is dropped
 
   function vaultStored() {
     const raw = storageGet(STORAGE.vault);
@@ -996,13 +1007,32 @@
   function vaultOpen() { return vaultKey !== null; }
 
   // Turns the vault on with a phrase: a fresh salt, the key in memory, the
-  // current text saved at once.
+  // current text saved at once. With the vault already open this re-keys it.
   async function vaultEnable(phrase) {
+    vaultGeneration += 1;
+    const gen = vaultGeneration;
     const salt = crypto.getRandomValues(new Uint8Array(16));
-    vaultKey = await deriveKey(phrase, salt, PBKDF2_ITERATIONS);
+    const key = await deriveKey(phrase, salt, PBKDF2_ITERATIONS);
+    if (gen !== vaultGeneration) return;   // turned off or re-keyed again meanwhile
+    vaultKey = key;
     vaultSalt = salt;
     body.classList.add('vault-open');
-    await vaultSaveNow();
+    await vaultWrite(key, salt, real);
+  }
+  // Opens a stored copy with a phrase from the intro. Returns true on success.
+  async function vaultOpenWith(stored, phrase) {
+    const attempt = ++unlockAttempt;
+    try {
+      const r = await decryptRecord(stored, phrase);
+      if (attempt !== unlockAttempt || vaultOpen()) return false;
+      vaultKey = r.key;
+      vaultSalt = r.salt;
+      body.classList.add('vault-open');
+      replaceReal(r.text + real);   // anything typed before the intro opened follows the saved text
+      return true;
+    } catch (err) {
+      return false;
+    }
   }
   // Locks the vault: forgets the key, keeps the encrypted copy.
   function vaultLock() {
@@ -1013,15 +1043,22 @@
     unlockArmedAt = 0;
     body.classList.remove('vault-open');
   }
-  // Turns the vault off: locks it and deletes the encrypted copy.
+  // Turns the vault off: locks it and deletes the encrypted copy, readable or not.
   function vaultDisable() {
+    vaultGeneration += 1;
     vaultLock();
     storageSet(STORAGE.vault, '');
   }
-  async function vaultSaveNow() {
-    if (!vaultKey) return;
-    const record = await encryptRecord(vaultKey, vaultSalt);
-    if (vaultKey) storageSet(STORAGE.vault, JSON.stringify(record));
+  // Encrypts text under a key and stores it, unless the vault was turned off
+  // or re-keyed while the encryption ran.
+  async function vaultWrite(key, salt, text) {
+    const gen = vaultGeneration;
+    const record = await encryptRecord(key, salt, text);
+    if (gen === vaultGeneration) storageSet(STORAGE.vault, JSON.stringify(record));
+  }
+  function vaultSaveNow() {
+    if (!vaultKey) return Promise.resolve();
+    return vaultWrite(vaultKey, vaultSalt, real);
   }
   function vaultScheduleSave() {
     if (!vaultKey) return;
@@ -1034,13 +1071,16 @@
   async function vaultTryUnlock() {
     const stored = vaultStored();
     if (!stored || vaultOpen() || !real) return;
+    const attempt = ++unlockAttempt;
+    const phrase = real;
     try {
-      const r = await decryptRecord(stored, real);
-      if (vaultOpen()) return;
+      const r = await decryptRecord(stored, phrase);
+      if (attempt !== unlockAttempt || vaultOpen()) return;   // Esc, a newer chord, or opened meanwhile
       vaultKey = r.key;
       vaultSalt = r.salt;
       body.classList.add('vault-open');
-      replaceReal(r.text);
+      const extra = real.startsWith(phrase) ? real.slice(phrase.length) : '';   // keys typed while the key derived
+      replaceReal(r.text + extra);
     } catch (err) {
       /* nothing happens, on purpose */
     }
@@ -1142,18 +1182,21 @@
     introEl.hidden = false;
     $('#btn-start').focus();
   }
-  // Applies the vault choices on Start. Returns false when the intro must stay
-  // open (a phrase that is too short, or none at all).
+  // Applies the vault controls when the intro closes. Returns true (close),
+  // false (stay open: a phrase that is too short or none at all), or a promise
+  // of either when a phrase has to be checked against a locked copy. A locked
+  // copy is never overwritten.
   function applyVaultChoice() {
     const want = vaultOnEl.checked;
     const phrase = vaultPhraseEl.value;
-    const stored = vaultStored() !== null;
+    const anyRecord = Boolean(storageGet(STORAGE.vault));   // readable or not
+    const stored = vaultStored();
     if (!want) {
-      if (stored || vaultOpen()) { vaultDisable(); toast('Saved copy deleted from this device'); }
+      if (anyRecord || vaultOpen()) { vaultDisable(); toast('Saved copy deleted from this device'); }
       return true;
     }
     if (phrase.length === 0) {
-      if (stored || vaultOpen()) return true;   // nothing to change
+      if (anyRecord || vaultOpen()) return true;   // nothing to change
       toast('Enter a phrase to keep your text on this device');
       vaultPhraseEl.focus();
       return false;
@@ -1163,12 +1206,26 @@
       vaultPhraseEl.focus();
       return false;
     }
-    vaultEnable(phrase);
+    if (stored && !vaultOpen()) {
+      // A locked copy exists: the phrase has to open it. Nothing is overwritten.
+      return vaultOpenWith(stored, phrase).then((opened) => {
+        if (opened) { toast('Saved copy opened'); return true; }
+        toast('That phrase does not open the saved copy. Untick the box to delete it and start over.');
+        vaultPhraseEl.focus();
+        return false;
+      });
+    }
+    vaultEnable(phrase);   // a new vault, or a new phrase for an open one; the key derives in the background
     return true;
   }
+  let closingIntro = false;
   function startWriting() {
-    if (!applyVaultChoice()) return;
-    closeIntro();
+    if (closingIntro) return;
+    const result = applyVaultChoice();
+    if (result === true) { closeIntro(); return; }
+    if (result === false) return;
+    closingIntro = true;
+    result.then((ok) => { if (ok) closeIntro(); }).finally(() => { closingIntro = false; });
   }
   function closeIntro() {
     vaultPhraseEl.value = '';
@@ -1187,9 +1244,10 @@
     introEl.hidden = true;
     storageSet(STORAGE.intro, '1');
   }
+  // Esc on the intro applies every choice on it, exactly like Start.
   function closeDialogs() {
     if (!pwEl.hidden) finishPassword(null);
-    if (!introEl.hidden) closeIntro();
+    if (!introEl.hidden) startWriting();
   }
 
   // ------------------------------------------------------------------
@@ -1232,8 +1290,10 @@
     window.addEventListener('blur', endPeek);
     document.addEventListener('visibilitychange', onVisibilityChange);
     window.addEventListener('beforeunload', (e) => {
+      if (vaultOpen()) vaultSaveNow();
       if (real) { e.preventDefault(); e.returnValue = ''; }
     });
+    window.addEventListener('pagehide', () => { if (vaultOpen()) vaultSaveNow(); });
 
     $('#btn-save').addEventListener('click', onSave);
     $('#btn-open').addEventListener('click', () => { blurActive(); fileInput.click(); });
@@ -1258,7 +1318,7 @@
   // reads or returns the hidden buffer in any form, encrypted or not. Save and
   // Open are reachable only through their buttons.
   window.PlainSight = Object.freeze({
-    version: '1.1.0',
+    version: '1.1.1',
     coverIds: COVER_IDS.slice(),
     coverId: () => (cover ? cover.id : null),
     coverText: () => coverText,

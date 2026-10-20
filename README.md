@@ -56,7 +56,7 @@ Everything is in `index.html` (the engine, the styles and the intro) plus one ES
 
 - A `keydown` listener on `document` handles every key. Printable keys are `preventDefault`ed, appended to a string that lives in a closure, and advance a cursor one character through the cover text.
 - The cover is rendered one character per keystroke into paragraphs. A cover line that starts with `## ` becomes a heading, a line that starts with `- ` becomes a bullet in a list, and a line that starts with `[n] ` is typed as text but styled as a reference entry. The markers themselves cost no keystrokes.
-- About 3.5 percent of the time, at the start of a word, the cover shows a wrong neighbouring key instead of the right letter; the next keystroke removes it. It costs one keystroke and looks like a person correcting a typo. The keystroke right after a correction never produces another one.
+- About 3.5 percent of the time, at the start of a word, the cover shows a wrong neighbouring key instead of the right letter; the next keystroke removes it. It costs two keystrokes, one for the wrong letter and one to remove it, and looks like a person correcting a typo. The keystroke right after a correction never produces another one.
 - When the cover text runs out, the page inserts a paragraph break and starts the text again from the top.
 - The hidden buffer is written into the page only while peeking and is removed again when peeking ends. The page's small console object (`window.PlainSight`) exists for the cover loader and the tests; it returns the cover id and text and nothing that touches the hidden buffer, encrypted or not. Any script that runs inside the page could still capture keystrokes directly, which is the extension and malware caveat below.
 - Covers are loaded with a dynamic `import('./covers/<id>.js')` from a small module script, so the page must be served over http. Opened directly from a file, the browser blocks the import and the page shows a notice saying so.
@@ -68,7 +68,7 @@ Off by default. On the intro screen, tick "Keep my text on this device" and ente
 
 Esc, the 10-minute hidden-tab wipe and closing the tab lock the vault: the key is forgotten and the encrypted copy stays. To come back to your text, type the phrase on the blank page (it shows as cover text like any typing), then hold Ctrl, press E, then Enter. The page derives the key from what you typed and tries to decrypt the copy. If it works, the saved text replaces the phrase in the buffer and the cover is rebuilt to its length. If it does not, nothing happens: no message, no change. There is no recovery for a forgotten phrase. The only sign that the vault is open is the header text (the word count, "Last edited just now" or "Page 1 of 1") drawn in ink instead of grey.
 
-To stop keeping a copy, open the intro with `?`, untick the box and press Start: the encrypted copy is deleted from the device. Entering a new phrase while the box is ticked replaces the copy under the new phrase.
+To stop keeping a copy, open the intro with `?`, untick the box and press Start: the encrypted copy is deleted from the device, whether or not it can still be read. Entering a phrase while the copy is locked opens it instead of replacing it, with anything typed before the intro opened added after the saved text; a phrase that does not open the copy is refused and nothing is overwritten. Entering a new phrase while the vault is open re-encrypts the copy under the new phrase. Esc on the intro applies your choices exactly like Start.
 
 ### Save file format
 
@@ -120,6 +120,7 @@ Corporate IT may treat a page like this as an exfiltration or monitoring-evasion
 - The hidden text is append-only. You can peek, copy and backspace, but not move the cursor back and edit.
 - The page has to be served over http (see "Run locally"). Opening `index.html` directly shows a notice instead of a cover.
 - Peek, copy and unlock are keyboard chords, so they do not work from a touch screen.
+- With the vault on, the page saves 1.5 seconds after the last keystroke and again when the tab is hidden, on Esc and on the way out of the page. Closing or reloading the tab within about a second of typing can still lose those last keystrokes from the copy, because the browser may not wait for the encryption to finish.
 - Tested headless in WebKit (Safari's engine): no console errors, all three covers, the chords, the vault, save and open, and no horizontal overflow at 390px. Current Chrome, Edge and Firefox use the same standard APIs (WebCrypto, ES modules, the Clipboard API with a fallback) and are expected to work, but they have not been checked on this version.
 
 ## Run locally

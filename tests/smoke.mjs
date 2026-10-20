@@ -187,8 +187,17 @@ function expectedBlocks(coverText, n) {
 function countWords(blocks) {
   return blocks.reduce((n, b) => n + (b.text.match(/\S+/g) || []).length, 0);
 }
+// Decrypts a stored vault record outside the page, to prove what the page saved.
+async function decryptVault(record, phrase) {
+  const salt = Buffer.from(record.salt, 'base64');
+  const iv = Buffer.from(record.iv, 'base64');
+  const data = Buffer.from(record.data, 'base64');
+  const base = await webcrypto.subtle.importKey('raw', new TextEncoder().encode(phrase), 'PBKDF2', false, ['deriveKey']);
+  const key = await webcrypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations: record.iterations, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
+  return new TextDecoder().decode(await webcrypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, data));
+}
 function makeCoverFile(w, json) {
-  return new w.File([json], 'test.cover', { type: 'application/json' });
+  return new w.File([json], 'test.sight', { type: 'application/json' });
 }
 function chooseFile(page, file) {
   const input = page.$('#file-input');
@@ -472,7 +481,7 @@ test('the word count counts the cover text on screen, not the real text', async 
   } finally { p.close(); }
 });
 
-test('Save writes a .cover with a 16-byte salt, 12-byte IV and data; Open restores it with the right password and refuses wrong passwords, damaged files, foreign formats and bad iteration counts with a toast', async () => {
+test('Save writes a .sight with a 16-byte salt, 12-byte IV and data; Open restores it with the right password and refuses wrong passwords, damaged files, foreign formats and bad iteration counts with a toast', async () => {
   const p = await loadPage();
   try {
     p.start();
@@ -542,7 +551,7 @@ test('Save writes a .cover with a 16-byte salt, 12-byte IV and data; Open restor
     assert.equal(await p.readReal(), 'hello world', 'every refusal left the buffer alone');
     // Nothing on the console object touches the buffer.
     assert.deepEqual(Object.keys(p.w.PlainSight).sort(), ['coverFailed', 'coverId', 'coverIds', 'coverText', 'ready', 'selectedCoverId', 'setCover', 'version']);
-    assert.equal(p.w.PlainSight.version, '1.1.0');
+    assert.equal(p.w.PlainSight.version, '1.1.1');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
@@ -721,7 +730,7 @@ test('before a cover is on screen typing is ignored and left to the browser; a f
   } finally { p.close(); }
 });
 
-test('the module bridge imports ./covers/<id>.js for the selected id and listens for coverstory:select', () => {
+test('the module bridge imports ./covers/<id>.js for the selected id and listens for plainsight:select', () => {
   const m = HTML.match(/<script type="module">([\s\S]*?)<\/script>/);
   assert.ok(m, 'module script present');
   const src = m[1];
@@ -1059,17 +1068,21 @@ test('device vault: on with a phrase, ciphertext only in localStorage, autosave,
     assert.equal(Buffer.from(rec2.data, 'base64').length, 'first words and more'.length + 16, 'autosave caught the new text');
     assert.notEqual(rec2.iv, rec.iv, 'a fresh IV every save');
     assert.equal(rec2.salt, rec.salt, 'the salt stays with the phrase');
-    // Esc wipes the screen, locks the vault, keeps the copy.
+    // Esc saves the words typed since the last autosave, wipes the screen,
+    // locks the vault and keeps the copy.
+    p.type(' typed just before Esc');
     p.press('Escape');
     assert.equal(p.coverText(), '');
     assert.equal(await p.readReal(), '');
     assert.ok(!p.d.body.classList.contains('vault-open'), 'locked');
-    assert.ok(p.storageDump()['plainSight.vault'], 'the encrypted copy stays');
-    // While locked, typing is not saved anywhere.
+    await sleep(500);
+    const rec3 = JSON.parse(p.storageDump()['plainSight.vault']);
+    assert.notEqual(rec3.iv, rec2.iv, 'Esc wrote a fresh save');
+    assert.equal(await decryptVault(rec3, 'correct horse battery staple'), 'first words and more typed just before Esc', 'the copy holds everything typed up to Esc');
+    // While locked, typing is not saved anywhere and no timer fires later.
     p.type('typed while locked');
     await sleep(VAULT_SAVE_DELAY_MS + 400);
-    assert.equal(p.storageDump()['plainSight.vault'], p.storageDump()['plainSight.vault']);
-    assert.equal(JSON.parse(p.storageDump()['plainSight.vault']).iv, rec2.iv, 'nothing written while locked');
+    assert.equal(JSON.parse(p.storageDump()['plainSight.vault']).iv, rec3.iv, 'nothing written while locked');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
@@ -1156,6 +1169,128 @@ test('device vault: a short or missing phrase is refused and the intro stays ope
     assert.equal(p.$('#intro').hidden, true, 'unticked: closes without a vault');
     assert.equal(p.storageDump()['plainSight.vault'], undefined);
     assert.ok(!p.d.body.classList.contains('vault-open'));
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('device vault: a phrase entered while the copy is locked opens it (text typed before follows), a wrong one is refused, and Esc on the intro applies the choices like Start', async () => {
+  const p = await loadPage();
+  let storage;
+  try {
+    p.start();
+    p.type('saved earlier');
+    await p.vaultOn('correct horse battery staple');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    storage = p.storageDump();
+  } finally { p.close(); }
+  const q = await loadPage({ storage });
+  try {
+    q.type('new words');
+    q.$('#btn-help').click();
+    assert.equal(q.$('#vault-on').checked, true);
+    // Wrong phrase: refused, nothing overwritten, intro stays open.
+    q.$('#vault-phrase').value = 'definitely not the phrase';
+    q.start();
+    await sleep(500);
+    assert.equal(q.$('#intro').hidden, false, 'intro stays open');
+    assert.equal(q.toast(), 'That phrase does not open the saved copy. Untick the box to delete it and start over.');
+    assert.equal(await decryptVault(JSON.parse(q.storageDump()['plainSight.vault']), 'correct horse battery staple'), 'saved earlier', 'the copy is untouched');
+    assert.ok(!q.d.body.classList.contains('vault-open'));
+    // Right phrase, applied with Esc instead of Start: the copy opens and the new words follow it.
+    q.$('#vault-phrase').value = 'correct horse battery staple';
+    q.press('Escape');
+    await sleep(600);
+    assert.equal(q.$('#intro').hidden, true, 'Esc applied the choice and closed the intro');
+    assert.ok(q.d.body.classList.contains('vault-open'), 'open');
+    assert.equal(q.toast(), 'Saved copy opened');
+    assert.equal(await q.readReal(), 'saved earliernew words');
+    // A new phrase while open re-keys the copy; the old phrase stops working.
+    q.$('#btn-help').click();
+    q.$('#vault-phrase').value = 'a brand new phrase here';
+    q.start();
+    await sleep(600);
+    const rec = JSON.parse(q.storageDump()['plainSight.vault']);
+    assert.equal(await decryptVault(rec, 'a brand new phrase here'), 'saved earliernew words');
+    await assert.rejects(decryptVault(rec, 'correct horse battery staple'), 'the old phrase no longer opens it');
+    // Esc on the intro with the box unticked deletes the copy, like Start would.
+    q.$('#btn-help').click();
+    q.$('#vault-on').checked = false;
+    q.press('Escape');
+    await sleep(100);
+    assert.equal(q.storageDump()['plainSight.vault'], undefined, 'deleted');
+    assert.ok(!q.d.body.classList.contains('vault-open'));
+    assert.deepEqual(q.errors, []);
+  } finally { q.close(); }
+});
+
+test('device vault: an unreadable record can be deleted from the intro; Ctrl+E is still handled while it exists', async () => {
+  const p = await loadPage({ storage: { 'plainSight.vault': '{not json', 'plainSight.introSeen': '1' } });
+  try {
+    assert.equal(p.press('e', { ctrlKey: true }), false, 'an unreadable record does not arm the chord');
+    p.$('#btn-help').click();
+    assert.equal(p.$('#vault-on').checked, false, 'unreadable: shown as off');
+    p.$('#vault-on').checked = false;
+    p.start();
+    assert.equal(p.storageDump()['plainSight.vault'], undefined, 'the orphan record is removed');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('device vault: Esc cancels an unlock in flight; keys typed during the derivation are kept after the saved text; another chord resets the armed state', async () => {
+  const p = await loadPage();
+  let storage;
+  try {
+    p.start();
+    p.type('saved text');
+    await p.vaultOn('correct horse battery staple');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    storage = p.storageDump();
+  } finally { p.close(); }
+  const q = await loadPage({ storage });
+  try {
+    // Esc right after the chord: the unlock never lands.
+    q.type('correct horse battery staple');
+    q.unlockChord();
+    q.press('Escape');
+    await sleep(700);
+    assert.ok(!q.d.body.classList.contains('vault-open'), 'cancelled');
+    assert.equal(await q.readReal(), '', 'buffer stays empty');
+    // Keys typed while the key derives are kept after the saved text.
+    q.type('correct horse battery staple');
+    q.unlockChord();
+    q.type('ab');
+    await sleep(700);
+    assert.ok(q.d.body.classList.contains('vault-open'));
+    assert.equal(await q.readReal(), 'saved textab');
+    q.press('Escape');
+    await sleep(300);
+    // Ctrl+E, then another chord, then Ctrl+Enter: not an unlock.
+    q.type('correct horse battery staple');
+    assert.equal(q.press('e', { ctrlKey: true }), true);
+    assert.equal(q.press('b', { ctrlKey: true }), false, 'another chord goes to the browser');
+    assert.equal(q.press('Enter', { ctrlKey: true }), false, 'and the armed state is gone');
+    await sleep(400);
+    assert.ok(!q.d.body.classList.contains('vault-open'), 'not unlocked');
+    assert.deepEqual(q.errors, []);
+  } finally { q.close(); }
+});
+
+test('device vault: a page hide saves the latest words; nothing is written after a lock', async () => {
+  const p = await loadPage();
+  try {
+    p.start();
+    await p.vaultOn('correct horse battery staple');
+    p.type('typed then hidden');
+    p.w.dispatchEvent(new p.w.Event('pagehide'));
+    await sleep(500);
+    assert.equal(await decryptVault(JSON.parse(p.storageDump()['plainSight.vault']), 'correct horse battery staple'), 'typed then hidden');
+    p.type(' and more');
+    p.press('Escape');
+    await sleep(500);
+    const afterEsc = JSON.parse(p.storageDump()['plainSight.vault']);
+    assert.equal(await decryptVault(afterEsc, 'correct horse battery staple'), 'typed then hidden and more');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    assert.equal(JSON.parse(p.storageDump()['plainSight.vault']).iv, afterEsc.iv, 'no write after the lock');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
