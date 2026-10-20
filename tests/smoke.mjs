@@ -27,7 +27,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // of the page's cover loader: it imports covers/<id>.js in node (which also
 // proves the file is a valid ES module) and hands the object to
 // PlainSight.setCover(), exactly as the bridge script does, and it answers the
-// same coverstory:select event when the page asks for another cover.
+// same plainsight:select event when the page asks for another cover.
 async function importCover(id) {
   const mod = await import(pathToFileURL(path.join(ROOT, 'covers', id + '.js')).href);
   return mod.default;
@@ -575,12 +575,12 @@ test('Save writes a .sight with a 16-byte salt, 12-byte IV and data; Open restor
     assert.equal(await p.readReal(), 'hello world', 'every refusal left the buffer alone');
     // Nothing on the console object touches the buffer.
     assert.deepEqual(Object.keys(p.w.PlainSight).sort(), ['coverFailed', 'coverId', 'coverIds', 'coverText', 'ready', 'selectedCoverId', 'setCover', 'version']);
-    assert.equal(p.w.PlainSight.version, '1.2.0');
+    assert.equal(p.w.PlainSight.version, '1.2.1');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
 
-test('Save button: password dialog, then a .cover download holding valid JSON; nothing to save shows a toast', async () => {
+test('Save button: password dialog, then a .sight download holding valid JSON; nothing to save shows a toast', async () => {
   const p = await loadPage();
   try {
     p.start();
@@ -1247,7 +1247,7 @@ test('device vault: a phrase entered while the copy is locked opens it (text typ
   } finally { q.close(); }
 });
 
-test('device vault: an unreadable record can be deleted from the intro; Ctrl+E is still handled while it exists', async () => {
+test('device vault: an unreadable record can be deleted from the intro, and Ctrl+E is left to the browser while the record is unreadable', async () => {
   const p = await loadPage({ storage: { 'plainSight.vault': '{not json', 'plainSight.introSeen': '1' } });
   try {
     assert.equal(p.press('e', { ctrlKey: true }), false, 'an unreadable record does not arm the chord');
@@ -1420,6 +1420,135 @@ test('save folder: without the folder API the picker is hidden and Save download
     p.$('#btn-save').click();
     assert.equal(p.$('#pw').hidden, false);
     p.press('Escape');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('Esc during a vault setup or phrase change sticks: no vault appears afterwards, and a phrase change in flight leaves the old copy intact', async () => {
+  const p = await loadPage();
+  try {
+    // New vault: Esc right after Start, before the key is derived.
+    p.start();
+    p.type('setup words');
+    p.$('#btn-help').click();
+    p.$('#vault-on').checked = true;
+    p.$('#vault-on').dispatchEvent(new p.w.Event('change', { bubbles: true }));
+    p.$('#vault-phrase').value = 'correct horse battery staple';
+    p.start();
+    p.press('Escape');
+    await sleep(700);
+    assert.ok(!p.d.body.classList.contains('vault-open'), 'the vault did not reopen after Esc');
+    assert.equal(p.storageDump()['plainSight.vault'], undefined, 'no copy was written after Esc');
+    assert.equal(await p.readReal(), '');
+    // Phrase change on an open vault: Esc right after Start keeps the old copy under the old phrase.
+    p.type('keep this text');
+    await p.vaultOn('correct horse battery staple');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    p.$('#btn-help').click();
+    p.$('#vault-phrase').value = 'a different phrase entirely';
+    p.start();
+    p.press('Escape');
+    await sleep(700);
+    assert.ok(!p.d.body.classList.contains('vault-open'), 'locked');
+    const rec = JSON.parse(p.storageDump()['plainSight.vault']);
+    assert.equal(await decryptVault(rec, 'correct horse battery staple'), 'keep this text', 'the old copy survives under the old phrase');
+    await assert.rejects(decryptVault(rec, 'a different phrase entirely'));
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('Esc during Save still saves the text that was on the page; Esc during Open cancels it and the buffer stays empty', async () => {
+  const p = await loadPage();
+  try {
+    p.start();
+    p.type('words to save');
+    p.$('#btn-save').click();
+    await p.submitPassword('pw-1');
+    p.press('Escape');   // while the key derives
+    await sleep(600);
+    assert.equal(p.downloads.length, 1);
+    assert.equal(p.toast(), 'Saved');
+    const f = JSON.parse(await p.downloads[0].blob.text());
+    assert.equal(Buffer.from(f.data, 'base64').length, 'words to save'.length + 16, 'the file holds the text, not nothing');
+    assert.equal(await p.readReal(), '', 'and the page was wiped');
+    // Open, then Esc while the key derives: nothing comes back.
+    chooseFile(p, makeCoverFile(p.w, JSON.stringify(f)));
+    await p.settle();
+    await p.submitPassword('pw-1');
+    p.press('Escape');
+    await sleep(600);
+    assert.equal(p.toast(), 'Open cancelled');
+    assert.equal(await p.readReal(), '', 'the file text did not land after Esc');
+    assert.equal(p.coverText(), '');
+    // Without the Esc the same file opens.
+    chooseFile(p, makeCoverFile(p.w, JSON.stringify(f)));
+    await p.settle();
+    await p.submitPassword('pw-1');
+    await sleep(600);
+    assert.equal(await p.readReal(), 'words to save');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('another tab deleting or re-keying the copy locks this tab, which never writes the old copy back', async () => {
+  const p = await loadPage();
+  try {
+    p.start();
+    p.type('shared copy');
+    await p.vaultOn('correct horse battery staple');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    const original = p.storageDump()['plainSight.vault'];
+    // Another tab unticks: the record disappears and a storage event arrives.
+    p.w.localStorage.removeItem('plainSight.vault');
+    p.w.dispatchEvent(new p.w.StorageEvent('storage', { key: 'plainSight.vault', oldValue: original, newValue: null }));
+    assert.ok(!p.d.body.classList.contains('vault-open'), 'this tab locked');
+    assert.equal(p.toast(), 'The saved copy changed in another tab; this tab is locked');
+    p.type(' more');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    assert.equal(p.storageDump()['plainSight.vault'], undefined, 'nothing written back');
+    // Re-keyed in another tab: a record with a different salt.
+    p.press('Escape');
+    p.type('second round');
+    await p.vaultOn('correct horse battery staple');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    const mine = JSON.parse(p.storageDump()['plainSight.vault']);
+    const theirs = JSON.stringify({ ...mine, salt: Buffer.from(new Uint8Array(16).fill(7)).toString('base64') });
+    p.w.localStorage.setItem('plainSight.vault', theirs);
+    p.w.dispatchEvent(new p.w.StorageEvent('storage', { key: 'plainSight.vault', oldValue: JSON.stringify(mine), newValue: theirs }));
+    assert.ok(!p.d.body.classList.contains('vault-open'), 'locked on a re-key');
+    p.type(' x');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    assert.equal(p.storageDump()['plainSight.vault'], theirs, 'the other tab\'s copy stands');
+    // The write path checks the salt too, in case the event is late. First drop
+    // the foreign copy (untick), then start a fresh vault of our own.
+    p.press('Escape');
+    p.$('#btn-help').click();
+    p.$('#vault-on').checked = false;
+    p.start();
+    assert.equal(p.storageDump()['plainSight.vault'], undefined);
+    p.type('third');
+    await p.vaultOn('correct horse battery staple');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    const mine3 = p.storageDump()['plainSight.vault'];
+    p.w.localStorage.setItem('plainSight.vault', theirs);   // changed underneath, no event
+    p.type(' typed');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    assert.equal(p.storageDump()['plainSight.vault'], theirs, 'a stale key never overwrites another tab\'s copy');
+    assert.ok(!p.d.body.classList.contains('vault-open'), 'and the tab locks');
+    assert.notEqual(mine3, theirs);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('leaving the page saves an open vault (beforeunload as well as pagehide)', async () => {
+  const p = await loadPage();
+  try {
+    p.start();
+    await p.vaultOn('correct horse battery staple');
+    p.type('typed then leaving');
+    p.w.dispatchEvent(new p.w.Event('beforeunload', { cancelable: true }));
+    await sleep(500);
+    assert.equal(await decryptVault(JSON.parse(p.storageDump()['plainSight.vault']), 'correct horse battery staple'), 'typed then leaving');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });

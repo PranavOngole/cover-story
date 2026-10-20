@@ -761,6 +761,8 @@
   // in flight is cancelled.
   function wipe() {
     unlockAttempt += 1;
+    wipeCount += 1;          // Open in flight is cancelled
+    vaultGeneration += 1;    // a vault setup or phrase change in flight is dropped; the save below uses the new generation
     if (vaultOpen()) {
       const key = vaultKey;
       const salt = vaultSalt;
@@ -948,9 +950,10 @@
   // Returns the .sight file contents (a JSON string). The plaintext stays here.
   async function exportEncrypted(password) {
     if (typeof password !== 'string' || !password) throw new Error('A password is required');
+    const text = real;   // what was on the page when Save was confirmed, even if Esc follows
     const salt = crypto.getRandomValues(new Uint8Array(16));
     const key = await deriveKey(password, salt, PBKDF2_ITERATIONS);
-    return JSON.stringify(await encryptRecord(key, salt, real), null, 2);
+    return JSON.stringify(await encryptRecord(key, salt, text), null, 2);
   }
 
   // The three byte fields are required. The descriptive fields are optional
@@ -996,7 +999,9 @@
   // file; the callers turn that into a toast.
   async function importEncrypted(file, password) {
     const f = typeof file === 'string' ? JSON.parse(file) : file;
+    const wipes = wipeCount;
     const r = await decryptRecord(f, password);
+    if (wipes !== wipeCount) throw new Error('Cancelled');   // Esc while the key derived
     replaceReal(r.text);
   }
 
@@ -1008,8 +1013,9 @@
   let vaultSalt = null;
   let vaultSaveTimer = null;
   let unlockArmedAt = 0;
-  let vaultGeneration = 0;   // bumps when the vault is turned off or re-keyed; a write started before that is dropped
+  let vaultGeneration = 0;   // bumps when the vault is turned off, re-keyed or wiped; a write or setup started before that is dropped
   let unlockAttempt = 0;     // bumps on every chord and on Esc; an unlock started before that is dropped
+  let wipeCount = 0;         // bumps on Esc; an Open still deriving its key is cancelled
 
   function vaultStored() {
     const raw = storageGet(STORAGE.vault);
@@ -1034,7 +1040,7 @@
     vaultKey = key;
     vaultSalt = salt;
     body.classList.add('vault-open');
-    await vaultWrite(key, salt, real);
+    await vaultWrite(key, salt, real, true);
   }
   // Opens a stored copy with a phrase from the intro. Returns true on success.
   async function vaultOpenWith(stored, phrase) {
@@ -1066,12 +1072,28 @@
     vaultLock();
     storageSet(STORAGE.vault, '');
   }
-  // Encrypts text under a key and stores it, unless the vault was turned off
-  // or re-keyed while the encryption ran.
-  async function vaultWrite(key, salt, text) {
+  // Encrypts text under a key and stores it, unless the vault was turned off,
+  // re-keyed or wiped while the encryption ran. Except for the first write of
+  // a new vault, the copy on disk must still carry this key's salt: another
+  // tab may have deleted or re-keyed it, and then this tab locks instead.
+  async function vaultWrite(key, salt, text, fresh = false) {
     const gen = vaultGeneration;
     const record = await encryptRecord(key, salt, text);
-    if (gen === vaultGeneration) storageSet(STORAGE.vault, JSON.stringify(record));
+    if (gen !== vaultGeneration) return;
+    if (!fresh) {
+      const current = vaultStored();
+      if (!current || current.salt !== record.salt) { vaultLock(); return; }
+    }
+    storageSet(STORAGE.vault, JSON.stringify(record));
+  }
+  // Another tab deleted or re-keyed the copy: this tab's key is stale, so it locks.
+  function onStorageChange(e) {
+    if (e.key !== STORAGE.vault || !vaultOpen()) return;
+    let stale = true;
+    if (e.newValue) {
+      try { stale = JSON.parse(e.newValue).salt !== bytesToBase64(vaultSalt); } catch (err) { stale = true; }
+    }
+    if (stale) { vaultLock(); toast('The saved copy changed in another tab; this tab is locked'); }
   }
   function vaultSaveNow() {
     if (!vaultKey) return Promise.resolve();
@@ -1276,7 +1298,7 @@
       await importEncrypted(parsed, password);
       toast('Opened');
     } catch (err) {
-      toast('Wrong password or damaged file');
+      toast(err && err.message === 'Cancelled' ? 'Open cancelled' : 'Wrong password or damaged file');
     }
   }
 
@@ -1443,6 +1465,7 @@
     document.addEventListener('keydown', onKeyDown);
     window.addEventListener('blur', endPeek);
     document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('storage', onStorageChange);
     window.addEventListener('beforeunload', (e) => {
       if (vaultOpen()) vaultSaveNow();
       if (real) { e.preventDefault(); e.returnValue = ''; }
@@ -1475,7 +1498,7 @@
   // reads or returns the hidden buffer in any form, encrypted or not. Save and
   // Open are reachable only through their buttons.
   window.PlainSight = Object.freeze({
-    version: '1.2.0',
+    version: '1.2.1',
     coverIds: COVER_IDS.slice(),
     coverId: () => (cover ? cover.id : null),
     coverText: () => coverText,

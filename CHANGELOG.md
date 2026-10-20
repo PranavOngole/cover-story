@@ -22,7 +22,7 @@ Version 3, the research paper. `covers/paper.js` with a 1,626-word fictional pap
 
 Deploy and README. The site is deployed with the Vercel CLI as static files (framework none) and verified on the deployed URL in headless Chromium and WebKit: the intro appears, all three covers work, there are no console errors or page errors, the only requests are the page's own files, and nothing overflows at 390px. README.md added with the live URL, a GIF placeholder and recording instruction, one screenshot per version in docs/, how it works, the save file format, the threat model, the corporate IT note, known limitations (no mobile support), local run and test instructions and the fictional-content disclosure. The page and package versions were aligned at 1.0.0 (2805a7f).
 
-## Wave 5, 2026-10-19 (this commit)
+## Wave 5, 2026-10-19 (16da45d)
 
 Final handoff. This changelog added. No other changes.
 
@@ -30,18 +30,22 @@ Final handoff. This changelog added. No other changes.
 
 An independent Delivery Manager gate on 16da45d found no P0 or P1 issues, one P2 and ten P3. Fixed here: the README's broken demo image replaced by a plain placeholder (DM-001); the encryption functions removed from the console object so nothing on it touches the hidden buffer in any form (DM-002); pasted or composed text and Alt, Option and AltGr characters listed as known limitations (DM-003, DM-004); the Shift+Tab sentence corrected for Safari (DM-005); a guard test that localStorage never holds the hidden text (DM-006); a dialog now cancels a pending or active peek (DM-007); a failed cover switch no longer leaves its id in storage (DM-008); Open refuses files whose descriptive fields do not match (DM-009); two story characters renamed (DM-011). Left as is: DM-010, a harmless rendering quirk of custom cover text whose lines are only "- ". Suite now 33 tests. A follow-up (1610230) extended the peek test to an active peek when Save is clicked and removed a duplicate check inside beginPeek that no path could reach and that masked the real guard under mutation testing.
 
-## 1.1.0, 2026-10-20: Plain Sight (this commit)
+## 1.1.0, 2026-10-20: Plain Sight (643bdf3)
 
 The project is renamed from Cover Story to Plain Sight: intro title, README, package name, storage keys (`plainSight.*`), the console object (`window.PlainSight`) and the saved file extension, now `.sight` with the format label `plain-sight`. Files saved under the old name still open. Peek is now a chord, Ctrl+Shift+G (Cmd+Shift+G), that toggles the real text on and off; typing, a window blur, a hidden tab or any dialog ends it, and the 900 ms hold is gone. New, off by default: a device vault. Tick "Keep my text on this device" on the intro and choose a phrase of 12 characters or more; the page then keeps the hidden text in localStorage as AES-256-GCM ciphertext under a key derived from the phrase (PBKDF2, 310,000 iterations, fresh salt), saved 1.5 seconds after the last keystroke, when the tab is hidden and on Esc. Esc, the 10-minute wipe and closing the tab lock the vault and keep the copy. To come back, type the phrase on the blank page, then hold Ctrl (Cmd), press E, then Enter; a wrong phrase does nothing. The only sign of an open vault is the header text drawn in ink instead of grey. Unticking the box deletes the copy. Suite now 36 tests; verified in headless WebKit with real key events.
 
-## 1.1.1, 2026-10-20: gate fixes (this commit)
+## 1.1.1, 2026-10-20: gate fixes (58d0f62)
 
 An independent Delivery Manager gate on 643bdf3 found one P1, two P2 and five P3 issues, all fixed here. Esc now saves an open vault before locking it (DM-101: the save ran after the lock and was skipped, losing the last 1.5 seconds of typing). A phrase entered while a saved copy is locked opens that copy, with text typed before added after it, and a phrase that does not open it is refused, so a locked copy is never overwritten (DM-102). Esc on the intro applies the vault choices exactly like Start (DM-103). An unreadable vault record can be deleted by unticking the box (DM-104). Esc cancels an unlock still in flight, and keys typed while the key derives are kept after the saved text (DM-105). The page also saves on the way out (DM-106). The README now says a simulated typo costs two keystrokes (DM-107) and the test names carry the new project name (DM-108). Suite now 40 tests.
 
-## 1.1.2, 2026-10-20: storage key migration (this commit)
+## 1.1.2, 2026-10-20: storage key migration (77c5f3c)
 
 Visitors who used the page before the rename keep their intro flag, cover choice and custom cover text: the old coverStory.* keys are moved to plainSight.* once and removed. The README notes that two tabs share one vault copy with the last save winning.
 
-## 1.2.0, 2026-10-20: save into a folder (this commit)
+## 1.2.0, 2026-10-20: save into a folder (fbc6ae0)
 
 On the intro screen, browsers with the File System Access API (Chrome, Edge) offer "Choose a folder on this computer". With a folder chosen, Save writes the real text as a plain text file named by the moment of the click, `YYYY-MM-DD HH-MM-SS.txt`, into that folder, with no password; "Stop using the folder" brings the encrypted download back. The folder handle is kept in IndexedDB. Other browsers keep the download. The README says plainly that these files are unencrypted on disk. Suite now 44 tests, the folder exercised with a simulated picker; a real Chrome check is still to come.
+
+## 1.2.1, 2026-10-20: second gate fixes
+
+The 1.1.2 gate (GO for testing, GO for go-live, four new findings) led to these fixes. Esc now sticks against any key derivation still in flight: a vault setup or phrase change started just before Esc is dropped and the old copy stays (DM-109); Save keeps the text that was on the page when it was confirmed, and Open is cancelled with its own toast (DM-110). A tab whose vault copy was deleted or re-keyed by another tab locks itself on the storage event, and every write checks that the copy on disk still carries its key's salt, so a stale tab never writes an old copy back (DM-111). Two leftover strings from the old name are gone and the changelog headings carry their commit ids (DM-108, DM-112). Suite now 48 tests.
