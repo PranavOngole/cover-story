@@ -965,6 +965,15 @@ test('a peek hold started just before a dialog opens never shows the real text u
     p.release('Control');
     p.press('Escape');
     assert.equal(p.$('#pw').hidden, true);
+    // An active peek (Ctrl held while Save is clicked with the mouse) ends when the dialog opens.
+    await p.peek();
+    assert.equal(p.peeking(), true);
+    p.$('#btn-save').click();
+    assert.equal(p.peeking(), false, 'opening the password dialog ends an active peek');
+    assert.equal(p.$('#real').textContent, '');
+    p.release('Control');
+    p.press('Escape');
+    assert.equal(p.$('#pw').hidden, true);
     await p.peek();
     assert.equal(p.peeking(), true);
     p.$('#btn-help').click();

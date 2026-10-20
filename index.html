@@ -777,8 +777,9 @@
   function cancelPeekTimer() {
     if (peekTimer) { clearTimeout(peekTimer); peekTimer = null; }
   }
+  // Dialogs cannot open over the real text: askPassword and openIntro call
+  // endPeek first, which also cancels a pending hold.
   function beginPeek() {
-    if (dialogOpen()) return;   // a dialog opened during the hold: never put the real text under it
     peeking = true;
     realEl.textContent = real;
     body.classList.add('peek');
