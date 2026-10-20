@@ -37,3 +37,7 @@ The project is renamed from Cover Story to Plain Sight: intro title, README, pac
 ## 1.1.1, 2026-10-20: gate fixes (this commit)
 
 An independent Delivery Manager gate on 643bdf3 found one P1, two P2 and five P3 issues, all fixed here. Esc now saves an open vault before locking it (DM-101: the save ran after the lock and was skipped, losing the last 1.5 seconds of typing). A phrase entered while a saved copy is locked opens that copy, with text typed before added after it, and a phrase that does not open it is refused, so a locked copy is never overwritten (DM-102). Esc on the intro applies the vault choices exactly like Start (DM-103). An unreadable vault record can be deleted by unticking the box (DM-104). Esc cancels an unlock still in flight, and keys typed while the key derives are kept after the saved text (DM-105). The page also saves on the way out (DM-106). The README now says a simulated typo costs two keystrokes (DM-107) and the test names carry the new project name (DM-108). Suite now 40 tests.
+
+## 1.1.2, 2026-10-20: storage key migration (this commit)
+
+Visitors who used the page before the rename keep their intro flag, cover choice and custom cover text: the old coverStory.* keys are moved to plainSight.* once and removed. The README notes that two tabs share one vault copy with the last save winning.

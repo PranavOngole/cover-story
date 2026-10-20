@@ -551,7 +551,7 @@ test('Save writes a .sight with a 16-byte salt, 12-byte IV and data; Open restor
     assert.equal(await p.readReal(), 'hello world', 'every refusal left the buffer alone');
     // Nothing on the console object touches the buffer.
     assert.deepEqual(Object.keys(p.w.PlainSight).sort(), ['coverFailed', 'coverId', 'coverIds', 'coverText', 'ready', 'selectedCoverId', 'setCover', 'version']);
-    assert.equal(p.w.PlainSight.version, '1.1.1');
+    assert.equal(p.w.PlainSight.version, '1.1.2');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
@@ -1291,6 +1291,26 @@ test('device vault: a page hide saves the latest words; nothing is written after
     assert.equal(await decryptVault(afterEsc, 'correct horse battery staple'), 'typed then hidden and more');
     await sleep(VAULT_SAVE_DELAY_MS + 400);
     assert.equal(JSON.parse(p.storageDump()['plainSight.vault']).iv, afterEsc.iv, 'no write after the lock');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('storage keys from the 1.0 name are moved to the new ones once, and the old ones removed', async () => {
+  const p = await loadPage({ storage: { 'coverStory.introSeen': '1', 'coverStory.cover': 'work', 'coverStory.customText': 'my own words here' } });
+  try {
+    assert.equal(p.$('#intro').hidden, true, 'a returning visitor does not see the intro again');
+    assert.equal(p.w.PlainSight.coverId(), 'work', 'the cover choice carries over');
+    assert.equal(p.w.PlainSight.coverText(), 'my own words here', 'custom text carries over');
+    const dump = p.storageDump();
+    assert.deepEqual(Object.keys(dump).sort(), ['plainSight.cover', 'plainSight.customText', 'plainSight.introSeen']);
+    assert.equal(dump['plainSight.cover'], 'work');
+    // Existing new keys win over old ones.
+    const q = await loadPage({ storage: { 'coverStory.cover': 'work', 'plainSight.cover': 'paper', 'plainSight.introSeen': '1' } });
+    try {
+      assert.equal(q.w.PlainSight.coverId(), 'paper');
+      assert.equal(q.storageDump()['coverStory.cover'], undefined, 'old key removed');
+      assert.deepEqual(q.errors, []);
+    } finally { q.close(); }
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });

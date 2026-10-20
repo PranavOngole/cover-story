@@ -1281,7 +1281,20 @@
     const platform = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || '';
     return /mac|iphone|ipad/i.test(platform) ? 'Cmd' : 'Ctrl';
   }
+  // One-time move from the 1.0 storage keys (coverStory.*) to the current
+  // ones, so a returning visitor keeps the intro flag, the cover choice and
+  // any custom text. The old keys are removed.
+  function migrateOldKeys() {
+    const pairs = [['coverStory.introSeen', STORAGE.intro], ['coverStory.cover', STORAGE.cover], ['coverStory.customText', STORAGE.custom]];
+    for (const [oldKey, newKey] of pairs) {
+      const value = storageGet(oldKey);
+      if (value === null) continue;
+      if (storageGet(newKey) === null) storageSet(newKey, value);
+      storageSet(oldKey, '');
+    }
+  }
   function init() {
+    migrateOldKeys();
     for (const el of document.querySelectorAll('[data-mod]')) el.textContent = modKeyName();
 
     customText = (storageGet(STORAGE.custom) || '').trim();
@@ -1318,7 +1331,7 @@
   // reads or returns the hidden buffer in any form, encrypted or not. Save and
   // Open are reachable only through their buttons.
   window.PlainSight = Object.freeze({
-    version: '1.1.1',
+    version: '1.1.2',
     coverIds: COVER_IDS.slice(),
     coverId: () => (cover ? cover.id : null),
     coverText: () => coverText,
