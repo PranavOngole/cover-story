@@ -1,4 +1,4 @@
-// Smoke test for Cover Story. Runs the real index.html in jsdom and drives it
+// Smoke test for Plain Sight. Runs the real index.html in jsdom and drives it
 // through the DOM: keyboard events, the header, the dialogs, the download
 // path and the public console API. Nothing reaches into the page's closure.
 //
@@ -15,7 +15,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const HTML = readFileSync(path.join(ROOT, 'index.html'), 'utf8');
-const PEEK_HOLD_MS = 900;
+const UNLOCK_WINDOW_MS = 2000;
+const VAULT_SAVE_DELAY_MS = 1500;
 const TEN_MINUTES = 10 * 60 * 1000;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -25,7 +26,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // jsdom does not execute <script type="module">, so the harness plays the part
 // of the page's cover loader: it imports covers/<id>.js in node (which also
 // proves the file is a valid ES module) and hands the object to
-// CoverStory.setCover(), exactly as the bridge script does, and it answers the
+// PlainSight.setCover(), exactly as the bridge script does, and it answers the
 // same coverstory:select event when the page asks for another cover.
 async function importCover(id) {
   const mod = await import(pathToFileURL(path.join(ROOT, 'covers', id + '.js')).href);
@@ -72,13 +73,13 @@ async function loadPage({ random = () => 1, storage = {}, inject = true } = {}) 
   const failCovers = new Set();   // ids whose load the harness should fail on purpose
   async function loadCover(id) {
     loads.push(id);
-    if (failCovers.has(id)) { w.CoverStory.coverFailed(id); return; }
-    try { w.CoverStory.setCover(await importCover(id)); } catch (err) { w.CoverStory.coverFailed(id); }
+    if (failCovers.has(id)) { w.PlainSight.coverFailed(id); return; }
+    try { w.PlainSight.setCover(await importCover(id)); } catch (err) { w.PlainSight.coverFailed(id); }
   }
-  d.addEventListener('coverstory:select', (e) => { loadCover(e.detail.id); });
+  d.addEventListener('plainsight:select', (e) => { loadCover(e.detail.id); });
   if (inject) {
-    await loadCover(w.CoverStory.selectedCoverId());
-    await w.CoverStory.ready;
+    await loadCover(w.PlainSight.selectedCoverId());
+    await w.PlainSight.ready;
   }
 
   const page = {
@@ -106,17 +107,37 @@ async function loadPage({ random = () => 1, storage = {}, inject = true } = {}) 
         .map((el) => ({ type: el.classList.contains('ref') ? 'ref' : el.tagName.toLowerCase(), text: el.textContent }));
     },
     peeking() { return d.body.classList.contains('peek'); },
-    // Hold Ctrl past the threshold and read the real text off the screen.
-    // Leaves Ctrl held; call release('Control') afterwards.
+    // Ctrl+Shift+G toggles the peek. peek() turns it on and reads the real
+    // text off the screen; readReal() reads it and turns the peek off again.
+    peekChord() { return page.press('G', { ctrlKey: true, shiftKey: true }); },
     async peek() {
-      page.press('Control', { ctrlKey: true });
-      await sleep(PEEK_HOLD_MS + 150);
+      if (!page.peeking()) page.peekChord();
       return $('#real').textContent;
     },
     async readReal() {
       const text = await page.peek();
-      page.release('Control');
+      page.peekChord();
       return text;
+    },
+    unlockChord() {
+      const armed = page.press('e', { ctrlKey: true });
+      const fired = page.press('Enter', { ctrlKey: true });
+      return { armed, fired };
+    },
+    storageDump() {
+      const ls = page.w.localStorage;
+      const out = {};
+      for (let i = 0; i < ls.length; i++) { const k = ls.key(i); out[k] = ls.getItem(k); }
+      return out;
+    },
+    // Turns the device vault on through the intro screen.
+    async vaultOn(phrase) {
+      if ($('#intro').hidden) $('#btn-help').click();
+      $('#vault-on').checked = true;
+      $('#vault-on').dispatchEvent(new w.Event('change', { bubbles: true }));
+      $('#vault-phrase').value = phrase;
+      page.start();
+      await sleep(400);   // key derivation and the first save
     },
     wordCount() { return $('#word-count').textContent; },
     toast() { return $('#toast').textContent; },
@@ -204,22 +225,25 @@ test('first visit: intro shows, Start hides it, book cover loaded, empty page', 
   const p = await loadPage();
   try {
     assert.equal(p.$('#intro').hidden, false, 'intro visible on first visit');
-    assert.equal(p.w.localStorage.getItem('coverStory.introSeen'), null);
+    assert.equal(p.w.localStorage.getItem('plainSight.introSeen'), null);
     p.start();
     assert.equal(p.$('#intro').hidden, true, 'intro hidden after Start');
-    assert.equal(p.w.localStorage.getItem('coverStory.introSeen'), '1');
+    assert.equal(p.w.localStorage.getItem('plainSight.introSeen'), '1');
     assert.equal(p.d.title, 'Untitled draft');
     assert.ok(p.d.body.classList.contains('font-serif'));
     assert.equal(p.$('#header-left').textContent, 'Untitled draft');
     assert.equal(p.wordCount(), '0 words');
     assert.equal(p.coverText(), '');
     assert.deepEqual(p.blocks(), [{ type: 'h2', text: '' }], 'the story opens with a chapter heading block');
-    assert.equal(p.w.CoverStory.coverId(), 'book', 'the cover loaded is book');
+    assert.equal(p.w.PlainSight.coverId(), 'book', 'the cover loaded is book');
     assert.deepEqual(p.loads, ['book'], 'exactly one cover load was requested');
-    assert.equal(p.w.localStorage.getItem('coverStory.cover'), 'book', 'the selection persists');
+    assert.equal(p.w.localStorage.getItem('plainSight.cover'), 'book', 'the selection persists');
     assert.equal(p.$('#load-notice').hidden, true);
-    assert.ok(p.w.CoverStory.coverText().length > 1500, 'cover text present');
+    assert.ok(p.w.PlainSight.coverText().length > 1500, 'cover text present');
     assert.equal(p.$('#cover').querySelector('.caret').textContent, '', 'caret adds no text');
+    assert.equal(p.$('#intro-title').textContent, 'Plain Sight');
+    assert.equal(p.$('#vault-on').checked, false, 'the device vault is off by default');
+    assert.equal(p.$('#vault-phrase').disabled, true);
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
@@ -232,11 +256,11 @@ test('typing N printable keys renders exactly N cover characters; real buffer eq
     assert.equal(typed.length, 40);
     for (const ch of typed) assert.equal(p.press(ch), true, 'printable key is preventDefaulted');
     assert.equal(p.coverLength(), 40, 'exactly N cover characters');
-    const expected = expectedBlocks(p.w.CoverStory.coverText(), 40);
+    const expected = expectedBlocks(p.w.PlainSight.coverText(), 40);
     assert.deepEqual(p.blocks(), expected);
     assert.equal(p.peeking(), false, 'peek class absent after typing');
     assert.equal(await p.readReal(), typed, 'real buffer equals what was typed');
-    assert.equal(p.peeking(), false, 'peek ends on keyup');
+    assert.equal(p.peeking(), false, 'the second chord ends the peek');
     assert.equal(p.$('#real').textContent, '', 'real text removed from the page after peek');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
@@ -249,7 +273,7 @@ test('Backspace shortens both buffers by one', async () => {
     p.type('abcdefghij');
     for (let i = 0; i < 3; i++) assert.equal(p.press('Backspace'), true);
     assert.equal(p.coverLength(), 7);
-    assert.deepEqual(p.blocks(), expectedBlocks(p.w.CoverStory.coverText(), 7));
+    assert.deepEqual(p.blocks(), expectedBlocks(p.w.PlainSight.coverText(), 7));
     assert.equal(await p.readReal(), 'abcdefg');
     // Backspace on an empty page is harmless.
     for (let i = 0; i < 10; i++) p.press('Backspace');
@@ -271,7 +295,7 @@ test('Esc empties both buffers', async () => {
     assert.equal(await p.readReal(), '');
     // Typing after a wipe starts the cover from the top again.
     p.type('xy');
-    assert.deepEqual(p.blocks(), expectedBlocks(p.w.CoverStory.coverText(), 2));
+    assert.deepEqual(p.blocks(), expectedBlocks(p.w.PlainSight.coverText(), 2));
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
@@ -300,6 +324,8 @@ test('keys with Ctrl, Cmd or Alt held are not recorded and not prevented; isComp
     assert.equal(p.press('b', { metaKey: true }), false);
     assert.equal(p.press('b', { altKey: true }), false);
     assert.equal(p.press('s', { metaKey: true }), false, 'Cmd+S goes to the browser');
+    assert.equal(p.press('e', { ctrlKey: true }), false, 'Ctrl+E goes to the browser while no vault exists');
+    assert.equal(p.press('Enter', { ctrlKey: true }), false, 'Ctrl+Enter goes to the browser while no vault exists');
     assert.equal(p.press('a', { isComposing: true }), false);
     assert.equal(p.press('Enter', { isComposing: true }), false);
     assert.equal(p.coverText(), '');
@@ -312,42 +338,45 @@ test('keys with Ctrl, Cmd or Alt held are not recorded and not prevented; isComp
   } finally { p.close(); }
 });
 
-test('Ctrl held past 900ms adds peek; keyup removes it; window blur removes it; a short tap does not peek', async () => {
+test('Ctrl+Shift+G toggles the peek; typing, a window blur and a hidden tab end it; Cmd+Shift+G works too', async () => {
   const p = await loadPage();
   try {
     p.start();
     p.type('hidden text');
-    p.press('Control', { ctrlKey: true });
-    await sleep(600);
-    assert.equal(p.peeking(), false, 'not yet peeking at 600ms');
-    await sleep(450);
-    assert.equal(p.peeking(), true, 'peeking after 900ms');
+    assert.equal(p.peeking(), false);
+    assert.equal(p.press('G', { ctrlKey: true, shiftKey: true }), true, 'the chord is handled');
+    assert.equal(p.peeking(), true, 'peek on');
     assert.equal(p.$('#real').textContent, 'hidden text');
-    p.release('Control');
-    assert.equal(p.peeking(), false, 'keyup ends peek');
+    assert.equal(p.press('G', { ctrlKey: true, shiftKey: true }), true);
+    assert.equal(p.peeking(), false, 'peek off again');
+    assert.equal(p.$('#real').textContent, '', 'real text removed from the page');
+    // Typing ends a peek and is still recorded.
+    p.peekChord();
+    assert.equal(p.peeking(), true);
+    p.type('!');
+    assert.equal(p.peeking(), false, 'typing ends the peek');
     assert.equal(p.$('#real').textContent, '');
-    // Short tap: no peek.
-    p.press('Control', { ctrlKey: true });
-    await sleep(200);
-    p.release('Control');
-    await sleep(PEEK_HOLD_MS);
-    assert.equal(p.peeking(), false, 'a short tap never peeks');
-    // Blur while peeking (for example Cmd+Tab away) ends the peek.
-    p.press('Meta', { metaKey: true });
-    await sleep(PEEK_HOLD_MS + 150);
-    assert.equal(p.peeking(), true, 'Cmd peeks too');
+    // Backspace ends it too.
+    p.peekChord();
+    p.press('Backspace');
+    assert.equal(p.peeking(), false);
+    // A window blur (for example Cmd+Tab away) ends it.
+    p.press('g', { metaKey: true, shiftKey: true });
+    assert.equal(p.peeking(), true, 'Cmd+Shift+G peeks too');
     p.w.dispatchEvent(new p.w.Event('blur'));
     assert.equal(p.peeking(), false, 'blur ends peek');
-    // Repeated keydown events for a held Control (Windows) must not restart the timer.
+    // Holding Ctrl on its own no longer does anything.
     p.press('Control', { ctrlKey: true });
-    for (let i = 0; i < 8; i++) { await sleep(100); p.press('Control', { ctrlKey: true, repeat: true }); }
-    await sleep(250);
-    assert.equal(p.peeking(), true, 'auto-repeat does not reset the hold');
+    await sleep(1100);
+    assert.equal(p.peeking(), false, 'a held modifier never peeks');
     p.release('Control');
+    // Ctrl+G without Shift is the browser's.
+    assert.equal(p.press('g', { ctrlKey: true }), false);
+    assert.equal(p.peeking(), false);
+    assert.equal(await p.readReal(), 'hidden text');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
-
 test('Ctrl+C while peeking copies the real text; Ctrl+C otherwise is left to the browser', async () => {
   const p = await loadPage();
   try {
@@ -361,7 +390,6 @@ test('Ctrl+C while peeking copies the real text; Ctrl+C otherwise is left to the
     assert.deepEqual(p.copied, ['copy me']);
     assert.equal(p.toast(), 'Copied');
     assert.equal(await p.$('#real').textContent, 'copy me', 'still peeking, buffer intact');
-    p.release('Control');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
@@ -370,7 +398,7 @@ test('simulated typo: a wrong neighbouring letter appears at a word start and th
   const p = await loadPage({ random: () => 0 });   // 0 < 3.5 percent: typo on every word start
   try {
     p.start();
-    const text = p.w.CoverStory.coverText();
+    const text = p.w.PlainSight.coverText();
     const expected1 = expectedBlocks(text, 1);
     const correct = expected1[expected1.length - 1].text;   // the first real cover letter
     p.press('a');
@@ -397,10 +425,10 @@ test('simulated typo: a wrong neighbouring letter appears at a word start and th
 });
 
 test('custom cover text from localStorage is used; when it runs out the cover breaks a paragraph and loops', async () => {
-  const p = await loadPage({ storage: { 'coverStory.customText': 'ab cd', 'coverStory.introSeen': '1' } });
+  const p = await loadPage({ storage: { 'plainSight.customText': 'ab cd', 'plainSight.introSeen': '1' } });
   try {
     assert.equal(p.$('#intro').hidden, true, 'intro not shown on a return visit');
-    assert.equal(p.w.CoverStory.coverText(), 'ab cd');
+    assert.equal(p.w.PlainSight.coverText(), 'ab cd');
     p.type('1234567');
     assert.deepEqual(p.blocks(), [{ type: 'p', text: 'ab cd' }, { type: 'p', text: 'a' }]);
     assert.deepEqual(expectedBlocks('ab cd', 7), p.blocks(), 'reference model agrees on a hand-checked case');
@@ -415,9 +443,9 @@ test('custom cover text from localStorage is used; when it runs out the cover br
 });
 
 test('a cover line starting with ## renders as a heading; the marker costs no keystrokes; Backspace walks back through it', async () => {
-  const p = await loadPage({ storage: { 'coverStory.customText': '## Title\n\nBody text', 'coverStory.introSeen': '1' } });
+  const p = await loadPage({ storage: { 'plainSight.customText': '## Title\n\nBody text', 'plainSight.introSeen': '1' } });
   try {
-    assert.equal(p.w.CoverStory.coverText(), '## Title\nBody text');
+    assert.equal(p.w.PlainSight.coverText(), '## Title\nBody text');
     p.type('12345');
     assert.deepEqual(p.blocks(), [{ type: 'h2', text: 'Title' }]);
     p.type('6');
@@ -437,7 +465,7 @@ test('the word count counts the cover text on screen, not the real text', async 
   try {
     p.start();
     p.type('aaaaaaaaaaaaaaaaaaaa');   // one real word, 20 keystrokes
-    const expected = countWords(expectedBlocks(p.w.CoverStory.coverText(), 20));
+    const expected = countWords(expectedBlocks(p.w.PlainSight.coverText(), 20));
     assert.ok(expected > 1, 'the first 20 cover characters hold more than one word');
     assert.equal(p.wordCount(), expected + ' words');
     assert.deepEqual(p.errors, []);
@@ -467,7 +495,7 @@ test('Save writes a .cover with a 16-byte salt, 12-byte IV and data; Open restor
     };
     const json = await save('correct horse');
     const f = JSON.parse(json);
-    assert.equal(f.format, 'cover-story');
+    assert.equal(f.format, 'plain-sight');
     assert.equal(f.version, 1);
     assert.equal(f.cipher, 'AES-256-GCM');
     assert.equal(f.kdf, 'PBKDF2-SHA-256');
@@ -493,26 +521,28 @@ test('Save writes a .cover with a 16-byte salt, 12-byte IV and data; Open restor
     assert.equal(await open(json, 'correct horse'), 'Opened');
     assert.equal(await p.readReal(), 'hello world', 'round trip');
     assert.equal(p.coverLength(), 'hello world'.length, 'the cover is rebuilt to the same length');
-    assert.deepEqual(p.blocks(), expectedBlocks(p.w.CoverStory.coverText(), 11));
+    assert.deepEqual(p.blocks(), expectedBlocks(p.w.PlainSight.coverText(), 11));
 
     // Damaged, foreign or hostile files are refused, most of them before any key derivation.
     const variant = (changes) => JSON.stringify({ ...f, ...changes });
-    assert.equal(await open('{"salt":1}', 'x'), 'That is not a .cover file');
-    assert.equal(await open('not json', 'x'), 'That is not a .cover file');
+    assert.equal(await open('{"salt":1}', 'x'), 'That is not a .sight file');
+    assert.equal(await open('not json', 'x'), 'That is not a .sight file');
     assert.equal(await open(variant({ iterations: 50000000 }), 'correct horse'), 'Wrong password or damaged file', 'iteration cap');
     assert.equal(await open(variant({ iterations: 999 }), 'correct horse'), 'Wrong password or damaged file', 'iteration floor');
-    assert.equal(await open(variant({ iterations: '310000' }), 'correct horse'), 'That is not a .cover file', 'iterations must be a number');
+    assert.equal(await open(variant({ iterations: '310000' }), 'correct horse'), 'That is not a .sight file', 'iterations must be a number');
     assert.equal(await open(variant({ iv: f.salt }), 'correct horse'), 'Wrong password or damaged file', 'IV length');
-    assert.equal(await open(variant({ format: 'other' }), 'correct horse'), 'That is not a .cover file');
-    assert.equal(await open(variant({ version: 2 }), 'correct horse'), 'That is not a .cover file');
-    assert.equal(await open(variant({ cipher: 'AES-128-GCM' }), 'correct horse'), 'That is not a .cover file');
-    assert.equal(await open(variant({ kdf: 'scrypt' }), 'correct horse'), 'That is not a .cover file');
+    assert.equal(await open(variant({ format: 'other' }), 'correct horse'), 'That is not a .sight file');
+    assert.equal(await open(variant({ format: 'cover-story' }), 'correct horse'), 'Opened', 'files from the earlier name still open');
+    assert.equal(await open(variant({ version: 2 }), 'correct horse'), 'That is not a .sight file');
+    assert.equal(await open(variant({ cipher: 'AES-128-GCM' }), 'correct horse'), 'That is not a .sight file');
+    assert.equal(await open(variant({ kdf: 'scrypt' }), 'correct horse'), 'That is not a .sight file');
     const bytes = Buffer.from(f.data, 'base64');
     bytes[0] ^= 1;
     assert.equal(await open(variant({ data: bytes.toString('base64') }), 'correct horse'), 'Wrong password or damaged file', 'a flipped ciphertext bit fails authentication');
     assert.equal(await p.readReal(), 'hello world', 'every refusal left the buffer alone');
     // Nothing on the console object touches the buffer.
-    assert.deepEqual(Object.keys(p.w.CoverStory).sort(), ['coverFailed', 'coverId', 'coverIds', 'coverText', 'ready', 'selectedCoverId', 'setCover', 'version']);
+    assert.deepEqual(Object.keys(p.w.PlainSight).sort(), ['coverFailed', 'coverId', 'coverIds', 'coverText', 'ready', 'selectedCoverId', 'setCover', 'version']);
+    assert.equal(p.w.PlainSight.version, '1.1.0');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
@@ -534,7 +564,7 @@ test('Save button: password dialog, then a .cover download holding valid JSON; n
     await p.settle(400);
     assert.equal(p.$('#pw').hidden, true);
     assert.equal(p.downloads.length, 1, 'one download');
-    assert.match(p.downloads[0].name, /^untitled-draft-\d{8}-\d{4}\.cover$/);
+    assert.match(p.downloads[0].name, /^untitled-draft-\d{8}-\d{4}\.sight$/);
     const f = JSON.parse(await p.downloads[0].blob.text());
     assert.ok(f.salt && f.iv && f.data);
     assert.equal(p.toast(), 'Saved');
@@ -580,7 +610,7 @@ test('Open: wrong password fails with a toast and no console error; right passwo
     chooseFile(p, makeCoverFile(p.w, 'this is not json'));
     await p.settle();
     assert.equal(p.$('#pw').hidden, true, 'no password prompt for a non-cover file');
-    assert.equal(p.toast(), 'That is not a .cover file');
+    assert.equal(p.toast(), 'That is not a .sight file');
     assert.deepEqual(p.errors, [], 'no console errors on any failure path');
   } finally { p.close(); }
 });
@@ -630,16 +660,16 @@ test('while a dialog is open nothing is recorded, Esc closes the dialog instead 
     // Custom text entered in the intro is applied and remembered on Start.
     p.$('#custom-text').value = 'one two three four five six';
     p.start();
-    assert.equal(p.w.localStorage.getItem('coverStory.customText'), 'one two three four five six');
-    assert.equal(p.w.CoverStory.coverText(), 'one two three four five six');
+    assert.equal(p.w.localStorage.getItem('plainSight.customText'), 'one two three four five six');
+    assert.equal(p.w.PlainSight.coverText(), 'one two three four five six');
     assert.equal(p.coverText(), 'one', 'the screen is rebuilt for the 3 keystrokes already typed');
     assert.equal(await p.readReal(), 'abc');
     // Clearing the box goes back to the built-in text.
     p.$('#btn-help').click();
     p.$('#custom-text').value = '';
     p.start();
-    assert.equal(p.w.localStorage.getItem('coverStory.customText'), null);
-    assert.deepEqual(p.blocks(), expectedBlocks(p.w.CoverStory.coverText(), 3));
+    assert.equal(p.w.localStorage.getItem('plainSight.customText'), null);
+    assert.deepEqual(p.blocks(), expectedBlocks(p.w.PlainSight.coverText(), 3));
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
@@ -650,40 +680,40 @@ test('intro has the three mode radios; book is checked; the selection is written
     const radios = Array.from(p.d.querySelectorAll('input[name="mode"]'));
     assert.deepEqual(radios.map((r) => r.value), ['book', 'work', 'paper']);
     assert.deepEqual(radios.map((r) => r.checked), [true, false, false]);
-    assert.equal(p.w.localStorage.getItem('coverStory.cover'), null, 'nothing stored before Start');
+    assert.equal(p.w.localStorage.getItem('plainSight.cover'), null, 'nothing stored before Start');
     p.start();
-    assert.equal(p.w.localStorage.getItem('coverStory.cover'), 'book');
-    assert.equal(p.w.CoverStory.selectedCoverId(), 'book');
+    assert.equal(p.w.localStorage.getItem('plainSight.cover'), 'book');
+    assert.equal(p.w.PlainSight.selectedCoverId(), 'book');
     assert.deepEqual(p.loads, ['book'], 'picking the cover already on screen requests nothing');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
 
 test('a remembered cover id is used on the next visit; unknown ids fall back to book', async () => {
-  const p = await loadPage({ storage: { 'coverStory.cover': 'nonsense', 'coverStory.introSeen': '1' } });
+  const p = await loadPage({ storage: { 'plainSight.cover': 'nonsense', 'plainSight.introSeen': '1' } });
   try {
-    assert.equal(p.w.CoverStory.selectedCoverId(), 'book');
-    assert.equal(p.w.CoverStory.coverId(), 'book');
+    assert.equal(p.w.PlainSight.selectedCoverId(), 'book');
+    assert.equal(p.w.PlainSight.coverId(), 'book');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
 
 test('before a cover is on screen typing is ignored and left to the browser; a failed load shows the notice; a bad cover object is refused', async () => {
-  const p = await loadPage({ inject: false, storage: { 'coverStory.introSeen': '1' } });
+  const p = await loadPage({ inject: false, storage: { 'plainSight.introSeen': '1' } });
   try {
-    assert.equal(p.w.CoverStory.coverId(), null);
+    assert.equal(p.w.PlainSight.coverId(), null);
     assert.equal(p.press('a'), false, 'not prevented');
     assert.equal(p.press('Escape'), false);
     assert.equal(p.$('#cover').children.length, 0);
     assert.equal(p.$('#load-notice').hidden, true);
-    p.w.CoverStory.coverFailed('book');
+    p.w.PlainSight.coverFailed('book');
     assert.equal(p.$('#load-notice').hidden, false, 'notice shown');
     assert.equal(p.toast(), 'Could not load the cover text');
-    assert.throws(() => p.w.CoverStory.setCover({ id: 'book', text: 'x' }), /Not a cover object/);
-    assert.throws(() => p.w.CoverStory.setCover({ id: 'evil', label: 'x', tabTitle: 'x', font: 'serif', header: { left: 'x', right: [] }, text: 'x' }), /Not a cover object/);
+    assert.throws(() => p.w.PlainSight.setCover({ id: 'book', text: 'x' }), /Not a cover object/);
+    assert.throws(() => p.w.PlainSight.setCover({ id: 'evil', label: 'x', tabTitle: 'x', font: 'serif', header: { left: 'x', right: [] }, text: 'x' }), /Not a cover object/);
     await p.loadCover('book');
     assert.equal(p.$('#load-notice').hidden, true, 'notice hidden once a cover arrives');
-    assert.equal(p.w.CoverStory.coverId(), 'book');
+    assert.equal(p.w.PlainSight.coverId(), 'book');
     assert.equal(p.press('a'), true);
     assert.equal(p.coverLength(), 1);
     assert.equal(await p.readReal(), 'a');
@@ -697,7 +727,7 @@ test('the module bridge imports ./covers/<id>.js for the selected id and listens
   const src = m[1];
   assert.ok(src.includes("import('./covers/' + id + '.js')"), 'dynamic import of the cover file');
   assert.ok(src.includes('api.setCover(mod.default)'));
-  assert.ok(src.includes("addEventListener('coverstory:select'"));
+  assert.ok(src.includes("addEventListener('plainsight:select'"));
   assert.ok(src.includes('load(api.selectedCoverId())'), 'initial load uses the remembered selection');
   assert.ok(src.includes('api.coverFailed(id)'), 'failure path reports to the page');
   assert.equal((HTML.match(/<script type="module">/g) || []).length, 1, 'one module script');
@@ -722,9 +752,9 @@ test('covers/book.js is a valid ES module with the shared shape, at least 1,500 
 });
 
 test('switching to work loads that cover: sans chrome, static "Last edited just now", a decorative toolbar, no word count', async () => {
-  const p = await loadPage({ storage: { 'coverStory.cover': 'work', 'coverStory.introSeen': '1' } });
+  const p = await loadPage({ storage: { 'plainSight.cover': 'work', 'plainSight.introSeen': '1' } });
   try {
-    assert.equal(p.w.CoverStory.coverId(), 'work');
+    assert.equal(p.w.PlainSight.coverId(), 'work');
     assert.equal(p.d.title, 'Q3 planning notes');
     assert.equal(p.$('#header-left').textContent, 'Q3 planning notes');
     assert.ok(p.d.body.classList.contains('font-sans') && p.d.body.classList.contains('cover-work'));
@@ -740,16 +770,16 @@ test('switching to work loads that cover: sans chrome, static "Last edited just 
     const typed = 'Hello there, typing on the work document now.';
     p.type(typed);
     assert.equal(p.$('#last-edited').textContent, 'Last edited just now', 'the static text does not change');
-    assert.deepEqual(p.blocks(), expectedBlocks(p.w.CoverStory.coverText(), typed.length));
+    assert.deepEqual(p.blocks(), expectedBlocks(p.w.PlainSight.coverText(), typed.length));
     assert.equal(await p.readReal(), typed, 'the real buffer is unaffected by the cover');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
 
 test('a cover line starting with "- " renders inside a list item; bullets share one list; headings render as headings; Backspace walks back out', async () => {
-  const p = await loadPage({ storage: { 'coverStory.cover': 'work', 'coverStory.introSeen': '1', 'coverStory.customText': '## Agenda\n- first item\n- second item\n\nClosing line' } });
+  const p = await loadPage({ storage: { 'plainSight.cover': 'work', 'plainSight.introSeen': '1', 'plainSight.customText': '## Agenda\n- first item\n- second item\n\nClosing line' } });
   try {
-    assert.equal(p.w.CoverStory.coverText(), '## Agenda\n- first item\n- second item\nClosing line');
+    assert.equal(p.w.PlainSight.coverText(), '## Agenda\n- first item\n- second item\nClosing line');
     const h2 = { type: 'h2', text: 'Agenda' };
     p.type('123456');
     assert.deepEqual(p.blocks(), [h2]);
@@ -766,7 +796,7 @@ test('a cover line starting with "- " renders inside a list item; bullets share 
     p.type('Closing');
     assert.deepEqual(p.blocks(), [h2, { type: 'li', text: 'first item' }, { type: 'li', text: 'second item' }, { type: 'p', text: 'Closing' }]);
     assert.deepEqual(Array.from(p.$('#cover').children).map((e) => e.tagName), ['H2', 'UL', 'P']);
-    assert.deepEqual(p.blocks(), expectedBlocks(p.w.CoverStory.coverText(), 37), 'reference model agrees');
+    assert.deepEqual(p.blocks(), expectedBlocks(p.w.PlainSight.coverText(), 37), 'reference model agrees');
     for (let i = 0; i < 8; i++) p.press('Backspace');     // "Closing" and its break
     assert.deepEqual(p.blocks(), [h2, { type: 'li', text: 'first item' }, { type: 'li', text: 'second item' }]);
     assert.deepEqual(Array.from(p.$('#cover').children).map((e) => e.tagName), ['H2', 'UL']);
@@ -793,11 +823,11 @@ test('picking another look on the intro switches the cover in place and keeps th
     p.start();
     await p.settle();
     assert.deepEqual(p.loads, ['book', 'work'], 'the page asked the loader for the work cover');
-    assert.equal(p.w.CoverStory.coverId(), 'work');
-    assert.equal(p.w.localStorage.getItem('coverStory.cover'), 'work');
+    assert.equal(p.w.PlainSight.coverId(), 'work');
+    assert.equal(p.w.localStorage.getItem('plainSight.cover'), 'work');
     assert.equal(p.d.title, 'Q3 planning notes');
     assert.ok(p.d.body.classList.contains('cover-work'));
-    assert.deepEqual(p.blocks(), expectedBlocks(p.w.CoverStory.coverText(), 3), 'the screen is rebuilt for the three keystrokes');
+    assert.deepEqual(p.blocks(), expectedBlocks(p.w.PlainSight.coverText(), 3), 'the screen is rebuilt for the three keystrokes');
     assert.equal(await p.readReal(), 'abc');
     p.$('#btn-help').click();
     assert.equal(p.$('input[name="mode"][value="work"]').checked, true, 'the intro shows the current cover');
@@ -805,7 +835,7 @@ test('picking another look on the intro switches the cover in place and keeps th
     p.start();
     await p.settle();
     assert.deepEqual(p.loads, ['book', 'work', 'book']);
-    assert.equal(p.w.CoverStory.coverId(), 'book');
+    assert.equal(p.w.PlainSight.coverId(), 'book');
     assert.equal(p.d.title, 'Untitled draft');
     assert.equal(await p.readReal(), 'abc');
     assert.deepEqual(p.errors, []);
@@ -831,10 +861,10 @@ test('covers/work.js: a sans work document of at least 1,200 words with headings
 });
 
 test('switching to paper loads that cover: the title block renders, "Page 1 of 1" is static, academic serif, no toolbar', async () => {
-  const p = await loadPage({ storage: { 'coverStory.cover': 'paper', 'coverStory.introSeen': '1' } });
+  const p = await loadPage({ storage: { 'plainSight.cover': 'paper', 'plainSight.introSeen': '1' } });
   try {
     const c = await importCover('paper');
-    assert.equal(p.w.CoverStory.coverId(), 'paper');
+    assert.equal(p.w.PlainSight.coverId(), 'paper');
     assert.equal(p.d.title, 'Manuscript draft');
     assert.equal(p.$('#header-left').textContent, 'Manuscript draft');
     assert.ok(p.d.body.classList.contains('font-academic') && p.d.body.classList.contains('cover-paper'));
@@ -849,7 +879,7 @@ test('switching to paper loads that cover: the title block renders, "Page 1 of 1
     const typed = 'Typing on the manuscript, a sentence long enough to pass the abstract heading.';
     p.type(typed);
     assert.equal(p.$('#page-count').textContent, 'Page 1 of 1', 'static');
-    assert.deepEqual(p.blocks(), expectedBlocks(p.w.CoverStory.coverText(), typed.length));
+    assert.deepEqual(p.blocks(), expectedBlocks(p.w.PlainSight.coverText(), typed.length));
     assert.equal(p.blocks()[0].type, 'h2', 'the paper opens with the Abstract heading');
     assert.equal(await p.readReal(), typed);
     // Back to the novel: the title block goes away.
@@ -857,7 +887,7 @@ test('switching to paper loads that cover: the title block renders, "Page 1 of 1
     p.$('input[name="mode"][value="book"]').checked = true;
     p.start();
     await p.settle();
-    assert.equal(p.w.CoverStory.coverId(), 'book');
+    assert.equal(p.w.PlainSight.coverId(), 'book');
     assert.equal(p.$('#title-block').hidden, true, 'title block hidden for the novel');
     assert.equal(p.$('#page-count'), null);
     assert.equal(await p.readReal(), typed);
@@ -867,9 +897,9 @@ test('switching to paper loads that cover: the title block renders, "Page 1 of 1
 
 test('[1] style citations pass through as plain text; reference entries are typed as text and styled as references', async () => {
   const custom = 'See [1] and [2] for details.\n\n## References\n[1] First reference.\n[2] Second reference.';
-  const p = await loadPage({ storage: { 'coverStory.cover': 'paper', 'coverStory.introSeen': '1', 'coverStory.customText': custom } });
+  const p = await loadPage({ storage: { 'plainSight.cover': 'paper', 'plainSight.introSeen': '1', 'plainSight.customText': custom } });
   try {
-    assert.equal(p.w.CoverStory.coverText(), 'See [1] and [2] for details.\n## References\n[1] First reference.\n[2] Second reference.');
+    assert.equal(p.w.PlainSight.coverText(), 'See [1] and [2] for details.\n## References\n[1] First reference.\n[2] Second reference.');
     p.type('a'.repeat(28));
     assert.deepEqual(p.blocks(), [{ type: 'p', text: 'See [1] and [2] for details.' }]);
     assert.equal(p.$('#cover').querySelectorAll('a, sup').length, 0, 'citations are plain text, not links or superscripts');
@@ -880,7 +910,7 @@ test('[1] style citations pass through as plain text; reference entries are type
     assert.equal(p.$('#cover > p.ref').textContent, '[1] First reference.');
     p.type('a'.repeat(1 + 4));                  // break, "[2] "
     assert.deepEqual(p.blocks()[3], { type: 'ref', text: '[2] ' });
-    assert.deepEqual(p.blocks(), expectedBlocks(p.w.CoverStory.coverText(), 28 + 11 + 21 + 5), 'reference model agrees');
+    assert.deepEqual(p.blocks(), expectedBlocks(p.w.PlainSight.coverText(), 28 + 11 + 21 + 5), 'reference model agrees');
     for (let i = 0; i < 5; i++) p.press('Backspace');
     assert.equal(p.blocks().length, 3);
     assert.equal(await p.readReal(), 'a'.repeat(28 + 11 + 21));
@@ -917,13 +947,13 @@ test('localStorage never holds the hidden text: only the three known keys, and n
     p.start();
     const secret = 'zq7 secret phrase 991';
     p.type(secret);
-    const allowed = ['coverStory.introSeen', 'coverStory.cover', 'coverStory.customText'];
+    const allowed = ['plainSight.introSeen', 'plainSight.cover', 'plainSight.customText'];
     const check = (label) => {
       const ls = p.w.localStorage;
       for (let i = 0; i < ls.length; i++) {
         const k = ls.key(i);
         const v = ls.getItem(k);
-        assert.ok(allowed.includes(k), label + ': unexpected key ' + k);
+        assert.ok(allowed.includes(k), label + ': unexpected key ' + k + ' (the vault is off in this test)');
         assert.ok(!v.includes('secret phrase') && !v.includes('zq7'), label + ': ' + k + ' holds typed text');
       }
     };
@@ -941,37 +971,30 @@ test('localStorage never holds the hidden text: only the three known keys, and n
     p.$('#custom-text').value = 'my own cover words';
     p.start();
     check('after custom text');
-    assert.equal(p.w.localStorage.getItem('coverStory.customText'), 'my own cover words');
+    assert.equal(p.w.localStorage.getItem('plainSight.customText'), 'my own cover words');
     await p.peek();
-    p.release('Control');
+    p.peekChord();
     check('after peek');
+    await sleep(VAULT_SAVE_DELAY_MS + 300);
+    check('after the autosave delay, with the vault off');
     assert.equal(await p.readReal(), secret);
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
 
-test('a peek hold started just before a dialog opens never shows the real text under the dialog; opening the intro ends a peek', async () => {
+test('opening a dialog ends an active peek, so the real text is never under the Save prompt or the intro', async () => {
   const p = await loadPage();
   try {
     p.start();
     p.type('under the dialog');
-    p.press('Control', { ctrlKey: true });
-    await sleep(200);
-    p.$('#btn-save').click();   // the password dialog opens during the hold
-    assert.equal(p.$('#pw').hidden, false);
-    await sleep(PEEK_HOLD_MS + 300);
-    assert.equal(p.peeking(), false, 'no peek while the dialog is open');
-    assert.equal(p.$('#real').textContent, '', 'the real text is not in the page');
-    p.release('Control');
-    p.press('Escape');
-    assert.equal(p.$('#pw').hidden, true);
-    // An active peek (Ctrl held while Save is clicked with the mouse) ends when the dialog opens.
     await p.peek();
     assert.equal(p.peeking(), true);
     p.$('#btn-save').click();
-    assert.equal(p.peeking(), false, 'opening the password dialog ends an active peek');
+    assert.equal(p.$('#pw').hidden, false);
+    assert.equal(p.peeking(), false, 'opening the password dialog ends the peek');
     assert.equal(p.$('#real').textContent, '');
-    p.release('Control');
+    assert.equal(p.press('G', { ctrlKey: true, shiftKey: true }), false, 'the chord does nothing while a dialog is open');
+    assert.equal(p.peeking(), false);
     p.press('Escape');
     assert.equal(p.$('#pw').hidden, true);
     await p.peek();
@@ -979,14 +1002,12 @@ test('a peek hold started just before a dialog opens never shows the real text u
     p.$('#btn-help').click();
     assert.equal(p.peeking(), false, 'opening the intro ends an active peek');
     assert.equal(p.$('#real').textContent, '');
-    p.release('Control');
     p.press('Escape');   // closes the intro
     assert.equal(p.$('#intro').hidden, true);
     assert.equal(await p.readReal(), 'under the dialog');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
-
 test('a cover switch whose import fails keeps the current cover, shows a toast and forgets the failed choice', async () => {
   const p = await loadPage();
   try {
@@ -998,20 +1019,144 @@ test('a cover switch whose import fails keeps the current cover, shows a toast a
     p.start();
     await p.settle();
     assert.deepEqual(p.loads, ['book', 'work']);
-    assert.equal(p.w.CoverStory.coverId(), 'book', 'the novel stays on screen');
+    assert.equal(p.w.PlainSight.coverId(), 'book', 'the novel stays on screen');
     assert.equal(p.$('#load-notice').hidden, true, 'no notice while a cover is on screen');
     assert.equal(p.toast(), 'Could not load the cover text');
-    assert.equal(p.w.localStorage.getItem('coverStory.cover'), 'book', 'the failed choice is not remembered');
+    assert.equal(p.w.localStorage.getItem('plainSight.cover'), 'book', 'the failed choice is not remembered');
     assert.equal(await p.readReal(), 'abc');
     assert.deepEqual(p.errors, []);
     // With nothing on screen the stored id is dropped and the notice is shown.
-    const q = await loadPage({ inject: false, storage: { 'coverStory.cover': 'paper', 'coverStory.introSeen': '1' } });
+    const q = await loadPage({ inject: false, storage: { 'plainSight.cover': 'paper', 'plainSight.introSeen': '1' } });
     try {
-      q.w.CoverStory.coverFailed('paper');
-      assert.equal(q.w.localStorage.getItem('coverStory.cover'), null);
+      q.w.PlainSight.coverFailed('paper');
+      assert.equal(q.w.localStorage.getItem('plainSight.cover'), null);
       assert.equal(q.$('#load-notice').hidden, false);
       assert.deepEqual(q.errors, []);
     } finally { q.close(); }
+  } finally { p.close(); }
+});
+
+test('device vault: on with a phrase, ciphertext only in localStorage, autosave, the tell, Esc locks and keeps the copy', async () => {
+  const p = await loadPage();
+  try {
+    p.start();
+    p.type('first words');
+    await p.vaultOn('correct horse battery staple');
+    assert.equal(p.$('#intro').hidden, true, 'Start closed the intro');
+    assert.ok(p.d.body.classList.contains('vault-open'), 'the vault is open');
+    let dump = p.storageDump();
+    assert.ok(dump['plainSight.vault'], 'a vault record exists');
+    let rec = JSON.parse(dump['plainSight.vault']);
+    assert.equal(rec.format, 'plain-sight');
+    assert.equal(Buffer.from(rec.salt, 'base64').length, 16);
+    assert.equal(Buffer.from(rec.iv, 'base64').length, 12);
+    assert.equal(Buffer.from(rec.data, 'base64').length, 'first words'.length + 16, 'ciphertext of the current text');
+    for (const v of Object.values(dump)) assert.ok(!v.includes('first words') && !v.includes('correct horse'), 'neither the text nor the phrase is stored in clear');
+    // Autosave after typing.
+    p.type(' and more');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    const rec2 = JSON.parse(p.storageDump()['plainSight.vault']);
+    assert.equal(Buffer.from(rec2.data, 'base64').length, 'first words and more'.length + 16, 'autosave caught the new text');
+    assert.notEqual(rec2.iv, rec.iv, 'a fresh IV every save');
+    assert.equal(rec2.salt, rec.salt, 'the salt stays with the phrase');
+    // Esc wipes the screen, locks the vault, keeps the copy.
+    p.press('Escape');
+    assert.equal(p.coverText(), '');
+    assert.equal(await p.readReal(), '');
+    assert.ok(!p.d.body.classList.contains('vault-open'), 'locked');
+    assert.ok(p.storageDump()['plainSight.vault'], 'the encrypted copy stays');
+    // While locked, typing is not saved anywhere.
+    p.type('typed while locked');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    assert.equal(p.storageDump()['plainSight.vault'], p.storageDump()['plainSight.vault']);
+    assert.equal(JSON.parse(p.storageDump()['plainSight.vault']).iv, rec2.iv, 'nothing written while locked');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('device vault: the unlock chord restores the saved text on a later visit; a wrong phrase does nothing; untick deletes the copy', async () => {
+  const p = await loadPage();
+  let storage;
+  try {
+    p.start();
+    p.type('kept between visits');
+    await p.vaultOn('correct horse battery staple');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    storage = p.storageDump();
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+
+  // A later visit: same browser storage, fresh page, vault locked.
+  const q = await loadPage({ storage });
+  try {
+    assert.equal(q.$('#intro').hidden, true);
+    assert.ok(!q.d.body.classList.contains('vault-open'), 'locked on arrival');
+    assert.equal(q.coverText(), '', 'nothing on screen');
+    // Wrong phrase: the chord does nothing and the typed phrase stays.
+    q.type('wrong phrase typed here');
+    let r = q.unlockChord();
+    assert.equal(r.armed, true, 'Ctrl+E is handled while a vault exists');
+    assert.equal(r.fired, true, 'Ctrl+Enter completes the chord');
+    await sleep(500);
+    assert.ok(!q.d.body.classList.contains('vault-open'), 'still locked');
+    assert.equal(await q.readReal(), 'wrong phrase typed here', 'nothing changed');
+    q.press('Escape');
+    // Right phrase.
+    q.type('correct horse battery staple');
+    q.unlockChord();
+    await sleep(500);
+    assert.ok(q.d.body.classList.contains('vault-open'), 'open');
+    assert.equal(await q.readReal(), 'kept between visits', 'the saved text replaced the phrase');
+    assert.equal(q.coverLength(), 'kept between visits'.length, 'the cover was rebuilt to the saved length');
+    for (const v of Object.values(q.storageDump())) assert.ok(!v.includes('kept between') && !v.includes('correct horse'));
+    // The chord does nothing while the vault is already open.
+    q.type(' plus');
+    q.unlockChord();
+    await sleep(300);
+    assert.equal(await q.readReal(), 'kept between visits plus');
+    // Enter outside the window does not fire.
+    q.press('Escape');
+    q.type('correct horse battery staple');
+    q.press('e', { ctrlKey: true });
+    const realNow = q.w.Date.now();
+    q.w.Date.now = () => realNow + UNLOCK_WINDOW_MS + 1000;
+    assert.equal(q.press('Enter', { ctrlKey: true }), false, 'a late Enter is the browser\'s');
+    await sleep(300);
+    assert.ok(!q.d.body.classList.contains('vault-open'));
+    q.w.Date.now = () => realNow;
+    // Untick in the intro: the copy is deleted.
+    q.$('#btn-help').click();
+    assert.equal(q.$('#vault-on').checked, true, 'the intro shows the vault as on');
+    q.$('#vault-on').checked = false;
+    q.$('#vault-on').dispatchEvent(new q.w.Event('change', { bubbles: true }));
+    q.start();
+    assert.equal(q.storageDump()['plainSight.vault'], undefined, 'copy deleted');
+    assert.equal(q.toast(), 'Saved copy deleted from this device');
+    assert.equal(q.press('e', { ctrlKey: true }), false, 'Ctrl+E is the browser\'s again');
+    assert.deepEqual(q.errors, []);
+  } finally { q.close(); }
+});
+
+test('device vault: a short or missing phrase is refused and the intro stays open; the box can be left unticked', async () => {
+  const p = await loadPage();
+  try {
+    p.$('#vault-on').checked = true;
+    p.$('#vault-on').dispatchEvent(new p.w.Event('change', { bubbles: true }));
+    assert.equal(p.$('#vault-phrase').disabled, false);
+    p.start();
+    assert.equal(p.$('#intro').hidden, false, 'no phrase: stays open');
+    assert.equal(p.toast(), 'Enter a phrase to keep your text on this device');
+    p.$('#vault-phrase').value = 'short one';
+    p.start();
+    assert.equal(p.$('#intro').hidden, false, 'short phrase: stays open');
+    assert.equal(p.toast(), 'Use a phrase of at least 12 characters');
+    assert.equal(p.storageDump()['plainSight.vault'], undefined);
+    p.$('#vault-on').checked = false;
+    p.start();
+    assert.equal(p.$('#intro').hidden, true, 'unticked: closes without a vault');
+    assert.equal(p.storageDump()['plainSight.vault'], undefined);
+    assert.ok(!p.d.body.classList.contains('vault-open'));
+    assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
 

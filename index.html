@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!--
-  Cover Story. A static page: whatever you type goes into a hidden buffer while
+  Plain Sight. A static page: whatever you type goes into a hidden buffer while
   the screen shows a plausible document being written.
 
   No server, no analytics, no network calls. The policy on the next line is
@@ -207,7 +207,13 @@
   .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   .note { color: var(--muted); font-size: 13px; }
   .card .note { margin-top: 6px; }
-  .modes { border: 1px solid var(--rule); border-radius: 6px; padding: 10px 14px 12px; margin: 16px 0 0; }
+  /* The only sign that the device vault is open: the header text in ink, not grey. */
+  body.vault-open #header-meta { color: var(--ink); }
+  .modes, .vault { border: 1px solid var(--rule); border-radius: 6px; padding: 10px 14px 12px; margin: 16px 0 0; }
+  .vault label.check { display: flex; align-items: flex-start; gap: 8px; margin: 4px 0 8px; }
+  .vault label.check input { margin-top: 3px; }
+  .vault label[for] { display: block; margin: 6px 0 4px; font-size: 13px; }
+  .vault input[type="password"]:disabled { background: #f6f5f2; color: var(--muted); }
   .modes legend { padding: 0 6px; }
   .modes label { display: inline-flex; align-items: center; gap: 6px; margin: 4px 18px 0 0; }
   .modes input:disabled + span { color: var(--muted); }
@@ -233,8 +239,8 @@
            text shown on screen, never the hidden real text. "Last edited just
            now" on the work document is static decoration. -->
       <span id="header-meta"></span>
-      <button id="btn-save" type="button" title="Download your text as an encrypted .cover file">Save</button>
-      <button id="btn-open" type="button" title="Open a .cover file">Open</button>
+      <button id="btn-save" type="button" title="Download your text as an encrypted .sight file">Save</button>
+      <button id="btn-open" type="button" title="Open a .sight file">Open</button>
     </div>
   </div>
   <!-- Fake toolbar, shown with the work-document cover only. Pure decoration:
@@ -273,21 +279,31 @@
 
 <button id="btn-help" class="help" type="button" aria-label="How this page works">?</button>
 <div id="toast" role="status" aria-live="polite"></div>
-<input id="file-input" type="file" accept=".cover,application/json" hidden>
+<input id="file-input" type="file" accept=".sight,.cover,application/json" hidden>
 
 <!-- Intro: shown on the first visit and whenever the ? button is pressed. -->
 <div id="intro" class="overlay" role="dialog" aria-modal="true" aria-labelledby="intro-title" hidden>
   <div class="card">
-    <h1 id="intro-title">Cover Story</h1>
+    <h1 id="intro-title">Plain Sight</h1>
     <p>Whatever you type on this page goes into a hidden buffer. The screen shows a document being written instead. Nothing you type leaves this page: there is no server, no account and no analytics, and the page never sends what you type anywhere.</p>
     <ol>
-      <li><strong>Peek.</strong> Hold <kbd data-mod>Ctrl</kbd> for about a second to see what you actually wrote. Let go to hide it again.</li>
+      <li><strong>Peek.</strong> Press <kbd data-mod>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>G</kbd> to see what you actually wrote. Press it again, or type anything, to hide it. You can read and copy your text, not edit earlier parts of it.</li>
       <li><strong>Copy.</strong> While peeking, press <kbd data-mod>Ctrl</kbd> + <kbd>C</kbd> to copy your real text to the clipboard.</li>
-      <li><strong>Clear.</strong> Press <kbd>Esc</kbd> to erase the hidden text and the screen. The page also clears itself after 10 minutes in a background tab.</li>
-      <li><strong>Save and open.</strong> Save downloads your text as a <code>.cover</code> file encrypted with AES-256-GCM, the key derived from your password with PBKDF2 (SHA-256, 310,000 rounds). Open restores it and replaces what is on the page. There is no way to recover a forgotten password.</li>
+      <li><strong>Clear.</strong> Press <kbd>Esc</kbd> to erase the hidden text and the screen. The page also clears itself after 10 minutes in a background tab. A saved copy on this device, if you turned that on below, stays and is locked.</li>
+      <li><strong>Save and open.</strong> Save downloads your text as a <code>.sight</code> file encrypted with AES-256-GCM, the key derived from your password with PBKDF2 (SHA-256, 310,000 rounds). Open restores it and replaces what is on the page. There is no way to recover a forgotten password.</li>
     </ol>
-    <p class="note">Reloading or closing the tab erases the hidden text. Save first if you need it. The header belongs to the cover: its word count counts the text on screen, not your words.</p>
-    <!-- Mode selector. The choice is kept in localStorage under coverStory.cover
+    <p class="note">Reloading or closing the tab erases the hidden text unless you keep a copy on this device. The header belongs to the cover: its word count counts the text on screen, not your words.</p>
+    <!-- Device vault: optional, off by default. The hidden text is saved in
+         localStorage as AES-256-GCM ciphertext under a phrase; the key exists
+         only in memory while the vault is open. -->
+    <fieldset class="vault">
+      <legend><strong>Keep my text on this device</strong> (optional)</legend>
+      <label class="check"><input type="checkbox" id="vault-on"> <span>Save my text in this browser, encrypted, so I can come back to it later.</span></label>
+      <label for="vault-phrase">Phrase, 12 characters or more</label>
+      <input id="vault-phrase" type="password" autocomplete="new-password" spellcheck="false" disabled>
+      <p class="note" id="vault-status">To come back to your text later: type your phrase on the blank page, then hold <kbd data-mod>Ctrl</kbd>, press <kbd>E</kbd>, then <kbd>Enter</kbd>. Nothing happens for a wrong phrase. There is no recovery for a forgotten one.</p>
+    </fieldset>
+    <!-- Mode selector. The choice is kept in localStorage under plainSight.cover
          and the matching covers/<id>.js is imported. -->
     <fieldset class="modes">
       <legend><strong>What the screen should show</strong></legend>
@@ -323,21 +339,26 @@
 
   // The engine. Covers (the text on screen plus a few chrome settings) live in
   // covers/<id>.js as ES modules and are loaded by the small module script at
-  // the end of this file, which hands them to CoverStory.setCover().
+  // the end of this file, which hands them to PlainSight.setCover().
 
   // ------------------------------------------------------------------
   // Constants
   // ------------------------------------------------------------------
-  const PEEK_HOLD_MS = 900;            // hold Ctrl or Cmd this long to peek
+  const UNLOCK_WINDOW_MS = 2000;       // Cmd+E (Ctrl+E) must be followed by Cmd+Enter within this
+  const VAULT_MIN_PHRASE = 12;         // shortest phrase the device vault accepts
+  const VAULT_SAVE_DELAY_MS = 1500;    // autosave settles this long after the last keystroke
   const TYPO_RATE = 0.035;             // chance of a simulated typo at a word start
   const HIDDEN_WIPE_MS = 10 * 60 * 1000; // wipe after this long in a hidden tab
   const PBKDF2_ITERATIONS = 310000;
   const MAX_ITERATIONS_ACCEPTED = 2000000; // refuse files that ask for more; a huge count would hang the tab
   const STORAGE = {
-    intro: 'coverStory.introSeen',
-    custom: 'coverStory.customText',
-    cover: 'coverStory.cover'
+    intro: 'plainSight.introSeen',
+    custom: 'plainSight.customText',
+    cover: 'plainSight.cover',
+    vault: 'plainSight.vault'          // the encrypted copy of the hidden text, only when the vault is on
   };
+  const FILE_EXT = '.sight';
+  const FILE_FORMATS = ['plain-sight', 'cover-story'];   // files from the project's earlier name still open
   const COVER_IDS = ['book', 'work', 'paper'];
   const FONTS = ['serif', 'sans', 'academic'];
   // Block markers recognised at the start of a cover line. A consumed marker
@@ -374,6 +395,9 @@
   const pwInput = $('#pw-input');
   const fileInput = $('#file-input');
   const loadNotice = $('#load-notice');
+  const vaultOnEl = $('#vault-on');
+  const vaultPhraseEl = $('#vault-phrase');
+  const vaultStatusEl = $('#vault-status');
   const titleBlockEl = $('#title-block');
   const caret = document.createElement('span');
   caret.className = 'caret';
@@ -691,26 +715,33 @@
   function requestCover(id) {
     storageSet(STORAGE.cover, id);
     if (cover && cover.id === id) return;
-    document.dispatchEvent(new CustomEvent('coverstory:select', { detail: { id } }));
+    document.dispatchEvent(new CustomEvent('plainsight:select', { detail: { id } }));
   }
 
   // ------------------------------------------------------------------
   // Typing
   // ------------------------------------------------------------------
   function typeChar(ch) {
+    if (peeking) endPeek();   // the real text never stays on screen while typing continues
     real += ch;
     if (pendingTypo) { undoStep(); afterCorrection = true; }   // the correcting keystroke: the wrong letter goes away
     else advanceCover();
     updateHeader();
+    vaultScheduleSave();
   }
 
   function backspace() {
+    if (peeking) endPeek();
     if (real.length) real = real.slice(0, -1);
     if (steps.length) undoStep();
     updateHeader();
+    vaultScheduleSave();
   }
 
+  // Erases the hidden text and the screen. An open vault is saved first and
+  // then locked; its encrypted copy stays on the device.
   function wipe() {
+    if (vaultOpen()) { vaultSaveNow(); vaultLock(); }
     real = '';
     resetCover();
     if (peeking) realEl.textContent = '';
@@ -728,21 +759,24 @@
   function onKeyDown(e) {
     if (e.isComposing) return;
     const key = e.key;
+    if (key === 'Control' || key === 'Meta' || key === 'Shift' || key === 'Alt') return;   // a modifier on its own
 
-    // Peek: Ctrl or Cmd held on its own.
-    if (key === 'Control' || key === 'Meta') {
-      if (!e.repeat && !dialogOpen()) startPeekTimer();
-      return;
-    }
-
-    // Anything with Ctrl, Cmd or Alt held belongs to the browser and is not
-    // recorded. The one exception: Ctrl+C / Cmd+C while peeking copies the
-    // real text.
+    // Chords with Ctrl or Cmd (either works on every platform): peek, copy
+    // while peeking, and the two halves of the vault unlock. Every other chord,
+    // and anything with Alt, belongs to the browser and is not recorded.
     if (e.ctrlKey || e.metaKey || e.altKey) {
-      if (peeking && !e.altKey && !e.shiftKey && key.toLowerCase() === 'c') {
+      if (e.altKey || dialogOpen() || !cover) return;
+      const k = key.toLowerCase();
+      if (e.shiftKey && k === 'g') { e.preventDefault(); togglePeek(); return; }
+      if (!e.shiftKey && k === 'c' && peeking) { e.preventDefault(); copyReal(); return; }
+      if (!e.shiftKey && k === 'e' && vaultStored()) { e.preventDefault(); unlockArmedAt = Date.now(); return; }
+      if (!e.shiftKey && key === 'Enter' && unlockArmedAt && Date.now() - unlockArmedAt <= UNLOCK_WINDOW_MS) {
         e.preventDefault();
-        copyReal();
+        unlockArmedAt = 0;
+        vaultTryUnlock();
+        return;
       }
+      unlockArmedAt = 0;
       return;
     }
 
@@ -767,32 +801,24 @@
   // ------------------------------------------------------------------
   // Peek
   // ------------------------------------------------------------------
-  let peekTimer = null;
   let peeking = false;
 
-  function startPeekTimer() {
-    if (peekTimer || peeking) return;
-    peekTimer = setTimeout(() => { peekTimer = null; beginPeek(); }, PEEK_HOLD_MS);
+  // Ctrl+Shift+G (Cmd+Shift+G) toggles the peek. Typing, a window blur, a
+  // hidden tab and any dialog end it: askPassword and openIntro call endPeek.
+  function togglePeek() {
+    if (peeking) endPeek();
+    else beginPeek();
   }
-  function cancelPeekTimer() {
-    if (peekTimer) { clearTimeout(peekTimer); peekTimer = null; }
-  }
-  // Dialogs cannot open over the real text: askPassword and openIntro call
-  // endPeek first, which also cancels a pending hold.
   function beginPeek() {
     peeking = true;
     realEl.textContent = real;
     body.classList.add('peek');
   }
   function endPeek() {
-    cancelPeekTimer();
     if (!peeking) return;
     peeking = false;
     body.classList.remove('peek');
     realEl.textContent = '';
-  }
-  function onKeyUp(e) {
-    if (e.key === 'Control' || e.key === 'Meta') endPeek();
   }
 
   async function copyReal() {
@@ -830,6 +856,7 @@
   function onVisibilityChange() {
     if (document.hidden) {
       endPeek();
+      if (vaultOpen()) vaultSaveNow();
       if (real && !hiddenAt) {
         hiddenAt = Date.now();
         hiddenTimer = setTimeout(wipeAfterAway, HIDDEN_WIPE_MS);
@@ -876,15 +903,12 @@
     );
   }
 
-  // Returns the .cover file contents (a JSON string). The plaintext stays here.
-  async function exportEncrypted(password) {
-    if (typeof password !== 'string' || !password) throw new Error('A password is required');
-    const salt = crypto.getRandomValues(new Uint8Array(16));
+  // Encrypts the hidden text under a key and returns the file or vault record.
+  async function encryptRecord(key, salt) {
     const iv = crypto.getRandomValues(new Uint8Array(12));
-    const key = await deriveKey(password, salt, PBKDF2_ITERATIONS);
     const data = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(real));
-    return JSON.stringify({
-      format: 'cover-story',
+    return {
+      format: 'plain-sight',
       version: 1,
       cipher: 'AES-256-GCM',
       kdf: 'PBKDF2-SHA-256',
@@ -892,7 +916,15 @@
       salt: bytesToBase64(salt),
       iv: bytesToBase64(iv),
       data: bytesToBase64(new Uint8Array(data))
-    }, null, 2);
+    };
+  }
+
+  // Returns the .sight file contents (a JSON string). The plaintext stays here.
+  async function exportEncrypted(password) {
+    if (typeof password !== 'string' || !password) throw new Error('A password is required');
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    const key = await deriveKey(password, salt, PBKDF2_ITERATIONS);
+    return JSON.stringify(await encryptRecord(key, salt), null, 2);
   }
 
   // The three byte fields are required. The descriptive fields are optional
@@ -900,7 +932,7 @@
   function looksLikeCoverFile(f) {
     if (!f || typeof f !== 'object') return false;
     if (typeof f.salt !== 'string' || typeof f.iv !== 'string' || typeof f.data !== 'string') return false;
-    if (f.format !== undefined && f.format !== 'cover-story') return false;
+    if (f.format !== undefined && !FILE_FORMATS.includes(f.format)) return false;
     if (f.version !== undefined && f.version !== 1) return false;
     if (f.cipher !== undefined && f.cipher !== 'AES-256-GCM') return false;
     if (f.kdf !== undefined && f.kdf !== 'PBKDF2-SHA-256') return false;
@@ -908,12 +940,10 @@
     return true;
   }
 
-  // Decrypts a .cover file (JSON string or parsed object) and replaces the
-  // hidden buffer with its contents. Throws on a wrong password or a damaged
-  // file; the callers turn that into a toast.
-  async function importEncrypted(file, password) {
-    const f = typeof file === 'string' ? JSON.parse(file) : file;
-    if (!looksLikeCoverFile(f)) throw new Error('Not a .cover file');
+  // Decrypts a record (a file or the device vault) with a password and
+  // returns { text, key, salt }. Throws on a wrong password or damaged data.
+  async function decryptRecord(f, password) {
+    if (!looksLikeCoverFile(f)) throw new Error('Not a ' + FILE_EXT + ' file');
     const iterations = f.iterations === undefined ? PBKDF2_ITERATIONS : f.iterations;
     if (!Number.isInteger(iterations) || iterations < 1000 || iterations > MAX_ITERATIONS_ACCEPTED) {
       throw new Error('Unsupported iteration count');
@@ -924,9 +954,96 @@
     if (salt.length !== 16 || iv.length !== 12) throw new Error('Damaged file');
     const key = await deriveKey(password, salt, iterations);
     const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, data);
-    real = new TextDecoder().decode(plain);
+    return { text: new TextDecoder().decode(plain), key, salt };
+  }
+
+  // Replaces the hidden buffer with text and rebuilds the screen to match.
+  function replaceReal(text) {
+    real = text;
     rebuildCoverForLength(real.length);
     if (peeking) realEl.textContent = real;
+    vaultScheduleSave();
+  }
+
+  // Decrypts a .sight file (JSON string or parsed object) and replaces the
+  // hidden buffer with its contents. Throws on a wrong password or a damaged
+  // file; the callers turn that into a toast.
+  async function importEncrypted(file, password) {
+    const f = typeof file === 'string' ? JSON.parse(file) : file;
+    const r = await decryptRecord(f, password);
+    replaceReal(r.text);
+  }
+
+  // ------------------------------------------------------------------
+  // Device vault: the hidden text kept in localStorage as ciphertext, under
+  // a phrase. Off by default. The key exists only in memory while open.
+  // ------------------------------------------------------------------
+  let vaultKey = null;
+  let vaultSalt = null;
+  let vaultSaveTimer = null;
+  let unlockArmedAt = 0;
+
+  function vaultStored() {
+    const raw = storageGet(STORAGE.vault);
+    if (!raw) return null;
+    try {
+      const v = JSON.parse(raw);
+      return looksLikeCoverFile(v) ? v : null;
+    } catch (err) {
+      return null;
+    }
+  }
+  function vaultOpen() { return vaultKey !== null; }
+
+  // Turns the vault on with a phrase: a fresh salt, the key in memory, the
+  // current text saved at once.
+  async function vaultEnable(phrase) {
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    vaultKey = await deriveKey(phrase, salt, PBKDF2_ITERATIONS);
+    vaultSalt = salt;
+    body.classList.add('vault-open');
+    await vaultSaveNow();
+  }
+  // Locks the vault: forgets the key, keeps the encrypted copy.
+  function vaultLock() {
+    vaultKey = null;
+    vaultSalt = null;
+    clearTimeout(vaultSaveTimer);
+    vaultSaveTimer = null;
+    unlockArmedAt = 0;
+    body.classList.remove('vault-open');
+  }
+  // Turns the vault off: locks it and deletes the encrypted copy.
+  function vaultDisable() {
+    vaultLock();
+    storageSet(STORAGE.vault, '');
+  }
+  async function vaultSaveNow() {
+    if (!vaultKey) return;
+    const record = await encryptRecord(vaultKey, vaultSalt);
+    if (vaultKey) storageSet(STORAGE.vault, JSON.stringify(record));
+  }
+  function vaultScheduleSave() {
+    if (!vaultKey) return;
+    clearTimeout(vaultSaveTimer);
+    vaultSaveTimer = setTimeout(() => { vaultSaveTimer = null; vaultSaveNow(); }, VAULT_SAVE_DELAY_MS);
+  }
+  // The unlock chord. The hidden buffer holds the phrase the user just typed.
+  // Right phrase: the saved text replaces it and the vault is open. Wrong
+  // phrase, no vault, or a vault already open: nothing happens, on purpose.
+  async function vaultTryUnlock() {
+    const stored = vaultStored();
+    if (!stored || vaultOpen() || !real) return;
+    try {
+      const r = await decryptRecord(stored, real);
+      if (vaultOpen()) return;
+      vaultKey = r.key;
+      vaultSalt = r.salt;
+      body.classList.add('vault-open');
+      replaceReal(r.text);
+    } catch (err) {
+      /* nothing happens, on purpose */
+    }
   }
 
   function fileStamp() {
@@ -954,7 +1071,7 @@
     try {
       const json = await exportEncrypted(password);
       const slug = cover.tabTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'draft';
-      downloadText(json, slug + '-' + fileStamp() + '.cover');
+      downloadText(json, slug + '-' + fileStamp() + FILE_EXT);
       toast('Saved');
     } catch (err) {
       toast('Could not save');
@@ -969,10 +1086,10 @@
     try {
       parsed = JSON.parse(await file.text());
     } catch (err) {
-      toast('That is not a .cover file');
+      toast('That is not a ' + FILE_EXT + ' file');
       return;
     }
-    if (!looksLikeCoverFile(parsed)) { toast('That is not a .cover file'); return; }
+    if (!looksLikeCoverFile(parsed)) { toast('That is not a ' + FILE_EXT + ' file'); return; }
     const password = await askPassword('Password for this file', 'Opening replaces what is on the page now.', 'Open');
     if (password === null) return;
     try {
@@ -1014,10 +1131,47 @@
     customTextEl.value = customText;
     const current = cover ? cover.id : selectedCoverId();
     for (const radio of document.querySelectorAll('input[name="mode"]')) radio.checked = radio.value === current;
+    const stored = vaultStored() !== null;
+    vaultOnEl.checked = stored || vaultOpen();
+    vaultPhraseEl.value = '';
+    vaultPhraseEl.disabled = !vaultOnEl.checked;
+    vaultStatusEl.textContent = stored
+      ? (vaultOpen() ? 'The vault is open and saving as you type. Untick to delete the saved copy. Enter a new phrase to change it.'
+                     : 'A saved copy is on this device. Type your phrase on the blank page, then hold ' + modKeyName() + ', press E, then Enter. Untick to delete the copy.')
+      : 'To come back to your text later: type your phrase on the blank page, then hold ' + modKeyName() + ', press E, then Enter. Nothing happens for a wrong phrase. There is no recovery for a forgotten one.';
     introEl.hidden = false;
     $('#btn-start').focus();
   }
+  // Applies the vault choices on Start. Returns false when the intro must stay
+  // open (a phrase that is too short, or none at all).
+  function applyVaultChoice() {
+    const want = vaultOnEl.checked;
+    const phrase = vaultPhraseEl.value;
+    const stored = vaultStored() !== null;
+    if (!want) {
+      if (stored || vaultOpen()) { vaultDisable(); toast('Saved copy deleted from this device'); }
+      return true;
+    }
+    if (phrase.length === 0) {
+      if (stored || vaultOpen()) return true;   // nothing to change
+      toast('Enter a phrase to keep your text on this device');
+      vaultPhraseEl.focus();
+      return false;
+    }
+    if (phrase.length < VAULT_MIN_PHRASE) {
+      toast('Use a phrase of at least ' + VAULT_MIN_PHRASE + ' characters');
+      vaultPhraseEl.focus();
+      return false;
+    }
+    vaultEnable(phrase);
+    return true;
+  }
+  function startWriting() {
+    if (!applyVaultChoice()) return;
+    closeIntro();
+  }
   function closeIntro() {
+    vaultPhraseEl.value = '';
     const typed = customTextEl.value.trim();
     if (typed !== customText) {
       customText = typed;
@@ -1065,15 +1219,16 @@
   // ------------------------------------------------------------------
   // Wiring
   // ------------------------------------------------------------------
-  function init() {
+  function modKeyName() {
     const platform = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || '';
-    const modName = /mac|iphone|ipad/i.test(platform) ? 'Cmd' : 'Ctrl';
-    for (const el of document.querySelectorAll('[data-mod]')) el.textContent = modName;
+    return /mac|iphone|ipad/i.test(platform) ? 'Cmd' : 'Ctrl';
+  }
+  function init() {
+    for (const el of document.querySelectorAll('[data-mod]')) el.textContent = modKeyName();
 
     customText = (storageGet(STORAGE.custom) || '').trim();
 
     document.addEventListener('keydown', onKeyDown);
-    document.addEventListener('keyup', onKeyUp);
     window.addEventListener('blur', endPeek);
     document.addEventListener('visibilitychange', onVisibilityChange);
     window.addEventListener('beforeunload', (e) => {
@@ -1084,7 +1239,8 @@
     $('#btn-open').addEventListener('click', () => { blurActive(); fileInput.click(); });
     fileInput.addEventListener('change', onFileChosen);
     $('#btn-help').addEventListener('click', () => { blurActive(); openIntro(); });
-    $('#btn-start').addEventListener('click', closeIntro);
+    $('#btn-start').addEventListener('click', startWriting);
+    vaultOnEl.addEventListener('change', () => { vaultPhraseEl.disabled = !vaultOnEl.checked; if (vaultOnEl.checked) vaultPhraseEl.focus(); });
     pwForm.addEventListener('submit', (e) => {
       e.preventDefault();
       const value = pwInput.value;
@@ -1101,8 +1257,8 @@
   // A small public surface for the cover loader and the tests. Nothing on it
   // reads or returns the hidden buffer in any form, encrypted or not. Save and
   // Open are reachable only through their buttons.
-  window.CoverStory = Object.freeze({
-    version: '1.0.1',
+  window.PlainSight = Object.freeze({
+    version: '1.1.0',
     coverIds: COVER_IDS.slice(),
     coverId: () => (cover ? cover.id : null),
     coverText: () => coverText,
@@ -1115,9 +1271,9 @@
 </script>
 <!-- Cover loader. Covers are ES modules in covers/<id>.js, imported from this
      same origin only (the Content-Security-Policy above allows nothing else).
-     The engine asks for a different cover with a coverstory:select event. -->
+     The engine asks for a different cover with a plainsight:select event. -->
 <script type="module">
-  const api = window.CoverStory;
+  const api = window.PlainSight;
   async function load(id) {
     try {
       const mod = await import('./covers/' + id + '.js');
@@ -1126,7 +1282,7 @@
       api.coverFailed(id);
     }
   }
-  document.addEventListener('coverstory:select', (e) => load(e.detail.id));
+  document.addEventListener('plainsight:select', (e) => load(e.detail.id));
   load(api.selectedCoverId());
 </script>
 </body>
