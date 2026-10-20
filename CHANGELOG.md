@@ -41,3 +41,7 @@ An independent Delivery Manager gate on 643bdf3 found one P1, two P2 and five P3
 ## 1.1.2, 2026-10-20: storage key migration (this commit)
 
 Visitors who used the page before the rename keep their intro flag, cover choice and custom cover text: the old coverStory.* keys are moved to plainSight.* once and removed. The README notes that two tabs share one vault copy with the last save winning.
+
+## 1.2.0, 2026-10-20: save into a folder (this commit)
+
+On the intro screen, browsers with the File System Access API (Chrome, Edge) offer "Choose a folder on this computer". With a folder chosen, Save writes the real text as a plain text file named by the moment of the click, `YYYY-MM-DD HH-MM-SS.txt`, into that folder, with no password; "Stop using the folder" brings the encrypted download back. The folder handle is kept in IndexedDB. Other browsers keep the download. The README says plainly that these files are unencrypted on disk. Suite now 44 tests, the folder exercised with a simulated picker; a real Chrome check is still to come.

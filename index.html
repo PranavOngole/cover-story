@@ -214,6 +214,7 @@
   .vault label.check input { margin-top: 3px; }
   .vault label[for] { display: block; margin: 6px 0 4px; font-size: 13px; }
   .vault input[type="password"]:disabled { background: #f6f5f2; color: var(--muted); }
+  #folder-box .row { justify-content: flex-start; margin-top: 8px; }
   .modes legend { padding: 0 6px; }
   .modes label { display: inline-flex; align-items: center; gap: 6px; margin: 4px 18px 0 0; }
   .modes input:disabled + span { color: var(--muted); }
@@ -302,6 +303,19 @@
       <label for="vault-phrase">Phrase, 12 characters or more</label>
       <input id="vault-phrase" type="password" autocomplete="new-password" spellcheck="false" disabled>
       <p class="note" id="vault-status">To come back to your text later: type your phrase on the blank page, then hold <kbd data-mod>Ctrl</kbd>, press <kbd>E</kbd>, then <kbd>Enter</kbd>. Nothing happens for a wrong phrase. There is no recovery for a forgotten one.</p>
+    </fieldset>
+    <!-- Save location. Where the browser offers folder access (Chrome, Edge:
+         the File System Access API) Save can write a plain text file into a
+         folder the user picks once; the folder handle is kept in IndexedDB.
+         Elsewhere Save keeps downloading an encrypted .sight file. -->
+    <fieldset class="vault" id="folder-box">
+      <legend><strong>Where Save writes</strong></legend>
+      <p class="note" id="folder-status">Save downloads an encrypted <code>.sight</code> file.</p>
+      <div class="row">
+        <button id="btn-folder" class="btn" type="button">Choose a folder on this computer</button>
+        <button id="btn-folder-forget" class="btn" type="button" hidden>Stop using the folder</button>
+      </div>
+      <p class="note" id="folder-note">With a folder chosen, Save writes a plain text file named by the moment you press it, such as <code>2026-10-20 14-55-03.txt</code>. Plain text means anyone who can open that folder can read it. Folder access exists in Chrome and Edge; other browsers keep the download.</p>
     </fieldset>
     <!-- Mode selector. The choice is kept in localStorage under plainSight.cover
          and the matching covers/<id>.js is imported. -->
@@ -398,6 +412,9 @@
   const vaultOnEl = $('#vault-on');
   const vaultPhraseEl = $('#vault-phrase');
   const vaultStatusEl = $('#vault-status');
+  const folderStatusEl = $('#folder-status');
+  const folderChooseBtn = $('#btn-folder');
+  const folderForgetBtn = $('#btn-folder-forget');
   const titleBlockEl = $('#title-block');
   const caret = document.createElement('span');
   caret.className = 'caret';
@@ -1086,6 +1103,118 @@
     }
   }
 
+  // ------------------------------------------------------------------
+  // Save folder: the File System Access API (Chrome, Edge). The chosen
+  // folder's handle is kept in IndexedDB so it survives a reload; the
+  // browser asks for permission again when it needs to.
+  // ------------------------------------------------------------------
+  let folderHandle = null;
+  const FOLDER_DB = 'plainSight';
+  const FOLDER_STORE = 'handles';
+
+  function folderSupported() { return typeof window.showDirectoryPicker === 'function'; }
+
+  function openFolderDb() {
+    return new Promise((resolve) => {
+      if (!('indexedDB' in window) || !window.indexedDB) { resolve(null); return; }
+      let req;
+      try { req = indexedDB.open(FOLDER_DB, 1); } catch (err) { resolve(null); return; }
+      req.onupgradeneeded = () => { req.result.createObjectStore(FOLDER_STORE); };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => resolve(null);
+      req.onblocked = () => resolve(null);
+    });
+  }
+  async function folderLoad() {
+    const db = await openFolderDb();
+    if (!db) return null;
+    return new Promise((resolve) => {
+      try {
+        const req = db.transaction(FOLDER_STORE, 'readonly').objectStore(FOLDER_STORE).get('folder');
+        req.onsuccess = () => resolve(req.result || null);
+        req.onerror = () => resolve(null);
+      } catch (err) { resolve(null); }
+    });
+  }
+  async function folderStore(handle) {
+    const db = await openFolderDb();
+    if (!db) return;
+    await new Promise((resolve) => {
+      try {
+        const tx = db.transaction(FOLDER_STORE, 'readwrite');
+        if (handle) tx.objectStore(FOLDER_STORE).put(handle, 'folder');
+        else tx.objectStore(FOLDER_STORE).delete('folder');
+        tx.oncomplete = resolve;
+        tx.onerror = resolve;
+        tx.onabort = resolve;
+      } catch (err) { resolve(); }
+    });
+  }
+  async function folderChoose() {
+    blurActive();
+    try {
+      const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
+      folderHandle = handle;
+      await folderStore(handle);
+      folderRender();
+      toast('Save now writes into ' + handle.name);
+    } catch (err) {
+      /* cancelled or refused: nothing changes */
+    }
+  }
+  async function folderForget() {
+    folderHandle = null;
+    await folderStore(null);
+    folderRender();
+    toast('Save downloads an encrypted file again');
+  }
+  // True when the folder can be written now. Asks the browser if it has to;
+  // this runs from the Save click, which counts as the user gesture it needs.
+  async function folderReady() {
+    if (!folderHandle) return false;
+    try {
+      if (typeof folderHandle.queryPermission !== 'function') return true;
+      let state = await folderHandle.queryPermission({ mode: 'readwrite' });
+      if (state !== 'granted' && typeof folderHandle.requestPermission === 'function') {
+        state = await folderHandle.requestPermission({ mode: 'readwrite' });
+      }
+      return state === 'granted';
+    } catch (err) {
+      return false;
+    }
+  }
+  function folderFileName() {
+    const d = new Date();
+    const p = (n) => String(n).padStart(2, '0');
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + '-' + p(d.getMinutes()) + '-' + p(d.getSeconds()) + '.txt';
+  }
+  async function folderWrite(text) {
+    const name = folderFileName();
+    const file = await folderHandle.getFileHandle(name, { create: true });
+    const writable = await file.createWritable();
+    await writable.write(text);
+    await writable.close();
+    return name;
+  }
+  function folderRender() {
+    if (!folderSupported()) {
+      folderStatusEl.textContent = 'This browser does not offer folder access, so Save downloads an encrypted .sight file.';
+      folderChooseBtn.hidden = true;
+      folderForgetBtn.hidden = true;
+      return;
+    }
+    if (folderHandle) {
+      folderStatusEl.textContent = 'Save writes a plain text file into the folder "' + folderHandle.name + '".';
+      folderChooseBtn.textContent = 'Choose a different folder';
+      folderForgetBtn.hidden = false;
+    } else {
+      folderStatusEl.textContent = 'Save downloads an encrypted .sight file.';
+      folderChooseBtn.textContent = 'Choose a folder on this computer';
+      folderForgetBtn.hidden = true;
+    }
+    folderChooseBtn.hidden = false;
+  }
+
   function fileStamp() {
     const d = new Date();
     const p = (n) => String(n).padStart(2, '0');
@@ -1106,6 +1235,17 @@
   async function onSave() {
     blurActive();
     if (!real) { toast('Nothing to save yet'); return; }
+    if (folderHandle) {
+      // Plain text into the chosen folder, named by the moment of the click.
+      if (!(await folderReady())) { toast('No permission for the folder. Choose it again under the ? button.'); return; }
+      try {
+        const name = await folderWrite(real);
+        toast('Saved ' + name + ' in ' + folderHandle.name);
+      } catch (err) {
+        toast('Could not write to the folder');
+      }
+      return;
+    }
     const password = await askPassword('Choose a password for this file', 'The file cannot be opened without it. Longer is better.', 'Save');
     if (password === null) return;
     try {
@@ -1175,6 +1315,7 @@
     vaultOnEl.checked = stored || vaultOpen();
     vaultPhraseEl.value = '';
     vaultPhraseEl.disabled = !vaultOnEl.checked;
+    folderRender();
     vaultStatusEl.textContent = stored
       ? (vaultOpen() ? 'The vault is open and saving as you type. Untick to delete the saved copy. Enter a new phrase to change it.'
                      : 'A saved copy is on this device. Type your phrase on the blank page, then hold ' + modKeyName() + ', press E, then Enter. Untick to delete the copy.')
@@ -1322,6 +1463,9 @@
     });
     $('#pw-cancel').addEventListener('click', () => finishPassword(null));
 
+    folderChooseBtn.addEventListener('click', folderChoose);
+    folderForgetBtn.addEventListener('click', folderForget);
+    folderLoad().then((handle) => { folderHandle = handle; if (!introEl.hidden) folderRender(); });
     if (!storageGet(STORAGE.intro)) openIntro();
   }
 
@@ -1331,7 +1475,7 @@
   // reads or returns the hidden buffer in any form, encrypted or not. Save and
   // Open are reachable only through their buttons.
   window.PlainSight = Object.freeze({
-    version: '1.1.2',
+    version: '1.2.0',
     coverIds: COVER_IDS.slice(),
     coverId: () => (cover ? cover.id : null),
     coverText: () => coverText,

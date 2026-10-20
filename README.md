@@ -42,11 +42,12 @@ Ctrl is Cmd on a Mac. Either key works on every platform.
 | Peek | Press Ctrl+Shift+G. The cover disappears and your real text is shown. Press it again, type anything, switch windows, or open any dialog, and it is hidden again. |
 | Copy | While peeking, press Ctrl+C. Your real text goes to the clipboard. |
 | Clear | Press Esc. The hidden buffer and the screen are erased. If the device vault is open it is saved first and then locked; its encrypted copy stays. The page also clears itself if its tab has been hidden for more than 10 minutes while the buffer is non-empty. |
-| Save | The Save button asks for a password and downloads a `.sight` file. |
+| Save | The Save button asks for a password and downloads a `.sight` file. If you have chosen a folder on the intro screen, it writes a plain text file into that folder instead. |
 | Open | The Open button reads a `.sight` file, asks for its password and replaces the hidden buffer with its contents. The screen is rebuilt to the same length. |
 | Keep on this device | On the intro screen, tick "Keep my text on this device" and choose a phrase of 12 characters or more. From then on the page keeps an encrypted copy of your text in this browser. See the device vault below. |
 | Unlock | On a later visit, type your phrase on the blank page, then hold Ctrl, press E, then Enter. The right phrase brings your text back. A wrong phrase does nothing at all. |
-| Help | The `?` button at the bottom right brings the intro screen back, with the version picker, the vault settings and the custom cover text box. |
+| Save to a folder | On the intro screen, "Choose a folder on this computer" (Chrome and Edge). From then on Save writes a plain text file named by the moment you press it, for example `2026-10-20 14-55-03.txt`, into that folder. "Stop using the folder" brings the encrypted download back. |
+| Help | The `?` button at the bottom right brings the intro screen back, with the version picker, the vault settings, the save folder and the custom cover text box. |
 
 Other keys pressed with Ctrl, Cmd or Alt held are left to the browser and not recorded. Ctrl+E and Ctrl+Enter are taken by the page only while a vault exists on the device. Shift+Tab is left to the browser too, so keyboard users can reach the buttons (Safari skips buttons by default, so there it is Option+Shift+Tab). Keyboard events with `isComposing` set (input method editors) are ignored. Reloading or closing the tab erases the hidden buffer unless the vault holds a copy; if the buffer is not empty, the browser shows its standard "leave page" prompt first.
 
@@ -69,6 +70,10 @@ Off by default. On the intro screen, tick "Keep my text on this device" and ente
 Esc, the 10-minute hidden-tab wipe and closing the tab lock the vault: the key is forgotten and the encrypted copy stays. To come back to your text, type the phrase on the blank page (it shows as cover text like any typing), then hold Ctrl, press E, then Enter. The page derives the key from what you typed and tries to decrypt the copy. If it works, the saved text replaces the phrase in the buffer and the cover is rebuilt to its length. If it does not, nothing happens: no message, no change. There is no recovery for a forgotten phrase. The only sign that the vault is open is the header text (the word count, "Last edited just now" or "Page 1 of 1") drawn in ink instead of grey.
 
 Two tabs of the page in the same browser share one copy: each tab saves on its own schedule, the last save wins, and locking one tab does not lock the other. To stop keeping a copy, open the intro with `?`, untick the box and press Start: the encrypted copy is deleted from the device, whether or not it can still be read. Entering a phrase while the copy is locked opens it instead of replacing it, with anything typed before the intro opened added after the saved text; a phrase that does not open the copy is refused and nothing is overwritten. Entering a new phrase while the vault is open re-encrypts the copy under the new phrase. Esc on the intro applies your choices exactly like Start.
+
+### Saving into a folder
+
+In browsers with the File System Access API (Chrome and Edge at the time of writing) the intro screen offers "Choose a folder on this computer". The page keeps the folder handle in IndexedDB and asks the browser for write permission when it needs it. With a folder chosen, Save writes your real text as plain text into a new file named by the moment of the click, `YYYY-MM-DD HH-MM-SS.txt`, and shows the name in a toast; nothing is encrypted and no password is asked. Anyone who can open that folder can read those files. In other browsers the button is hidden and Save keeps downloading an encrypted `.sight` file.
 
 ### Save file format
 
@@ -109,6 +114,7 @@ What it does not protect against:
 - A weak phrase. Anyone who can read the browser's storage on your device can try phrases offline; the slow key derivation helps, a long phrase helps more.
 - The browser's own memory. While the page is open, the plain text is in the browser's memory, and a crash dump or swap file could hold it.
 - Shared computers. The vault copy stays on the device after Esc; on a machine other people use, leave the vault off or delete the copy before you leave.
+- Plain text files. Saving into a folder writes your words unencrypted to disk, where any program, backup or person with access to that folder can read them. Use the encrypted download or the vault when that matters.
 
 Corporate IT may treat a page like this as an exfiltration or monitoring-evasion tool. Using it on a managed machine may break policy regardless of what you type. It exists to demonstrate a client-side technique and an honest threat model, not to defeat an employer's monitoring.
 
@@ -120,6 +126,7 @@ Corporate IT may treat a page like this as an exfiltration or monitoring-evasion
 - The hidden text is append-only. You can peek, copy and backspace, but not move the cursor back and edit.
 - The page has to be served over http (see "Run locally"). Opening `index.html` directly shows a notice instead of a cover.
 - Peek, copy and unlock are keyboard chords, so they do not work from a touch screen.
+- Saving into a folder needs the File System Access API, which Chrome and Edge offer and Safari and Firefox do not. It was checked here only with a simulated folder in the test suite, not in a real Chrome; the first real test is Pranav's.
 - With the vault on, the page saves 1.5 seconds after the last keystroke and again when the tab is hidden, on Esc and on the way out of the page. Closing or reloading the tab within about a second of typing can still lose those last keystrokes from the copy, because the browser may not wait for the encryption to finish.
 - Tested headless in WebKit (Safari's engine): no console errors, all three covers, the chords, the vault, save and open, and no horizontal overflow at 390px. Current Chrome, Edge and Firefox use the same standard APIs (WebCrypto, ES modules, the Clipboard API with a fallback) and are expected to work, but they have not been checked on this version.
 

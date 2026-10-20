@@ -33,7 +33,7 @@ async function importCover(id) {
   return mod.default;
 }
 
-async function loadPage({ random = () => 1, storage = {}, inject = true } = {}) {
+async function loadPage({ random = () => 1, storage = {}, inject = true, folder = null } = {}) {
   const errors = [];
   const downloads = [];
   const copied = [];
@@ -62,6 +62,14 @@ async function loadPage({ random = () => 1, storage = {}, inject = true } = {}) 
         configurable: true
       });
       for (const [k, v] of Object.entries(storage)) window.localStorage.setItem(k, v);
+      // A fake File System Access API: a directory picker that hands back a
+      // folder whose files are recorded in folder.written.
+      if (folder) {
+        window.showDirectoryPicker = async () => {
+          if (folder.cancel) throw new window.DOMException('The user aborted a request.', 'AbortError');
+          return folder.handle;
+        };
+      }
     }
   });
 
@@ -195,6 +203,22 @@ async function decryptVault(record, phrase) {
   const base = await webcrypto.subtle.importKey('raw', new TextEncoder().encode(phrase), 'PBKDF2', false, ['deriveKey']);
   const key = await webcrypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations: record.iterations, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
   return new TextDecoder().decode(await webcrypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, data));
+}
+function fakeFolder(name, { permission = 'granted' } = {}) {
+  const written = [];
+  const handle = {
+    kind: 'directory',
+    name,
+    queryPermission: async () => permission,
+    requestPermission: async () => permission,
+    getFileHandle: async (fileName, opts) => ({
+      createWritable: async () => ({
+        write: async (text) => { written.push({ name: fileName, text, create: Boolean(opts && opts.create) }); },
+        close: async () => {}
+      })
+    })
+  };
+  return { handle, written, cancel: false };
 }
 function makeCoverFile(w, json) {
   return new w.File([json], 'test.sight', { type: 'application/json' });
@@ -551,7 +575,7 @@ test('Save writes a .sight with a 16-byte salt, 12-byte IV and data; Open restor
     assert.equal(await p.readReal(), 'hello world', 'every refusal left the buffer alone');
     // Nothing on the console object touches the buffer.
     assert.deepEqual(Object.keys(p.w.PlainSight).sort(), ['coverFailed', 'coverId', 'coverIds', 'coverText', 'ready', 'selectedCoverId', 'setCover', 'version']);
-    assert.equal(p.w.PlainSight.version, '1.1.2');
+    assert.equal(p.w.PlainSight.version, '1.2.0');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
@@ -1311,6 +1335,91 @@ test('storage keys from the 1.0 name are moved to the new ones once, and the old
       assert.equal(q.storageDump()['coverStory.cover'], undefined, 'old key removed');
       assert.deepEqual(q.errors, []);
     } finally { q.close(); }
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('save folder: Save writes a plain text file named by the moment into the chosen folder, no password; forgetting the folder brings the download back', async () => {
+  const folder = fakeFolder('Notes');
+  const p = await loadPage({ folder });
+  try {
+    assert.equal(p.$('#btn-folder').hidden, false, 'the picker is offered');
+    assert.equal(p.$('#btn-folder-forget').hidden, true);
+    assert.match(p.$('#folder-status').textContent, /downloads an encrypted/);
+    p.$('#btn-folder').click();
+    await p.settle();
+    assert.equal(p.$('#folder-status').textContent, 'Save writes a plain text file into the folder "Notes".');
+    assert.equal(p.$('#btn-folder-forget').hidden, false);
+    assert.equal(p.toast(), 'Save now writes into Notes');
+    p.start();
+    p.type('plain words for the folder');
+    p.$('#btn-save').click();
+    await p.settle(200);
+    assert.equal(p.$('#pw').hidden, true, 'no password dialog');
+    assert.equal(folder.written.length, 1, 'one file written');
+    assert.match(folder.written[0].name, /^\d{4}-\d{2}-\d{2} \d{2}-\d{2}-\d{2}\.txt$/);
+    assert.equal(folder.written[0].text, 'plain words for the folder');
+    assert.equal(folder.written[0].create, true);
+    assert.equal(p.downloads.length, 0, 'no download');
+    assert.equal(p.toast(), 'Saved ' + folder.written[0].name + ' in Notes');
+    assert.equal(await p.readReal(), 'plain words for the folder', 'saving keeps the text');
+    // Forget the folder: Save downloads an encrypted file again.
+    p.$('#btn-help').click();
+    p.$('#btn-folder-forget').click();
+    await p.settle();
+    assert.equal(p.toast(), 'Save downloads an encrypted file again');
+    assert.equal(p.$('#btn-folder-forget').hidden, true);
+    p.start();
+    p.$('#btn-save').click();
+    assert.equal(p.$('#pw').hidden, false, 'password dialog is back');
+    await p.submitPassword('pw-1');
+    await p.settle(400);
+    assert.equal(p.downloads.length, 1);
+    assert.equal(folder.written.length, 1, 'nothing more written to the folder');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('save folder: a cancelled picker changes nothing; a refused permission or a failed write shows a toast and keeps the text', async () => {
+  const folder = fakeFolder('Blocked', { permission: 'denied' });
+  const p = await loadPage({ folder });
+  try {
+    folder.cancel = true;
+    p.$('#btn-folder').click();
+    await p.settle();
+    assert.match(p.$('#folder-status').textContent, /downloads an encrypted/, 'cancel leaves the download');
+    folder.cancel = false;
+    p.$('#btn-folder').click();
+    await p.settle();
+    p.start();
+    p.type('kept');
+    p.$('#btn-save').click();
+    await p.settle(200);
+    assert.equal(p.toast(), 'No permission for the folder. Choose it again under the ? button.');
+    assert.equal(folder.written.length, 0);
+    assert.equal(await p.readReal(), 'kept');
+    // A write that throws.
+    folder.handle.queryPermission = async () => 'granted';
+    folder.handle.getFileHandle = async () => { throw new Error('disk gone'); };
+    p.$('#btn-save').click();
+    await p.settle(200);
+    assert.equal(p.toast(), 'Could not write to the folder');
+    assert.equal(await p.readReal(), 'kept');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('save folder: without the folder API the picker is hidden and Save downloads', async () => {
+  const p = await loadPage();
+  try {
+    assert.equal(typeof p.w.showDirectoryPicker, 'undefined');
+    assert.equal(p.$('#btn-folder').hidden, true);
+    assert.match(p.$('#folder-status').textContent, /does not offer folder access/);
+    p.start();
+    p.type('abc');
+    p.$('#btn-save').click();
+    assert.equal(p.$('#pw').hidden, false);
+    p.press('Escape');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
