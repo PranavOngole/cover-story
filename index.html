@@ -680,7 +680,9 @@
   }
 
   function coverFailed(id) {
-    loadNotice.hidden = false;
+    // Forget the failed choice so the next visit does not try it first.
+    if (storageGet(STORAGE.cover) === id) storageSet(STORAGE.cover, cover ? cover.id : '');
+    if (!cover) loadNotice.hidden = false;
     toast('Could not load the cover text');
   }
 
@@ -754,7 +756,8 @@
 
     if (key === 'Escape') { e.preventDefault(); wipe(); return; }
     if (key === 'Backspace') { e.preventDefault(); backspace(); return; }
-    // Shift+Tab stays with the browser so keyboard users can reach the buttons.
+    // Shift+Tab stays with the browser so keyboard users can reach the buttons
+    // (Safari skips buttons by default; there it is Option+Shift+Tab).
     if (key === 'Tab' && e.shiftKey) return;
     if (key === 'Enter' || key === 'Tab') { e.preventDefault(); typeChar(key === 'Enter' ? '\n' : '\t'); return; }
     if (key.length === 1) { e.preventDefault(); typeChar(key); return; }
@@ -775,6 +778,7 @@
     if (peekTimer) { clearTimeout(peekTimer); peekTimer = null; }
   }
   function beginPeek() {
+    if (dialogOpen()) return;   // a dialog opened during the hold: never put the real text under it
     peeking = true;
     realEl.textContent = real;
     body.classList.add('peek');
@@ -890,9 +894,17 @@
     }, null, 2);
   }
 
+  // The three byte fields are required. The descriptive fields are optional
+  // but, when present, must say what this page writes.
   function looksLikeCoverFile(f) {
-    return Boolean(f) && typeof f === 'object' &&
-      typeof f.salt === 'string' && typeof f.iv === 'string' && typeof f.data === 'string';
+    if (!f || typeof f !== 'object') return false;
+    if (typeof f.salt !== 'string' || typeof f.iv !== 'string' || typeof f.data !== 'string') return false;
+    if (f.format !== undefined && f.format !== 'cover-story') return false;
+    if (f.version !== undefined && f.version !== 1) return false;
+    if (f.cipher !== undefined && f.cipher !== 'AES-256-GCM') return false;
+    if (f.kdf !== undefined && f.kdf !== 'PBKDF2-SHA-256') return false;
+    if (f.iterations !== undefined && typeof f.iterations !== 'number') return false;
+    return true;
   }
 
   // Decrypts a .cover file (JSON string or parsed object) and replaces the
@@ -901,7 +913,7 @@
   async function importEncrypted(file, password) {
     const f = typeof file === 'string' ? JSON.parse(file) : file;
     if (!looksLikeCoverFile(f)) throw new Error('Not a .cover file');
-    const iterations = f.iterations === undefined ? PBKDF2_ITERATIONS : Number(f.iterations);
+    const iterations = f.iterations === undefined ? PBKDF2_ITERATIONS : f.iterations;
     if (!Number.isInteger(iterations) || iterations < 1000 || iterations > MAX_ITERATIONS_ACCEPTED) {
       throw new Error('Unsupported iteration count');
     }
@@ -976,6 +988,7 @@
   let pwResolve = null;
 
   function askPassword(title, hint, okLabel) {
+    endPeek();   // a dialog never opens over the real text, and a pending hold is cancelled
     return new Promise((resolve) => {
       pwResolve = resolve;
       pwTitle.textContent = title;
@@ -996,6 +1009,7 @@
   }
 
   function openIntro() {
+    endPeek();
     customTextEl.value = customText;
     const current = cover ? cover.id : selectedCoverId();
     for (const radio of document.querySelectorAll('input[name="mode"]')) radio.checked = radio.value === current;
@@ -1083,18 +1097,17 @@
 
   init();
 
-  // A small public surface for the console and the tests. Nothing on it
-  // returns the hidden text.
+  // A small public surface for the cover loader and the tests. Nothing on it
+  // reads or returns the hidden buffer in any form, encrypted or not. Save and
+  // Open are reachable only through their buttons.
   window.CoverStory = Object.freeze({
-    version: '1.0.0',
+    version: '1.0.1',
     coverIds: COVER_IDS.slice(),
     coverId: () => (cover ? cover.id : null),
     coverText: () => coverText,
     selectedCoverId,
     setCover,
     coverFailed,
-    exportEncrypted,
-    importEncrypted,
     ready
   });
 })();

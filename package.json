@@ -1,6 +1,6 @@
 {
   "name": "cover-story",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "A static page where typing shows a plausible document being written while the real keystrokes go into a hidden buffer. No server, no analytics, no network calls.",
   "private": true,
   "type": "module",

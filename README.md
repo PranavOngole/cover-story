@@ -6,9 +6,7 @@ Nothing you type leaves this page. There is no server-side code, no account, no 
 
 Live: https://cover-story-taupe.vercel.app
 
-![Cover Story demo](docs/demo.gif)
-
-Pranav: record a 10 to 15 second screen capture of typing, holding Cmd to peek, and pressing Esc, convert it to a GIF, save it as `docs/demo.gif`, and delete this line.
+Demo GIF: not recorded yet. (Pranav: record a 10 to 15 second screen capture of typing, holding Cmd to peek, and pressing Esc, convert it to a GIF, save it as `docs/demo.gif`, add the image here, and delete this paragraph.)
 
 ## The three versions
 
@@ -44,7 +42,7 @@ Looks like a manuscript: an academic serif on a white sheet, a title block with 
 | Open | The Open button reads a `.cover` file, asks for its password and replaces the hidden buffer with its contents. The screen is rebuilt to the same length. |
 | Help | The `?` button at the bottom right brings the intro screen back, with the version picker and the custom cover text box. |
 
-Keys pressed with Ctrl, Cmd or Alt held are left to the browser and not recorded, except Ctrl+C while peeking. Shift+Tab is left to the browser too, so keyboard users can reach the buttons. Keyboard events with `isComposing` set (input method editors) are ignored. Reloading or closing the tab erases the hidden buffer; if it is not empty, the browser shows its standard "leave page" prompt first.
+Keys pressed with Ctrl, Cmd or Alt held are left to the browser and not recorded, except Ctrl+C while peeking. Shift+Tab is left to the browser too, so keyboard users can reach the buttons (Safari skips buttons by default, so there it is Option+Shift+Tab). Keyboard events with `isComposing` set (input method editors) are ignored. Reloading or closing the tab erases the hidden buffer; if it is not empty, the browser shows its standard "leave page" prompt first.
 
 ## How it works
 
@@ -54,7 +52,7 @@ Everything is in `index.html` (the engine, the styles and the intro) plus one ES
 - The cover is rendered one character per keystroke into paragraphs. A cover line that starts with `## ` becomes a heading, a line that starts with `- ` becomes a bullet in a list, and a line that starts with `[n] ` is typed as text but styled as a reference entry. The markers themselves cost no keystrokes.
 - About 3.5 percent of the time, at the start of a word, the cover shows a wrong neighbouring key instead of the right letter; the next keystroke removes it. It costs one keystroke and looks like a person correcting a typo. The keystroke right after a correction never produces another one.
 - When the cover text runs out, the page inserts a paragraph break and starts the text again from the top.
-- The hidden buffer is written into the page only while peeking and is removed again when peeking ends. Nothing on the page's small console API (`window.CoverStory`) returns it.
+- The hidden buffer is written into the page only while peeking and is removed again when peeking ends. The page's small console object (`window.CoverStory`) exists for the cover loader and the tests; it returns the cover id and text and nothing that touches the hidden buffer, encrypted or not. Any script that runs inside the page could still capture keystrokes directly, which is the extension and malware caveat below.
 - Covers are loaded with a dynamic `import('./covers/<id>.js')` from a small module script, so the page must be served over http. Opened directly from a file, the browser blocks the import and the page shows a notice saying so.
 - `localStorage` holds three things only: whether you have seen the intro, which cover you picked, and any custom cover text you pasted. It never holds the hidden buffer.
 
@@ -101,6 +99,8 @@ Corporate IT may treat a page like this as an exfiltration or monitoring-evasion
 ## Known limitations
 
 - No mobile support. Virtual keyboards do not reliably fire `keydown` events, so typing on a phone or tablet does not work. The layout does not overflow at phone widths, but the page is a desktop tool.
+- Only key presses are recorded. Text that arrives another way, such as a paste, drag and drop, dictation or the composed text of an input method editor, is neither recorded nor shown.
+- Characters that need Alt, Option or AltGr on your keyboard layout (for example @ or { on many non-US layouts, or accented letters typed with Option on a Mac) are passed to the browser and not recorded, because every Alt chord is left alone.
 - The page has to be served over http (see "Run locally"). Opening `index.html` directly shows a notice instead of a cover.
 - Peek and copy use keyboard modifiers, so they do not work from a touch screen.
 - Tested headless in Chromium and in WebKit (Safari's engine): no console errors, all three covers, peek timing, save and open, and no horizontal overflow at 390px. Current Firefox and Edge use the same standard APIs (WebCrypto, ES modules, the Clipboard API with a fallback) and are expected to work, but they have not been checked here.
@@ -122,7 +122,7 @@ npm install
 npm test
 ```
 
-The suite (`tests/smoke.mjs`) loads the real `index.html` in jsdom and drives it through keyboard events, the dialogs, the download path and the console API: cover rendering, the hidden buffer, peek timing, copy, Backspace, Esc, the 10-minute wipe, the three covers, bullets, headings, references, and save and open with right and wrong passwords. It exits non-zero on any failure. jsdom does not run module scripts, so the suite imports the cover files itself and hands them to the page the same way the module loader does.
+The suite (`tests/smoke.mjs`) loads the real `index.html` in jsdom and drives it through keyboard events, the dialogs, the download path and the console object: cover rendering, the hidden buffer, peek timing, copy, Backspace, Esc, the 10-minute wipe, the three covers, bullets, headings, references, and save and open with right and wrong passwords. It exits non-zero on any failure. jsdom does not run module scripts, so the suite imports the cover files itself and hands them to the page the same way the module loader does.
 
 ## Deployment
 

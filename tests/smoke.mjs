@@ -69,8 +69,10 @@ async function loadPage({ random = () => 1, storage = {}, inject = true } = {}) 
   const $ = (sel) => d.querySelector(sel);
 
   const loads = [];
+  const failCovers = new Set();   // ids whose load the harness should fail on purpose
   async function loadCover(id) {
     loads.push(id);
+    if (failCovers.has(id)) { w.CoverStory.coverFailed(id); return; }
     try { w.CoverStory.setCover(await importCover(id)); } catch (err) { w.CoverStory.coverFailed(id); }
   }
   d.addEventListener('coverstory:select', (e) => { loadCover(e.detail.id); });
@@ -80,7 +82,7 @@ async function loadPage({ random = () => 1, storage = {}, inject = true } = {}) 
   }
 
   const page = {
-    w, d, $, errors, downloads, copied, loads, loadCover,
+    w, d, $, errors, downloads, copied, loads, loadCover, failCovers,
     press(key, init = {}, target = null) {
       const ev = new w.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...init });
       (target || d.activeElement || d.body).dispatchEvent(ev);
@@ -442,14 +444,31 @@ test('the word count counts the cover text on screen, not the real text', async 
   } finally { p.close(); }
 });
 
-test('exportEncrypted produces JSON with salt (16 bytes), iv (12 bytes) and data; the right password round-trips; a wrong one throws', async () => {
+test('Save writes a .cover with a 16-byte salt, 12-byte IV and data; Open restores it with the right password and refuses wrong passwords, damaged files, foreign formats and bad iteration counts with a toast', async () => {
   const p = await loadPage();
   try {
     p.start();
     p.type('hello world');
-    const json = await p.w.CoverStory.exportEncrypted('correct horse');
+    const save = async (password) => {
+      const before = p.downloads.length;
+      p.$('#btn-save').click();
+      await p.submitPassword(password);
+      await p.settle(400);
+      assert.equal(p.downloads.length, before + 1, 'one download per save');
+      return p.downloads[before].blob.text();
+    };
+    const open = async (fileText, password) => {
+      chooseFile(p, makeCoverFile(p.w, fileText));
+      await p.settle();
+      if (p.$('#pw').hidden) return p.toast();   // refused before the password prompt
+      await p.submitPassword(password);
+      await p.settle(400);
+      return p.toast();
+    };
+    const json = await save('correct horse');
     const f = JSON.parse(json);
     assert.equal(f.format, 'cover-story');
+    assert.equal(f.version, 1);
     assert.equal(f.cipher, 'AES-256-GCM');
     assert.equal(f.kdf, 'PBKDF2-SHA-256');
     assert.equal(f.iterations, 310000);
@@ -457,26 +476,43 @@ test('exportEncrypted produces JSON with salt (16 bytes), iv (12 bytes) and data
     assert.equal(Buffer.from(f.iv, 'base64').length, 12);
     assert.equal(Buffer.from(f.data, 'base64').length, 'hello world'.length + 16, 'ciphertext plus the 16-byte GCM tag');
     assert.ok(!json.includes('hello world'), 'plaintext is not in the file');
-    // A second export uses a fresh salt and IV.
-    const g = JSON.parse(await p.w.CoverStory.exportEncrypted('correct horse'));
-    assert.notEqual(g.salt, f.salt);
-    assert.notEqual(g.iv, f.iv);
+    const g = JSON.parse(await save('correct horse'));
+    assert.notEqual(g.salt, f.salt, 'fresh salt every time');
+    assert.notEqual(g.iv, f.iv, 'fresh IV every time');
+    // An empty password is not accepted; the dialog stays open until cancelled.
+    p.$('#btn-save').click();
+    await p.submitPassword('');
+    assert.equal(p.$('#pw').hidden, false, 'an empty password is refused');
+    p.press('Escape');
+    assert.equal(p.$('#pw').hidden, true);
 
     p.press('Escape');
     assert.equal(await p.readReal(), '');
-    await assert.rejects(p.w.CoverStory.importEncrypted(json, 'wrong password'));
+    assert.equal(await open(json, 'wrong password'), 'Wrong password or damaged file');
     assert.equal(await p.readReal(), '', 'a failed open changes nothing');
-    await p.w.CoverStory.importEncrypted(json, 'correct horse');
+    assert.equal(await open(json, 'correct horse'), 'Opened');
     assert.equal(await p.readReal(), 'hello world', 'round trip');
     assert.equal(p.coverLength(), 'hello world'.length, 'the cover is rebuilt to the same length');
     assert.deepEqual(p.blocks(), expectedBlocks(p.w.CoverStory.coverText(), 11));
 
-    // Damaged or hostile files are refused before any key derivation.
-    await assert.rejects(p.w.CoverStory.importEncrypted('{"salt":1}', 'x'));
-    await assert.rejects(p.w.CoverStory.importEncrypted('not json', 'x'));
-    await assert.rejects(p.w.CoverStory.importEncrypted({ ...f, iterations: 50000000 }, 'correct horse'), /iteration/);
-    await assert.rejects(p.w.CoverStory.importEncrypted({ ...f, iv: f.salt }, 'correct horse'), /Damaged/);
-    await assert.rejects(p.w.CoverStory.exportEncrypted(''), /password/);
+    // Damaged, foreign or hostile files are refused, most of them before any key derivation.
+    const variant = (changes) => JSON.stringify({ ...f, ...changes });
+    assert.equal(await open('{"salt":1}', 'x'), 'That is not a .cover file');
+    assert.equal(await open('not json', 'x'), 'That is not a .cover file');
+    assert.equal(await open(variant({ iterations: 50000000 }), 'correct horse'), 'Wrong password or damaged file', 'iteration cap');
+    assert.equal(await open(variant({ iterations: 999 }), 'correct horse'), 'Wrong password or damaged file', 'iteration floor');
+    assert.equal(await open(variant({ iterations: '310000' }), 'correct horse'), 'That is not a .cover file', 'iterations must be a number');
+    assert.equal(await open(variant({ iv: f.salt }), 'correct horse'), 'Wrong password or damaged file', 'IV length');
+    assert.equal(await open(variant({ format: 'other' }), 'correct horse'), 'That is not a .cover file');
+    assert.equal(await open(variant({ version: 2 }), 'correct horse'), 'That is not a .cover file');
+    assert.equal(await open(variant({ cipher: 'AES-128-GCM' }), 'correct horse'), 'That is not a .cover file');
+    assert.equal(await open(variant({ kdf: 'scrypt' }), 'correct horse'), 'That is not a .cover file');
+    const bytes = Buffer.from(f.data, 'base64');
+    bytes[0] ^= 1;
+    assert.equal(await open(variant({ data: bytes.toString('base64') }), 'correct horse'), 'Wrong password or damaged file', 'a flipped ciphertext bit fails authentication');
+    assert.equal(await p.readReal(), 'hello world', 'every refusal left the buffer alone');
+    // Nothing on the console object touches the buffer.
+    assert.deepEqual(Object.keys(p.w.CoverStory).sort(), ['coverFailed', 'coverId', 'coverIds', 'coverText', 'ready', 'selectedCoverId', 'setCover', 'version']);
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
@@ -519,7 +555,10 @@ test('Open: wrong password fails with a toast and no console error; right passwo
   try {
     p.start();
     p.type('first draft');
-    const json = await p.w.CoverStory.exportEncrypted('right');
+    p.$('#btn-save').click();
+    await p.submitPassword('right');
+    await p.settle(400);
+    const json = await p.downloads[0].blob.text();
     p.press('Escape');
     p.type('xyz');
 
@@ -870,6 +909,101 @@ test('covers/paper.js: academic paper of at least 1,500 words with the required 
   const src = readFileSync(path.join(ROOT, 'covers', 'paper.js'), 'utf8');
   assert.match(src, /citations are fictional/i, 'the file states that all citations are fictional');
   assert.match(src, /PLACEHOLDER/, 'author and affiliation are marked as placeholders in the code');
+});
+
+test('localStorage never holds the hidden text: only the three known keys, and no value contains what was typed', async () => {
+  const p = await loadPage();
+  try {
+    p.start();
+    const secret = 'zq7 secret phrase 991';
+    p.type(secret);
+    const allowed = ['coverStory.introSeen', 'coverStory.cover', 'coverStory.customText'];
+    const check = (label) => {
+      const ls = p.w.localStorage;
+      for (let i = 0; i < ls.length; i++) {
+        const k = ls.key(i);
+        const v = ls.getItem(k);
+        assert.ok(allowed.includes(k), label + ': unexpected key ' + k);
+        assert.ok(!v.includes('secret phrase') && !v.includes('zq7'), label + ': ' + k + ' holds typed text');
+      }
+    };
+    check('after typing');
+    p.$('#btn-save').click();
+    await p.submitPassword('pw');
+    await p.settle(400);
+    check('after save');
+    chooseFile(p, makeCoverFile(p.w, await p.downloads[0].blob.text()));
+    await p.settle();
+    await p.submitPassword('pw');
+    await p.settle(400);
+    check('after open');
+    p.$('#btn-help').click();
+    p.$('#custom-text').value = 'my own cover words';
+    p.start();
+    check('after custom text');
+    assert.equal(p.w.localStorage.getItem('coverStory.customText'), 'my own cover words');
+    await p.peek();
+    p.release('Control');
+    check('after peek');
+    assert.equal(await p.readReal(), secret);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('a peek hold started just before a dialog opens never shows the real text under the dialog; opening the intro ends a peek', async () => {
+  const p = await loadPage();
+  try {
+    p.start();
+    p.type('under the dialog');
+    p.press('Control', { ctrlKey: true });
+    await sleep(200);
+    p.$('#btn-save').click();   // the password dialog opens during the hold
+    assert.equal(p.$('#pw').hidden, false);
+    await sleep(PEEK_HOLD_MS + 300);
+    assert.equal(p.peeking(), false, 'no peek while the dialog is open');
+    assert.equal(p.$('#real').textContent, '', 'the real text is not in the page');
+    p.release('Control');
+    p.press('Escape');
+    assert.equal(p.$('#pw').hidden, true);
+    await p.peek();
+    assert.equal(p.peeking(), true);
+    p.$('#btn-help').click();
+    assert.equal(p.peeking(), false, 'opening the intro ends an active peek');
+    assert.equal(p.$('#real').textContent, '');
+    p.release('Control');
+    p.press('Escape');   // closes the intro
+    assert.equal(p.$('#intro').hidden, true);
+    assert.equal(await p.readReal(), 'under the dialog');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('a cover switch whose import fails keeps the current cover, shows a toast and forgets the failed choice', async () => {
+  const p = await loadPage();
+  try {
+    p.start();
+    p.type('abc');
+    p.failCovers.add('work');
+    p.$('#btn-help').click();
+    p.$('input[name="mode"][value="work"]').checked = true;
+    p.start();
+    await p.settle();
+    assert.deepEqual(p.loads, ['book', 'work']);
+    assert.equal(p.w.CoverStory.coverId(), 'book', 'the novel stays on screen');
+    assert.equal(p.$('#load-notice').hidden, true, 'no notice while a cover is on screen');
+    assert.equal(p.toast(), 'Could not load the cover text');
+    assert.equal(p.w.localStorage.getItem('coverStory.cover'), 'book', 'the failed choice is not remembered');
+    assert.equal(await p.readReal(), 'abc');
+    assert.deepEqual(p.errors, []);
+    // With nothing on screen the stored id is dropped and the notice is shown.
+    const q = await loadPage({ inject: false, storage: { 'coverStory.cover': 'paper', 'coverStory.introSeen': '1' } });
+    try {
+      q.w.CoverStory.coverFailed('paper');
+      assert.equal(q.w.localStorage.getItem('coverStory.cover'), null);
+      assert.equal(q.$('#load-notice').hidden, false);
+      assert.deepEqual(q.errors, []);
+    } finally { q.close(); }
+  } finally { p.close(); }
 });
 
 // ---------------------------------------------------------------------------

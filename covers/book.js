@@ -23,7 +23,7 @@ export default {
 
 The house smelled of cold coffee and lemon oil, which was how Mara knew her grandmother had been dead for exactly nine days. Signe had polished the dining table every Sunday for sixty years, and the oil took about a week and a half to fade. Mara stood in the hallway with her coat still on and counted backward to the Sunday, and then she stopped counting, because it was not a useful thing to know.
 
-The realtor had left a folder on the hall table. Dale Mercer, in a brown suit the color of a paper bag, had walked her through the rooms that morning as though she had never seen them, pointing out the radiators and the good light and the original floors. He used the word original four times. Mara had nodded and looked at the floors and thought about the summer she was eleven and had dropped a jar of pickled beets in the kitchen, and how the stain had never quite come out of the boards by the stove, and how Signe had put a rag rug over it and called the matter closed.
+The realtor had left a folder on the hall table. Dale Marrowby, in a brown suit the color of a paper bag, had walked her through the rooms that morning as though she had never seen them, pointing out the radiators and the good light and the original floors. He used the word original four times. Mara had nodded and looked at the floors and thought about the summer she was eleven and had dropped a jar of pickled beets in the kitchen, and how the stain had never quite come out of the boards by the stove, and how Signe had put a rag rug over it and called the matter closed.
 
 "You'll want to clear the personal effects before the photographs," Dale had said. "Buyers like to imagine themselves in a place. Hard to do with someone else's spoons in the drawer."
 
@@ -39,7 +39,7 @@ It was not household accounts.
 
 The first page was dated the year Signe's husband died, which was also the year Mara's mother had moved to the coast and stopped calling on Sundays. The entries were short. A name, a date, a thing, and sometimes a number.
 
-Harold Pruitt. March. Fixed the radiator in the back bedroom. Would not take money.
+Harold Vexley. March. Fixed the radiator in the back bedroom. Would not take money.
 
 Noor Haddad. April. Two loaves and a cake when I was ill. Owe her.
 
@@ -49,7 +49,7 @@ And so on, page after page, for thirty years. Some entries had a line drawn thro
 
 ## Two
 
-Harold Pruitt was still alive, which surprised her. He lived three doors down in a house with a porch that leaned very slightly toward the lake, as though it were listening for something. Mara stood on the step for a full minute before she knocked.
+Harold Vexley was still alive, which surprised her. He lived three doors down in a house with a porch that leaned very slightly toward the lake, as though it were listening for something. Mara stood on the step for a full minute before she knocked.
 
 He was smaller than she remembered, and he remembered her, which she had not expected. "The beet girl," he said, and let her in.
 
@@ -95,7 +95,7 @@ Mara found the fountain pen in the drawer with the rubber bands. It still had in
 
 Then she wrote the date, and under it a single line.
 
-Harold Pruitt. Noor Haddad. The Alvarsson boy. The woman from the library whose name I never learned. Told me who my grandmother was. Owe them.
+Harold Vexley. Noor Haddad. The Alvarsson boy. The woman from the library whose name I never learned. Told me who my grandmother was. Owe them.
 
-In the morning Dale Mercer came for the keys. He looked at the empty rooms and the original floors and said the place would photograph well. Mara agreed that it would. She did not tell him about the beet stain under the rag rug, which she had left exactly where it was. She put the ledger in her bag, and the pen beside it, and she walked down to the lake road one more time before the train, past the house with the listening porch, where a radio was playing quietly behind the glass.`
+In the morning Dale Marrowby came for the keys. He looked at the empty rooms and the original floors and said the place would photograph well. Mara agreed that it would. She did not tell him about the beet stain under the rag rug, which she had left exactly where it was. She put the ledger in her bag, and the pen beside it, and she walked down to the lake road one more time before the train, past the house with the listening porch, where a radio was playing quietly behind the glass.`
 };
