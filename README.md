@@ -146,10 +146,10 @@ Corporate IT may treat a page like this as an exfiltration or monitoring-evasion
 ```
 git clone https://github.com/PranavOngole/plain-sight.git
 cd plain-sight
-npx serve .
+npx serve -l tcp://127.0.0.1:3000 .
 ```
 
-Then open http://localhost:3000. Any static file server works; the page needs http only so the browser will import the cover modules. Use localhost or https: on any other plain http address the browser gives the page no encryption, so the vault and encrypted files cannot work there, and the intro says so.
+Then open http://localhost:3000. The `-l` option keeps the server on this computer only; `serve` listens on every network address by default, which would expose anything else in the folder. Any static file server works; the page needs http only so the browser will import the cover modules. Use localhost or https: on any other plain http address the browser gives the page no encryption, so the vault and encrypted files cannot work there, and the intro says so.
 
 To run the tests:
 

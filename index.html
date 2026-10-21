@@ -307,7 +307,8 @@
     <!-- Save location. Where the browser offers folder access (Chrome, Edge:
          the File System Access API) Save can write a plain text file into a
          folder the user picks once; the folder handle is kept in IndexedDB.
-         Elsewhere Save keeps downloading an encrypted .sight file. -->
+         Elsewhere, or with no folder chosen, Save downloads a file: an encrypted
+         .sight file, or a plain .txt file when that choice is picked here. -->
     <fieldset class="vault" id="folder-box">
       <legend><strong>Where Save writes</strong></legend>
       <p class="note" id="folder-status">Save downloads an encrypted <code>.sight</code> file.</p>
@@ -785,6 +786,7 @@
     resetCover();
     if (peeking) realEl.textContent = '';
     updateHeader();
+    if (!introEl.hidden) vaultRefresh();   // an intro left open across the 10-minute wipe shows the lock (DM-129)
   }
 
   function dialogOpen() { return !introEl.hidden || !pwEl.hidden; }
@@ -1024,10 +1026,10 @@
   let vaultSalt = null;
   let vaultSaveTimer = null;
   let unlockArmedAt = 0;
-  let vaultGeneration = 0;   // bumps when the vault is turned off; a write started before that is dropped
-  let setupAttempt = 0;      // bumps on every vault setup, on Esc and on untick; a setup still deriving its key is dropped
+  let vaultGeneration = 0;   // bumps when the vault is turned off and when another tab changes the copy; a write started before that is dropped
+  let setupAttempt = 0;      // bumps on every vault setup, on every lock, on Esc and on untick; a setup still deriving its key is dropped
   let setupPending = 0;      // the attempt number of a setup still deriving its key, 0 when none
-  let drawnSalt = null;      // the salt of the copy the intro's vault box last showed, null for none
+  let drawnSalt = null;      // the salt of the copy the intro's vault box last showed, null for none; this tab's own saves update it
   let unlockAttempt = 0;     // bumps on every chord and on Esc; an unlock started before that is dropped
   let wipeCount = 0;         // bumps on Esc; an Open still deriving its key is cancelled
   let writeChain = Promise.resolve();   // vault writes run one after another, in the order they were asked for
@@ -1068,6 +1070,7 @@
     vaultKey = key;
     vaultSalt = salt;
     body.classList.add('vault-open');
+    if (!introEl.hidden) vaultRefresh();   // an intro reopened during the setup says the vault is open
     await vaultWrite(key, salt, real, true);
   }
   // Opens a stored copy with a phrase from the intro. Returns true on success,
@@ -1107,9 +1110,11 @@
   // Encrypts text under a key and stores it. Writes are queued so they land in
   // the order they were asked for: an autosave, then the first write of a new
   // phrase, then the save on Esc, each seeing the one before. A write is
-  // dropped if the vault was turned off after it was asked for. Except for the
-  // first write of a new vault, the copy on disk must still carry this key's
-  // salt: another tab may have deleted or re-keyed it, and then this tab locks.
+  // dropped if the vault was turned off, or another tab changed the copy, after
+  // it was asked for. Except for the first write of a new vault, the copy on
+  // disk must still carry this key's salt: if another tab deleted or re-keyed
+  // it, the write is dropped, and this tab locks only when the write was its
+  // open vault's own. An open intro then follows the copy this tab just wrote.
   function vaultWrite(key, salt, text, fresh = false) {
     const gen = vaultGeneration;
     const run = async () => {
@@ -1119,10 +1124,12 @@
         const current = vaultStored();
         if (!current || current.salt !== record.salt) {
           if (vaultOpen() && record.salt === bytesToBase64(vaultSalt)) vaultLock();   // the open vault's copy is gone or re-keyed; an older key's save is just dropped
+          if (!introEl.hidden) vaultRefresh();   // an open intro follows the copy, which is gone or another tab's now (DM-129)
           return;
         }
       }
       storageSet(STORAGE.vault, JSON.stringify(record));
+      if (!introEl.hidden) vaultRefresh();   // an open intro follows this tab's own copy: a delete or clear elsewhere redraws it, an autosave does not
     };
     writeChain = writeChain.then(run, run);
     return writeChain;
@@ -1464,8 +1471,13 @@
 
   // Draws the vault controls from the current state: no encryption on this
   // address, a saved copy, an open vault, a setup still deriving its key, or none.
+  // vaultRender also empties the phrase field; vaultRefresh keeps it, for the
+  // redraws caused by this tab's own setup or save while the intro is open.
   function vaultRender() {
     vaultPhraseEl.value = '';
+    vaultRefresh();
+  }
+  function vaultRefresh() {
     if (!cryptoAvailable()) {
       drawnSalt = null;
       vaultOnEl.checked = false;
@@ -1660,7 +1672,7 @@
   // reads or returns the hidden buffer in any form, encrypted or not. Save and
   // Open are reachable only through their buttons.
   window.PlainSight = Object.freeze({
-    version: '1.3.7',
+    version: '1.3.8',
     coverIds: COVER_IDS.slice(),
     coverId: () => (cover ? cover.id : null),
     coverText: () => coverText,
