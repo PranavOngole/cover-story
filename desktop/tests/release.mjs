@@ -143,9 +143,11 @@ await run(tests, {
     watch = { child, report };
   },
   after: async () => {
-    // No copy of the app outlives the run, however a test ended.
-    for (const pid of instances()) { try { drive('quit-app', pid); } catch (err) { note('quit-app ' + pid + ': ' + err.message); } }
-    await until(() => !instances().length, 'every copy of the app to end', 5000).catch(() => instances().forEach((p) => process.kill(p, 'SIGKILL')));
+    // No copy this run opened outlives it, however a test ended; a copy someone
+    // else opened is never touched.
+    const ours = () => instances().filter((p) => launched.includes(p));
+    for (const pid of ours()) { try { drive('quit-app', pid); } catch (err) { note('quit-app ' + pid + ': ' + err.message); } }
+    await until(() => !ours().length, 'every copy this run opened to end', 5000).catch(() => ours().forEach((p) => process.kill(p, 'SIGKILL')));
     if (watch && watch.child.exitCode === null) watch.child.kill('SIGTERM');
   }
 });

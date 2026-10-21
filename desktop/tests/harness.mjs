@@ -74,7 +74,15 @@ export function guard() {
   if (requireUnlocked && s.locked) throw new UserActivity('the screen locked during the run');
 }
 // Returns null when the run may start, or the reason it may not.
+// Any copy of the app already running, release or test build (both are
+// processes named plain-sight). A run moves the app's data aside, so it must
+// never start while someone is using the app: their notes would go with it.
+export function appCopiesRunning() {
+  try { return execFileSync('pgrep', ['-x', 'plain-sight'], { encoding: 'utf8' }).trim().split('\n').map(Number).filter((p) => p > 0); } catch { return []; }
+}
 export function mayStart({ needUnlocked = false } = {}) {
+  const open = appCopiesRunning();
+  if (open.length) return 'the app is open (pid ' + open.join(', ') + '); close it first, since a run moves the app\'s data aside';
   const s = driveRaw('session');
   if (needUnlocked && s.locked) return 'the screen is locked; this run needs it unlocked';
   if (!s.locked && s.idle < IDLE_MIN) return `the Mac was used ${Number(s.idle).toFixed(0)} s ago; the run needs ${IDLE_MIN} s without keyboard or mouse use`;

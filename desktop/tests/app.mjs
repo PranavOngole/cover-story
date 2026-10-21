@@ -366,9 +366,11 @@ await run(tests, {
     driveRaw('clip-save', path.join(EVIDENCE, 'clipboard.plist'));
   },
   after: async () => {
-    // No copy of the app outlives the run, however a test ended.
-    for (const pid of instances()) driveRaw('quit-app', pid);
-    await until(() => !instances().length, 'every copy of the app to end', 5000).catch(() => instances().forEach((p) => process.kill(p, 'SIGKILL')));
+    // No copy this run opened outlives it, however a test ended; a copy someone
+    // else opened is never touched.
+    const ours = () => instances().filter((p) => launched.includes(p));
+    for (const pid of ours()) driveRaw('quit-app', pid);
+    await until(() => !ours().length, 'every copy this run opened to end', 5000).catch(() => ours().forEach((p) => process.kill(p, 'SIGKILL')));
     driveRaw('clip-restore', path.join(EVIDENCE, 'clipboard.plist'));
     if (frontBefore > 0) driveRaw('front', frontBefore);
   }
