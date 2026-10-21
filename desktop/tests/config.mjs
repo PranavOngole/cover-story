@@ -25,6 +25,49 @@ function tomlSection(text, name) {
   return end < 0 ? rest : rest.slice(0, end);
 }
 
+// A strict reader for the two small property lists the shell ships,
+// Entitlements.plist and container-migration.plist: a dict, arrays, strings,
+// true and false only. Anything else, a comment or a key given twice
+// included, is refused, so nothing in them can go unread.
+function readPlist(text) {
+  const header = /^<\?xml version="1\.0" encoding="UTF-8"\?>\s*<!DOCTYPE plist PUBLIC "-\/\/Apple\/\/DTD PLIST 1\.0\/\/EN" "http:\/\/www\.apple\.com\/DTDs\/PropertyList-1\.0\.dtd">\s*<plist version="1\.0">/;
+  assert.match(text, header, 'a property list');
+  const tokens = text.replace(header, '').match(/<[^>]*>|[^<]+/g).filter((t) => t.trim());
+  let i = 0;
+  const value = () => {
+    const t = tokens[i++];
+    if (t === '<true/>') return true;
+    if (t === '<false/>') return false;
+    if (t === '<string>') {
+      const s = tokens[i] === '</string>' ? '' : tokens[i++];
+      assert.equal(tokens[i++], '</string>', 'a string ends');
+      return s;
+    }
+    if (t === '<array>') {
+      const items = [];
+      while (tokens[i] !== '</array>') items.push(value());
+      i += 1;
+      return items;
+    }
+    if (t === '<dict>') {
+      const dict = {};
+      while (tokens[i] !== '</dict>') {
+        assert.equal(tokens[i++], '<key>', 'a dict holds keys');
+        const key = tokens[i++];
+        assert.equal(tokens[i++], '</key>', 'a key ends');
+        assert.ok(!Object.hasOwn(dict, key), 'no key twice: ' + key);
+        dict[key] = value();
+      }
+      i += 1;
+      return dict;
+    }
+    throw new Error('not allowed in the property list: ' + t);
+  };
+  const root = value();
+  assert.deepEqual(tokens.slice(i), ['</plist>'], 'nothing after the property list');
+  return root;
+}
+
 // The app's own commands, from build.rs.
 function declaredCommands() {
   const m = read(TAURI, 'build.rs').match(/\.commands\(&\[([^\]]*)\]\)/);
@@ -145,6 +188,43 @@ test('no remote access to the app\'s commands, no asset protocol, the app and no
   assert.equal(conf.bundle.macOS.minimumSystemVersion, '11.0', 'the first macOS of Apple Silicon, which is all the build runs on');
   for (const key of ['resources', 'externalBin', 'fileAssociations']) assert.equal(conf.bundle[key], undefined, 'nothing else bundled: bundle.' + key);
   assert.equal(conf.bundle.macOS.frameworks, undefined, 'no extra frameworks');
+  // Tauri merges src-tauri/Info.plist, or the one named here, into the app's.
+  assert.equal(conf.bundle.macOS.infoPlist, undefined, 'no Info.plist merged in');
+  assert.ok(!readdirSync(TAURI).includes('Info.plist'), 'no src-tauri/Info.plist merged in');
+});
+
+test('the app runs in the App Sandbox with exactly its four entitlements, none for the network (D-37, D-14)', () => {
+  assert.equal(conf.bundle.macOS.entitlements, './Entitlements.plist');
+  assert.notEqual(conf.bundle.macOS.hardenedRuntime, false, 'the hardened runtime stays on');
+  assert.deepEqual(readPlist(read(TAURI, 'Entitlements.plist')), {
+    'com.apple.security.app-sandbox': true,
+    // The folder panel (folder.rs) and the page's Open panel.
+    'com.apple.security.files.user-selected.read-write': true,
+    // Save without a folder writes into Downloads (save_download).
+    'com.apple.security.files.downloads.read-write': true,
+    // The remembered folder is a security-scoped bookmark (bookmark.rs).
+    'com.apple.security.files.bookmarks.app-scope': true
+  });
+});
+
+test('the one bundled resource moves the vault and the app\'s data folder into the container at the first sandboxed launch (D-37)', () => {
+  assert.deepEqual(conf.bundle.macOS.files, { 'Resources/container-migration.plist': './container-migration.plist' }, 'one file, in Contents/Resources');
+  const id = conf.identifier;
+  assert.deepEqual(readPlist(read(TAURI, 'container-migration.plist')), {
+    Move: [
+      // WebKit keeps a sandboxed app's web data, the vault included, in
+      // Library/WebKit/WebsiteData, without the bundle identifier it uses
+      // outside the sandbox (WebKit, WebsiteDataStoreCocoa.mm), so the
+      // folder moves to that place in the container.
+      ['${Library}/WebKit/' + id + '/WebsiteData', '${Library}/WebKit/WebsiteData'],
+      // The app's data folder keeps its place, under the container.
+      '${ApplicationSupport}/' + id
+    ]
+  });
+});
+
+test('the App Store lists the app under Productivity (D-37)', () => {
+  assert.equal(conf.bundle.category, 'Productivity');
 });
 
 test('the e2e build copies the page first, so it never embeds an old page (DM-205)', () => {

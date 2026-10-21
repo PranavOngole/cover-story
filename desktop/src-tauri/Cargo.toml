@@ -20,16 +20,17 @@ rfd = { version = "=0.17.2", default-features = false }
 serde = { version = "1", features = ["derive"] }
 
 # macOS: AppKit and WebKit calls for quitting like Esc (quit.rs) and for the
-# web view's configuration (main.rs). The versions are the ones Tauri already
+# web view's configuration (main.rs), and Foundation's bookmarks for the
+# remembered folder (bookmark.rs). The versions are the ones Tauri already
 # uses, so nothing new is downloaded.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 block2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder"] }
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFRunLoop", "block2"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSData", "NSDictionary", "NSError", "NSString", "NSURL"] }
 objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "WKWebViewConfiguration"] }
 # Test builds only, for the e2e feature below.
-objc2-foundation = { version = "0.3", optional = true, default-features = false, features = ["std", "NSData", "NSDictionary", "NSError", "NSString"] }
 serde_json = { version = "1", optional = true }
 
 [features]
@@ -38,7 +39,6 @@ serde_json = { version = "1", optional = true }
 # `npm run app:build` builds without it, and `npm run build:e2e` builds it into
 # its own target folder.
 e2e = [
-  "dep:objc2-foundation",
   "dep:serde_json",
   "objc2-app-kit/NSBitmapImageRep",
   "objc2-app-kit/NSImage",

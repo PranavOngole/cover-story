@@ -7,13 +7,14 @@
 //   seconds (default 120) without keyboard or mouse use, and stops at the
 //   first touch (exit code 3), because the app's window takes the front;
 // - the app's own data folders are moved aside first and put back after, so
-//   a real vault or folder choice is never seen or changed by a test;
+//   a real vault or folder choice is never seen or changed by a test; a run
+//   that cannot put one back ends with exit code 6 and says where it is;
 // - only files the run created are moved out of ~/Downloads, into the
 //   evidence folder, matched by name and time.
 
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash, webcrypto } from 'node:crypto';
-import { createWriteStream, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { createWriteStream, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -145,9 +146,16 @@ export const DATA_DIRS = [
   `Library/Saved Application State/${ID}.savedState`,
   // An executable run outside a bundle keeps its WebKit data under its own name.
   'Library/WebKit/plain-sight',
-  'Library/Caches/plain-sight'
+  'Library/Caches/plain-sight',
+  // The sandboxed app (D-37) keeps all of its data in its container. macOS
+  // asks the person at the Mac before a program outside the sandbox opens
+  // another app's container (Apple, "Accessing files from the macOS App
+  // Sandbox"), unless that program has Full Disk Access, so moving it aside
+  // can put that question on screen.
+  `Library/Containers/${ID}`
 ].map((p) => path.join(HOME, p));
 let backupDir = null;
+const asideOf = (dir) => path.join(backupDir, Buffer.from(dir).toString('base64url'));
 export function backupAppData() {
   if (existsSync(BACKUP_ROOT) && readdirSync(BACKUP_ROOT).length) {
     throw new Error('an earlier run left app data in ' + BACKUP_ROOT + '; put it back by hand before running again');
@@ -157,23 +165,63 @@ export function backupAppData() {
   for (const dir of DATA_DIRS) {
     if (!existsSync(dir)) continue;
     mkdirSync(backupDir, { recursive: true });
-    renameSync(dir, path.join(backupDir, Buffer.from(dir).toString('base64url')));
+    try {
+      renameSync(dir, asideOf(dir));
+    } catch (err) {
+      // A move that macOS refuses (the container's, say) puts back what was
+      // already moved, so the run stops with every folder in its place. The
+      // empty backup folder is then removed, never anything with data in it.
+      for (const done of moved.reverse()) renameSync(asideOf(done), done);
+      rmSync(path.join(backupDir, 'moved.json'), { force: true });
+      rmdirSync(backupDir);
+      if (!readdirSync(BACKUP_ROOT).length) rmdirSync(BACKUP_ROOT);
+      backupDir = null;
+      throw new Error('could not move ' + dir + ' aside (' + (err.code || err.message) + '); everything was put back');
+    }
     moved.push(dir);
+    // Written after every move, so a run that is stopped leaves an exact record.
+    writeFileSync(path.join(backupDir, 'moved.json'), JSON.stringify(moved, null, 2));
   }
-  if (moved.length) writeFileSync(path.join(backupDir, 'moved.json'), JSON.stringify(moved, null, 2));
-  else backupDir = null;
+  if (!moved.length) backupDir = null;
   note('app data moved aside: ' + JSON.stringify(moved));
 }
 export function clearTestData() {
   for (const dir of DATA_DIRS) rmSync(dir, { recursive: true, force: true });
 }
+// Puts the app's data back folder by folder: the test data in each place is
+// cleared, then what was there before the run comes back. A folder that
+// cannot be cleared (a container that macOS keeps closed, say) never keeps
+// the others from coming back. What could not come back stays in the backup,
+// which then lists only that, and the error says where it is. The backup is
+// never deleted recursively.
 export function restoreAppData() {
-  clearTestData();
-  if (!backupDir) return;
-  const moved = JSON.parse(readFileSync(path.join(backupDir, 'moved.json'), 'utf8'));
-  for (const dir of moved) renameSync(path.join(backupDir, Buffer.from(dir).toString('base64url')), dir);
-  rmSync(backupDir, { recursive: true, force: true });
-  if (!readdirSync(BACKUP_ROOT).length) rmSync(BACKUP_ROOT, { recursive: true, force: true });
+  const moved = backupDir ? JSON.parse(readFileSync(path.join(backupDir, 'moved.json'), 'utf8')) : [];
+  const problems = [];
+  const left = [];
+  for (const dir of DATA_DIRS) {
+    let step = 'clear the test data in';
+    try {
+      rmSync(dir, { recursive: true, force: true });
+      step = 'put back';
+      if (moved.includes(dir)) renameSync(asideOf(dir), dir);
+    } catch (err) {
+      problems.push('could not ' + step + ' ' + dir + ' (' + (err.code || err.message) + ')');
+      if (moved.includes(dir)) left.push(dir);
+    }
+  }
+  if (left.length) {
+    writeFileSync(path.join(backupDir, 'moved.json'), JSON.stringify(left, null, 2));
+    problems.push('what was in ' + left.join(', ') + ' before the run is still in ' + backupDir);
+  } else if (backupDir) {
+    rmSync(path.join(backupDir, 'moved.json'), { force: true });
+    try {
+      rmdirSync(backupDir);
+      if (!readdirSync(BACKUP_ROOT).length) rmdirSync(BACKUP_ROOT);
+    } catch (err) {
+      problems.push('the backup folder ' + backupDir + ' was not empty (' + (err.code || err.message) + ')');
+    }
+  }
+  if (problems.length) throw new Error(problems.join('; '));
   backupDir = null;
   note('app data restored');
 }
@@ -264,13 +312,14 @@ export async function run(tests, { name, needUnlocked = false, before = () => {}
   // Ctrl+C or a kill still puts everything back: the app stops, its data and
   // the Downloads folder are restored, the lock is released.
   let cleaned = false;
+  let restored = true;
   const cleanup = async () => {
     if (cleaned) return;
     cleaned = true;
     stopGuard();
     try { await after(); } catch (err) { note('after: ' + err.message); }
     try { collectDownloads(); } catch (err) { note('downloads: ' + err.message); }
-    try { restoreAppData(); } catch (err) { console.log('Could not restore app data: ' + err.message); }
+    try { restoreAppData(); } catch (err) { restored = false; console.log('Could not restore app data: ' + err.message); }
     dropLock();
   };
   for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
@@ -302,8 +351,8 @@ export async function run(tests, { name, needUnlocked = false, before = () => {}
     await cleanup();
   }
   console.log(`\nEvidence: ${EVIDENCE}`);
-  console.log(`${passed} passed, ${failed} failed, ${notRun} not run, ${passed + failed + notRun} total. Errors: ${failed}`);
-  const code = stopped ? 3 : failed ? 1 : 0;
+  console.log(`${passed} passed, ${failed} failed, ${notRun} not run, ${passed + failed + notRun} total. Errors: ${failed + (restored ? 0 : 1)}`);
+  const code = !restored ? 6 : stopped ? 3 : failed ? 1 : 0;
   console.log('Exit code: ' + code);
   process.exit(code);
 }
