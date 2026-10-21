@@ -605,7 +605,7 @@ test('Save writes a .sight with a 16-byte salt, 12-byte IV and data; Open restor
     assert.equal(await p.readReal(), 'hello world', 'every refusal left the buffer alone');
     // Nothing on the console object touches the buffer.
     assert.deepEqual(Object.keys(p.w.PlainSight).sort(), ['coverFailed', 'coverId', 'coverIds', 'coverText', 'ready', 'selectedCoverId', 'setCover', 'version']);
-    assert.equal(p.w.PlainSight.version, '1.3.5');
+    assert.equal(p.w.PlainSight.version, '1.3.6');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
@@ -2119,6 +2119,131 @@ test('device vault: a phrase change of an open vault shows the open-vault status
     assert.equal(await decryptVault(JSON.parse(p.storageDump()['plainSight.vault']), 'a brand new phrase here'), 'kept open');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
+});
+
+test('device vault: without encryption, Start and Esc on the intro leave a saved copy alone', async () => {
+  const storage = await lockedCopyStorage();
+  const original = storage['plainSight.vault'];
+  const p = await loadPage({ noSubtle: true, storage });
+  try {
+    p.$('#btn-help').click();
+    assert.equal(p.$('#vault-on').disabled, true);
+    assert.equal(p.$('#vault-on').checked, false);
+    p.start();
+    assert.equal(p.$('#intro').hidden, true);
+    assert.equal(p.storageDump()['plainSight.vault'], original, 'the copy is untouched by Start');
+    assert.notEqual(p.toast(), 'Saved copy deleted from this device');
+    p.$('#btn-help').click();
+    p.press('Escape');
+    assert.equal(p.$('#intro').hidden, true);
+    assert.equal(p.storageDump()['plainSight.vault'], original, 'the copy is untouched by Esc');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('without encryption, Save and Open say so instead of asking for a password or opening a file', async () => {
+  const p = await loadPage({ noSubtle: true, storage: { 'plainSight.introSeen': '1' } });
+  try {
+    assert.match(p.toast(), /no encryption/, 'a return visit sees the notice');
+    p.type('words');
+    p.$('#toast').textContent = '';
+    p.$('#btn-save').click();
+    await p.settle();
+    assert.match(p.toast(), /no encryption/);
+    assert.equal(p.$('#pw').hidden, true, 'no password dialog');
+    let picked = false;
+    p.$('#file-input').click = () => { picked = true; };
+    p.$('#toast').textContent = '';
+    p.$('#btn-open').click();
+    assert.match(p.toast(), /no encryption/);
+    assert.equal(picked, false, 'no file picker');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('device vault: a delete by another tab during the first save under a new phrase is not undone by that save', async () => {
+  const p = await loadPage({ slowEncrypt: (n) => (n === 0 ? 0 : 1500) });
+  try {
+    p.start();
+    p.type('open here');
+    await p.vaultOn('correct horse battery staple');
+    const original = p.storageDump()['plainSight.vault'];
+    assert.ok(original, 'first copy written at once');
+    p.$('#btn-help').click();
+    p.$('#vault-phrase').value = 'a brand new phrase here';
+    p.start();                               // the new key derives, then its first save takes 1500 ms
+    await sleep(900);                        // the key is derived, the save is in flight
+    p.w.localStorage.removeItem('plainSight.vault');
+    p.w.dispatchEvent(new p.w.StorageEvent('storage', { key: 'plainSight.vault', oldValue: original, newValue: null }));
+    assert.ok(!p.d.body.classList.contains('vault-open'), 'locked at once');
+    await sleep(2200);
+    assert.equal(p.storageDump()['plainSight.vault'], undefined, 'the copy did not come back');
+    assert.ok(!p.d.body.classList.contains('vault-open'));
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('device vault: another tab clearing this site\'s storage locks this tab at once, and nothing shows as pending', async () => {
+  const p = await loadPage();
+  try {
+    p.start();
+    p.type('cleared away');
+    await p.vaultOn('correct horse battery staple');
+    p.w.localStorage.clear();
+    p.w.dispatchEvent(new p.w.StorageEvent('storage', { key: null, oldValue: null, newValue: null }));
+    assert.ok(!p.d.body.classList.contains('vault-open'), 'locked');
+    assert.equal(p.toast(), 'The saved copy changed in another tab; this tab is locked');
+    assert.equal(await p.readReal(), 'cleared away', 'the text on the page stays');
+    p.$('#btn-help').click();
+    assert.equal(p.$('#vault-on').checked, false);
+    assert.match(p.$('#vault-status').textContent, /To come back to your text later/);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('device vault: between the key and its first save the status says the vault is open', async () => {
+  const p = await loadPage({ slowEncrypt: (n) => (n === 0 ? 1500 : 0) });
+  try {
+    p.start();
+    p.type('first save pending');
+    p.$('#btn-help').click();
+    p.$('#vault-on').checked = true;
+    p.$('#vault-on').dispatchEvent(new p.w.Event('change', { bubbles: true }));
+    p.$('#vault-phrase').value = 'correct horse battery staple';
+    p.start();
+    await sleep(900);                        // derived, first save still in flight
+    assert.ok(p.d.body.classList.contains('vault-open'));
+    assert.equal(p.storageDump()['plainSight.vault'], undefined, 'nothing written yet');
+    p.$('#btn-help').click();
+    assert.equal(p.$('#vault-on').checked, true);
+    assert.match(p.$('#vault-status').textContent, /^The vault is open and saving as you type/);
+    p.start();
+    await sleep(1500);
+    assert.equal(await decryptVault(JSON.parse(p.storageDump()['plainSight.vault']), 'correct horse battery staple'), 'first save pending');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('device vault: an open intro on a locked tab follows the copy: a same-salt autosave keeps the typed phrase, a delete unticks the box', async () => {
+  const q = await loadPage({ storage: await lockedCopyStorage() });
+  try {
+    q.$('#btn-help').click();
+    assert.equal(q.$('#vault-on').checked, true);
+    q.$('#vault-phrase').value = 'correct horse';
+    const original = q.storageDump()['plainSight.vault'];
+    const other = JSON.parse(original);
+    other.data = other.data.slice(0, -4) + (other.data.endsWith('AAAA') ? 'BBBB' : 'AAAA');   // same salt: an autosave elsewhere
+    const rewritten = JSON.stringify(other);
+    q.w.localStorage.setItem('plainSight.vault', rewritten);
+    q.w.dispatchEvent(new q.w.StorageEvent('storage', { key: 'plainSight.vault', oldValue: original, newValue: rewritten }));
+    assert.equal(q.$('#vault-phrase').value, 'correct horse', 'typing is not disturbed by an autosave');
+    assert.equal(q.$('#vault-on').checked, true);
+    q.w.localStorage.removeItem('plainSight.vault');
+    q.w.dispatchEvent(new q.w.StorageEvent('storage', { key: 'plainSight.vault', oldValue: rewritten, newValue: null }));
+    assert.equal(q.$('#vault-on').checked, false, 'the box follows the deleted copy');
+    assert.match(q.$('#vault-status').textContent, /To come back to your text later/);
+    assert.deepEqual(q.errors, []);
+  } finally { q.close(); }
 });
 
 test('untick while a first-time vault setup is still deriving its key leaves no copy and no open vault', async () => {
