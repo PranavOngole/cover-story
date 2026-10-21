@@ -104,8 +104,9 @@ impl Shown {
     }
 }
 
-// The four commands the page may call (build.rs, capabilities/main.json). Each
-// one only hands over to the Folder above, where the rules are and are tested.
+// The folder commands the page may call (build.rs, capabilities/main.json).
+// Each one only hands over to the Folder above, where the rules are and are
+// tested; save_download, below, writes into the Downloads folder.
 
 /// Shows the system folder picker. On a choice the folder is remembered and
 /// its name returned; Cancel returns None and changes nothing.
