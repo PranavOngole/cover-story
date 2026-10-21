@@ -369,7 +369,8 @@
     intro: 'plainSight.introSeen',
     custom: 'plainSight.customText',
     cover: 'plainSight.cover',
-    vault: 'plainSight.vault'          // the encrypted copy of the hidden text, only when the vault is on
+    vault: 'plainSight.vault',         // the encrypted copy of the hidden text, only when the vault is on
+    folderVersion: 'plainSight.folderVersion'   // a timestamp that tells other tabs the save folder changed
   };
   const FILE_EXT = '.sight';
   const FILE_FORMATS = ['plain-sight', 'cover-story'];   // files from the project's earlier name still open
@@ -761,8 +762,8 @@
   // in flight is cancelled.
   function wipe() {
     unlockAttempt += 1;
-    wipeCount += 1;          // Open in flight is cancelled
-    vaultGeneration += 1;    // a vault setup or phrase change in flight is dropped; the save below uses the new generation
+    wipeCount += 1;          // an Open still deriving its key is cancelled
+    setupAttempt += 1;       // a vault setup or phrase change still deriving its key is dropped
     if (vaultOpen()) {
       const key = vaultKey;
       const salt = vaultSalt;
@@ -1013,9 +1014,11 @@
   let vaultSalt = null;
   let vaultSaveTimer = null;
   let unlockArmedAt = 0;
-  let vaultGeneration = 0;   // bumps when the vault is turned off, re-keyed or wiped; a write or setup started before that is dropped
+  let vaultGeneration = 0;   // bumps when the vault is turned off; a write started before that is dropped
+  let setupAttempt = 0;      // bumps on every vault setup, on Esc and on untick; a setup still deriving its key is dropped
   let unlockAttempt = 0;     // bumps on every chord and on Esc; an unlock started before that is dropped
   let wipeCount = 0;         // bumps on Esc; an Open still deriving its key is cancelled
+  let writeChain = Promise.resolve();   // vault writes run one after another, in the order they were asked for
 
   function vaultStored() {
     const raw = storageGet(STORAGE.vault);
@@ -1032,11 +1035,10 @@
   // Turns the vault on with a phrase: a fresh salt, the key in memory, the
   // current text saved at once. With the vault already open this re-keys it.
   async function vaultEnable(phrase) {
-    vaultGeneration += 1;
-    const gen = vaultGeneration;
+    const attempt = ++setupAttempt;
     const salt = crypto.getRandomValues(new Uint8Array(16));
     const key = await deriveKey(phrase, salt, PBKDF2_ITERATIONS);
-    if (gen !== vaultGeneration) return;   // turned off or re-keyed again meanwhile
+    if (attempt !== setupAttempt) return;   // Esc, untick or another setup meanwhile
     vaultKey = key;
     vaultSalt = salt;
     body.classList.add('vault-open');
@@ -1069,25 +1071,34 @@
   // Turns the vault off: locks it and deletes the encrypted copy, readable or not.
   function vaultDisable() {
     vaultGeneration += 1;
+    setupAttempt += 1;
     vaultLock();
     storageSet(STORAGE.vault, '');
   }
-  // Encrypts text under a key and stores it, unless the vault was turned off,
-  // re-keyed or wiped while the encryption ran. Except for the first write of
-  // a new vault, the copy on disk must still carry this key's salt: another
-  // tab may have deleted or re-keyed it, and then this tab locks instead.
-  async function vaultWrite(key, salt, text, fresh = false) {
+  // Encrypts text under a key and stores it. Writes are queued so they land in
+  // the order they were asked for: an autosave, then the first write of a new
+  // phrase, then the save on Esc, each seeing the one before. A write is
+  // dropped if the vault was turned off after it was asked for. Except for the
+  // first write of a new vault, the copy on disk must still carry this key's
+  // salt: another tab may have deleted or re-keyed it, and then this tab locks.
+  function vaultWrite(key, salt, text, fresh = false) {
     const gen = vaultGeneration;
-    const record = await encryptRecord(key, salt, text);
-    if (gen !== vaultGeneration) return;
-    if (!fresh) {
-      const current = vaultStored();
-      if (!current || current.salt !== record.salt) { vaultLock(); return; }
-    }
-    storageSet(STORAGE.vault, JSON.stringify(record));
+    const run = async () => {
+      const record = await encryptRecord(key, salt, text);
+      if (gen !== vaultGeneration) return;
+      if (!fresh) {
+        const current = vaultStored();
+        if (!current || current.salt !== record.salt) { vaultLock(); return; }
+      }
+      storageSet(STORAGE.vault, JSON.stringify(record));
+    };
+    writeChain = writeChain.then(run, run);
+    return writeChain;
   }
-  // Another tab deleted or re-keyed the copy: this tab's key is stale, so it locks.
+  // Another tab deleted or re-keyed the copy: this tab's key is stale, so it
+  // locks. Another tab changed the save folder: this tab reloads the handle.
   function onStorageChange(e) {
+    if (e.key === STORAGE.folderVersion) { onFolderChanged(); return; }
     if (e.key !== STORAGE.vault || !vaultOpen()) return;
     let stale = true;
     if (e.newValue) {
@@ -1178,6 +1189,7 @@
       const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
       folderHandle = handle;
       await folderStore(handle);
+      folderAnnounce();
       folderRender();
       toast('Save now writes into ' + handle.name);
     } catch (err) {
@@ -1187,8 +1199,18 @@
   async function folderForget() {
     folderHandle = null;
     await folderStore(null);
+    folderAnnounce();
     folderRender();
     toast('Save downloads an encrypted file again');
+  }
+  // Tells other open tabs that the folder choice changed; they reload the
+  // handle from IndexedDB (or drop it) on the storage event.
+  function folderAnnounce() {
+    storageSet(STORAGE.folderVersion, String(Date.now()));
+  }
+  async function onFolderChanged() {
+    folderHandle = await folderLoad();
+    if (!introEl.hidden) folderRender();
   }
   // True when the folder can be written now. Asks the browser if it has to;
   // this runs from the Save click, which counts as the user gesture it needs.
@@ -1210,8 +1232,17 @@
     const p = (n) => String(n).padStart(2, '0');
     return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + '-' + p(d.getMinutes()) + '-' + p(d.getSeconds()) + '.txt';
   }
+  // Writes a new file. A name that already exists (two saves in one second,
+  // or an older file) gets a counter before the extension.
   async function folderWrite(text) {
-    const name = folderFileName();
+    const base = folderFileName().replace(/\.txt$/, '');
+    let name = base + '.txt';
+    for (let n = 2; n < 100; n++) {
+      let exists = true;
+      try { await folderHandle.getFileHandle(name, { create: false }); } catch (err) { exists = false; }
+      if (!exists) break;
+      name = base + ' (' + n + ').txt';
+    }
     const file = await folderHandle.getFileHandle(name, { create: true });
     const writable = await file.createWritable();
     await writable.write(text);
@@ -1259,10 +1290,15 @@
     if (!real) { toast('Nothing to save yet'); return; }
     if (folderHandle) {
       // Plain text into the chosen folder, named by the moment of the click.
+      // The text is the text on the page at the click, even if Esc follows
+      // during the permission prompt.
+      const text = real;
+      const handle = folderHandle;
       if (!(await folderReady())) { toast('No permission for the folder. Choose it again under the ? button.'); return; }
+      if (folderHandle !== handle) { toast('The folder changed; press Save again'); return; }
       try {
-        const name = await folderWrite(real);
-        toast('Saved ' + name + ' in ' + folderHandle.name);
+        const name = await folderWrite(text);
+        toast('Saved ' + name + ' in ' + handle.name);
       } catch (err) {
         toast('Could not write to the folder');
       }
@@ -1498,7 +1534,7 @@
   // reads or returns the hidden buffer in any form, encrypted or not. Save and
   // Open are reachable only through their buttons.
   window.PlainSight = Object.freeze({
-    version: '1.2.1',
+    version: '1.2.2',
     coverIds: COVER_IDS.slice(),
     coverId: () => (cover ? cover.id : null),
     coverText: () => coverText,

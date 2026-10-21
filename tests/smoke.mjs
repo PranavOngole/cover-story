@@ -33,7 +33,22 @@ async function importCover(id) {
   return mod.default;
 }
 
-async function loadPage({ random = () => 1, storage = {}, inject = true, folder = null } = {}) {
+// With slowEncrypt set, every AES-GCM encryption in the page takes that many
+// milliseconds, so a test can press Esc while a vault write is in flight.
+function cryptoFor(slowEncrypt) {
+  if (!slowEncrypt) return webcrypto;
+  return {
+    getRandomValues: (a) => webcrypto.getRandomValues(a),
+    subtle: {
+      importKey: (...a) => webcrypto.subtle.importKey(...a),
+      deriveKey: (...a) => webcrypto.subtle.deriveKey(...a),
+      decrypt: (...a) => webcrypto.subtle.decrypt(...a),
+      encrypt: async (...a) => { await sleep(slowEncrypt); return webcrypto.subtle.encrypt(...a); }
+    }
+  };
+}
+
+async function loadPage({ random = () => 1, storage = {}, inject = true, folder = null, slowEncrypt = 0 } = {}) {
   const errors = [];
   const downloads = [];
   const copied = [];
@@ -50,7 +65,7 @@ async function loadPage({ random = () => 1, storage = {}, inject = true, folder 
       // Deterministic typos: Math.random() === 1 means "never a typo".
       window.Math.random = random;
       // jsdom has no crypto.subtle, URL.createObjectURL or navigator.clipboard.
-      Object.defineProperty(window, 'crypto', { value: webcrypto, configurable: true });
+      Object.defineProperty(window, 'crypto', { value: cryptoFor(slowEncrypt), configurable: true });
       window.URL.createObjectURL = (blob) => { downloads.push({ blob, name: null }); return 'blob:http://localhost/' + downloads.length; };
       window.URL.revokeObjectURL = () => {};
       window.HTMLAnchorElement.prototype.click = function () {
@@ -204,21 +219,27 @@ async function decryptVault(record, phrase) {
   const key = await webcrypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations: record.iterations, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
   return new TextDecoder().decode(await webcrypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, data));
 }
-function fakeFolder(name, { permission = 'granted' } = {}) {
+function fakeFolder(name, { permission = 'granted', permissionDelay = 0 } = {}) {
   const written = [];
+  const files = new Set();
   const handle = {
     kind: 'directory',
     name,
-    queryPermission: async () => permission,
+    queryPermission: async () => { if (permissionDelay) await sleep(permissionDelay); return permission; },
     requestPermission: async () => permission,
-    getFileHandle: async (fileName, opts) => ({
-      createWritable: async () => ({
-        write: async (text) => { written.push({ name: fileName, text, create: Boolean(opts && opts.create) }); },
-        close: async () => {}
-      })
-    })
+    getFileHandle: async (fileName, opts) => {
+      const create = Boolean(opts && opts.create);
+      if (!create && !files.has(fileName)) throw new Error('NotFoundError');
+      files.add(fileName);
+      return {
+        createWritable: async () => ({
+          write: async (text) => { written.push({ name: fileName, text, create }); },
+          close: async () => {}
+        })
+      };
+    }
   };
-  return { handle, written, cancel: false };
+  return { handle, written, files, cancel: false };
 }
 function makeCoverFile(w, json) {
   return new w.File([json], 'test.sight', { type: 'application/json' });
@@ -575,7 +596,7 @@ test('Save writes a .sight with a 16-byte salt, 12-byte IV and data; Open restor
     assert.equal(await p.readReal(), 'hello world', 'every refusal left the buffer alone');
     // Nothing on the console object touches the buffer.
     assert.deepEqual(Object.keys(p.w.PlainSight).sort(), ['coverFailed', 'coverId', 'coverIds', 'coverText', 'ready', 'selectedCoverId', 'setCover', 'version']);
-    assert.equal(p.w.PlainSight.version, '1.2.1');
+    assert.equal(p.w.PlainSight.version, '1.2.2');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
@@ -980,7 +1001,7 @@ test('localStorage never holds the hidden text: only the three known keys, and n
     p.start();
     const secret = 'zq7 secret phrase 991';
     p.type(secret);
-    const allowed = ['plainSight.introSeen', 'plainSight.cover', 'plainSight.customText'];
+    const allowed = ['plainSight.introSeen', 'plainSight.cover', 'plainSight.customText', 'plainSight.folderVersion'];
     const check = (label) => {
       const ls = p.w.localStorage;
       for (let i = 0; i < ls.length; i++) {
@@ -1549,6 +1570,115 @@ test('leaving the page saves an open vault (beforeunload as well as pagehide)', 
     p.w.dispatchEvent(new p.w.Event('beforeunload', { cancelable: true }));
     await sleep(500);
     assert.equal(await decryptVault(JSON.parse(p.storageDump()['plainSight.vault']), 'correct horse battery staple'), 'typed then leaving');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('Esc while a vault write is still encrypting never loses the save: new vault, phrase change and a double Esc', async () => {
+  const phrase = 'correct horse battery staple';
+  const p = await loadPage({ slowEncrypt: 400 });
+  try {
+    // New vault: the first write is encrypting when Esc lands.
+    p.start();
+    p.type('first save');
+    await p.vaultOn(phrase);            // returns about 400 ms in: key derived, first write in flight
+    p.press('Escape');
+    await sleep(1200);
+    assert.ok(!p.d.body.classList.contains('vault-open'));
+    assert.equal(await decryptVault(JSON.parse(p.storageDump()['plainSight.vault']), phrase), 'first save', 'the copy exists and holds the text');
+    // Double Esc: the first Esc's write is encrypting when the second lands.
+    p.type(phrase); p.unlockChord(); await sleep(700);
+    assert.ok(p.d.body.classList.contains('vault-open'), 'reopened');
+    p.type(' second');
+    p.press('Escape'); p.press('Escape');
+    await sleep(1200);
+    assert.equal(await decryptVault(JSON.parse(p.storageDump()['plainSight.vault']), phrase), 'first save second', 'nothing dropped');
+    // Phrase change: Esc while the re-keyed copy is being written.
+    p.type(phrase); p.unlockChord(); await sleep(700);
+    p.type(' third');
+    p.$('#btn-help').click();
+    p.$('#vault-phrase').value = 'a brand new phrase here';
+    p.start();
+    await sleep(350);                   // key derived, the fresh write is encrypting
+    p.press('Escape');
+    await sleep(1500);
+    const rec = JSON.parse(p.storageDump()['plainSight.vault']);
+    assert.equal(await decryptVault(rec, 'a brand new phrase here'), 'first save second third', 'the new phrase holds the latest words');
+    await assert.rejects(decryptVault(rec, phrase), 'the old phrase is gone');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('untick while the first vault write is still encrypting leaves no copy behind; a storage event for another key does not lock', async () => {
+  const phrase = 'correct horse battery staple';
+  const p = await loadPage({ slowEncrypt: 400 });
+  try {
+    p.start();
+    p.type('should vanish');
+    await p.vaultOn(phrase);
+    p.$('#btn-help').click();
+    p.$('#vault-on').checked = false;
+    p.start();                          // untick during the in-flight write
+    await sleep(1200);
+    assert.equal(p.storageDump()['plainSight.vault'], undefined, 'the late write did not resurrect the copy');
+    assert.ok(!p.d.body.classList.contains('vault-open'));
+    // Unrelated storage events leave an open vault alone.
+    await p.vaultOn(phrase);
+    await sleep(900);
+    p.w.dispatchEvent(new p.w.StorageEvent('storage', { key: 'plainSight.customText', oldValue: null, newValue: 'x' }));
+    assert.ok(p.d.body.classList.contains('vault-open'), 'still open');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('save folder: Esc during the permission prompt still writes the text that was on the page; a name already taken gets a counter', async () => {
+  const folder = fakeFolder('Notes', { permissionDelay: 300 });
+  const p = await loadPage({ folder });
+  try {
+    p.$('#btn-folder').click();
+    await p.settle();
+    p.start();
+    p.type('kept despite Esc');
+    p.$('#btn-save').click();
+    await sleep(100);
+    p.press('Escape');                  // during the permission prompt
+    await sleep(600);
+    assert.equal(folder.written.length, 1);
+    assert.equal(folder.written[0].text, 'kept despite Esc');
+    assert.equal(await p.readReal(), '', 'the page was wiped');
+    // Freeze the clock so two saves share a name.
+    const RealDate = p.w.Date;
+    const fixed = new RealDate(2026, 9, 20, 14, 55, 3).getTime();
+    p.w.Date = class extends RealDate { constructor(...a) { super(...(a.length ? a : [fixed])); } static now() { return fixed; } };
+    p.type('one');
+    p.$('#btn-save').click();
+    await sleep(500);
+    p.$('#btn-save').click();
+    await sleep(500);
+    assert.equal(folder.written[1].name, '2026-10-20 14-55-03.txt');
+    assert.equal(folder.written[2].name, '2026-10-20 14-55-03 (2).txt', 'a taken name gets a counter');
+    assert.equal(folder.written[2].text, 'one');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('save folder: a folder change in another tab reaches this tab, which stops writing there', async () => {
+  const folder = fakeFolder('Notes');
+  const p = await loadPage({ folder });
+  try {
+    p.$('#btn-folder').click();
+    await p.settle();
+    assert.equal(p.w.localStorage.getItem('plainSight.folderVersion') !== null, true, 'the change is announced to other tabs');
+    p.start();
+    // Another tab forgot the folder: it bumps the announcement; this tab reloads the handle (none here) and drops it.
+    p.w.dispatchEvent(new p.w.StorageEvent('storage', { key: 'plainSight.folderVersion', oldValue: '1', newValue: '2' }));
+    await p.settle();
+    p.type('abc');
+    p.$('#btn-save').click();
+    await p.settle();
+    assert.equal(folder.written.length, 0, 'nothing written to the old folder');
+    assert.equal(p.$('#pw').hidden, false, 'Save downloads instead');
+    p.press('Escape');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
