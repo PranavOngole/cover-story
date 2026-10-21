@@ -26,7 +26,7 @@ const STAMP = /^\d{4}-\d{2}-\d{2} \d{2}-\d{2}-\d{2}$/;
 // A fake adapter with the same surface as desktop/adapter.js. It records
 // every call; files is the set of names already in the folder, so the
 // counter rule can be checked from the page's side.
-function fakeNative({ saved = null, pick = { name: 'Build_Test_1' }, failWrite = false, failDownload = false, downloadAnswer = null } = {}) {
+function fakeNative({ saved = null, pick = { name: 'Build_Test_1' }, failPick = false, failForget = false, failWrite = false, failDownload = false, downloadAnswer = null } = {}) {
   const calls = [];
   const files = new Set();
   let quit = null;
@@ -37,9 +37,9 @@ function fakeNative({ saved = null, pick = { name: 'Build_Test_1' }, failWrite =
     quit: () => quit(),
     hasQuit: () => typeof quit === 'function',
     api: {
-      pickFolder: async () => { calls.push(['pickFolder']); if (pick) folder = pick; return pick; },
+      pickFolder: async () => { calls.push(['pickFolder']); if (failPick) throw new Error('Could not remember the folder'); if (pick) folder = pick; return pick; },
       savedFolder: async () => { calls.push(['savedFolder']); return folder; },
-      forgetFolder: async () => { calls.push(['forgetFolder']); folder = null; },
+      forgetFolder: async () => { calls.push(['forgetFolder']); if (failForget) throw new Error('Could not forget the folder'); folder = null; },
       writeTextFile: async (base, text) => {
         calls.push(['writeTextFile', base, text]);
         if (failWrite) throw new Error('disk full');
@@ -214,6 +214,44 @@ test('a cancelled picker changes nothing and forgets nothing', async () => {
     assert.equal(p.$('#folder-status').textContent, before);
     assert.equal(native.calls.filter((c) => c[0] === 'forgetFolder').length, 0, 'the remembered folder is not forgotten');
     assert.equal(p.toast(), '', 'no toast');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('a folder the app could not keep says so and changes nothing', async () => {
+  const native = fakeNative({ saved: { name: 'Kept' }, failPick: true });
+  const p = await loadPage({ native });
+  try {
+    await p.settle();
+    const before = p.$('#folder-status').textContent;
+    p.$('#btn-folder').click();
+    await p.settle();
+    assert.equal(p.toast(), 'Could not use that folder');
+    assert.equal(p.$('#folder-status').textContent, before, 'the status still names the folder in use');
+    assert.equal(native.calls.filter((c) => c[0] === 'forgetFolder').length, 0);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('when the app cannot forget the folder, the page says so and keeps using it, so Save and the screen agree', async () => {
+  const native = fakeNative({ saved: { name: 'Build_Test_1' }, failForget: true });
+  const p = await loadPage({ native });
+  try {
+    await p.settle();
+    p.start();
+    p.type('still in the folder');
+    p.$('#btn-help').click();
+    const before = p.$('#folder-status').textContent;
+    p.$('#btn-folder-forget').click();
+    await p.settle();
+    assert.equal(p.toast(), 'Could not stop using the folder');
+    assert.equal(p.$('#folder-status').textContent, before, 'the status still names the folder');
+    assert.equal(p.$('#btn-folder-forget').hidden, false, 'the button to stop is still there');
+    p.start();
+    p.$('#btn-save').click();
+    await p.settle();
+    assert.equal(p.$('#pw').hidden, true, 'no password: Save still writes into the folder');
+    assert.equal(native.calls.filter((c) => c[0] === 'writeTextFile').length, 1, 'the text went into the folder');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });

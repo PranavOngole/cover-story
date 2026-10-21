@@ -1232,11 +1232,12 @@
       toast('Save now writes into ' + handle.name);
     } catch (err) {
       /* cancelled or refused: nothing changes */
+      if (native) toast('Could not use that folder');   // the app could not keep it (a cancel answers null)
     }
   }
   async function folderForget() {
+    try { await folderStore(null); } catch (err) { toast('Could not stop using the folder'); return; }   // the app still keeps it
     folderHandle = null;
-    await folderStore(null);
     folderAnnounce();
     folderRender();
     toast(saveMode() === 'txt' ? 'Save downloads a plain .txt file again' : 'Save downloads an encrypted file again');
