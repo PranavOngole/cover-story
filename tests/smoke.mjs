@@ -4,6 +4,7 @@
 //
 // Run with: npm test   (exit code 0 only when every test passes)
 
+import zlib from 'node:zlib';
 import { JSDOM, VirtualConsole } from 'jsdom';
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -36,27 +37,50 @@ async function importCover(id) {
 // With slowEncrypt set, every AES-GCM encryption in the page takes that many
 // milliseconds (or, given a function, the milliseconds it returns for the nth
 // encryption), so a test can press Esc while a vault write is in flight.
-// With failDerive set, that many key derivations reject before they work again.
+// slowDerive does the same for key derivations. With failDerive set to a number,
+// that many key derivations reject at once before they work again; given a
+// function, the nth derivation rejects after the milliseconds it returns, or
+// derives normally when it returns false.
 // With noSubtle, the page sees a crypto object without subtle, as on a plain http address.
-function cryptoFor(slowEncrypt, failDerive = 0, noSubtle = false) {
+function cryptoFor(slowEncrypt, failDerive = 0, noSubtle = false, slowDerive = 0) {
   if (noSubtle) return { getRandomValues: (a) => webcrypto.getRandomValues(a) };
-  if (!slowEncrypt && !failDerive) return webcrypto;
+  if (!slowEncrypt && !failDerive && !slowDerive) return webcrypto;
   let calls = 0;
   let derives = 0;
-  const delayFor = () => (typeof slowEncrypt === 'function' ? slowEncrypt(calls++) : slowEncrypt);
+  const pick = (opt, n) => (typeof opt === 'function' ? opt(n) : opt);
+  const delayFor = () => pick(slowEncrypt, calls++);
   return {
     getRandomValues: (a) => webcrypto.getRandomValues(a),
     subtle: {
       importKey: (...a) => webcrypto.subtle.importKey(...a),
-      deriveKey: (...a) => (derives++ < failDerive ? Promise.reject(new Error('deriveKey refused by the test')) : webcrypto.subtle.deriveKey(...a)),
+      deriveKey: async (...a) => {
+        const n = derives++;
+        const refuse = typeof failDerive === 'function' ? failDerive(n) : (n < failDerive ? 0 : false);
+        if (refuse !== false) { await sleep(refuse); throw new Error('deriveKey refused by the test'); }
+        const wait = pick(slowDerive, n);
+        if (wait) await sleep(wait);
+        return webcrypto.subtle.deriveKey(...a);
+      },
       decrypt: (...a) => webcrypto.subtle.decrypt(...a),
       encrypt: async (...a) => { if (slowEncrypt) await sleep(delayFor()); return webcrypto.subtle.encrypt(...a); }
     }
   };
 }
 
-async function loadPage({ random = () => 1, storage = {}, inject = true, folder = null, slowEncrypt = 0, failDerive = 0, noSubtle = false, userAgent = undefined, brave = false } = {}) {
+// An unhandled promise rejection raised in the page reaches Node's process handler
+// (a browser would show it as a console error). It is recorded on every page open at
+// the time, and a run with any such rejection fails even if no test asserted on it.
+const openErrors = new Set();
+let unhandled = 0;
+process.on('unhandledRejection', (reason) => {
+  unhandled += 1;
+  const text = 'unhandled rejection: ' + (reason && reason.message ? reason.message : String(reason));
+  for (const errors of openErrors) errors.push(text);
+});
+
+async function loadPage({ random = () => 1, storage = {}, inject = true, folder = null, slowEncrypt = 0, failDerive = 0, slowDerive = 0, noSubtle = false, userAgent = undefined, brave = false } = {}) {
   const errors = [];
+  openErrors.add(errors);
   const downloads = [];
   const copied = [];
   const virtualConsole = new VirtualConsole();
@@ -74,7 +98,7 @@ async function loadPage({ random = () => 1, storage = {}, inject = true, folder 
       // Deterministic typos: Math.random() === 1 means "never a typo".
       window.Math.random = random;
       // jsdom has no crypto.subtle, URL.createObjectURL or navigator.clipboard.
-      Object.defineProperty(window, 'crypto', { value: cryptoFor(slowEncrypt, failDerive, noSubtle), configurable: true });
+      Object.defineProperty(window, 'crypto', { value: cryptoFor(slowEncrypt, failDerive, noSubtle, slowDerive), configurable: true });
       window.URL.createObjectURL = (blob) => { downloads.push({ blob, name: null }); return 'blob:http://localhost/' + downloads.length; };
       window.URL.revokeObjectURL = () => {};
       window.HTMLAnchorElement.prototype.click = function () {
@@ -181,7 +205,7 @@ async function loadPage({ random = () => 1, storage = {}, inject = true, folder 
       await sleep(0);
     },
     async settle(ms = 50) { await sleep(ms); },
-    close() { w.close(); }
+    close() { openErrors.delete(errors); w.close(); }
   };
   return page;
 }
@@ -218,6 +242,16 @@ function expectedBlocks(coverText, n) {
 }
 function countWords(blocks) {
   return blocks.reduce((n, b) => n + (b.text.match(/\S+/g) || []).length, 0);
+}
+// Makes a vault record outside the page, in the page's own format, as another tab would store it.
+async function encryptVaultRecord(text, phrase) {
+  const salt = webcrypto.getRandomValues(new Uint8Array(16));
+  const iv = webcrypto.getRandomValues(new Uint8Array(12));
+  const base = await webcrypto.subtle.importKey('raw', new TextEncoder().encode(phrase), 'PBKDF2', false, ['deriveKey']);
+  const key = await webcrypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations: 310000, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, false, ['encrypt']);
+  const data = new Uint8Array(await webcrypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(text)));
+  const b64 = (u) => Buffer.from(u).toString('base64');
+  return JSON.stringify({ format: 'plain-sight', version: 1, cipher: 'AES-256-GCM', kdf: 'PBKDF2-SHA-256', iterations: 310000, salt: b64(salt), iv: b64(iv), data: b64(data) });
 }
 // Decrypts a stored vault record outside the page, to prove what the page saved.
 async function decryptVault(record, phrase) {
@@ -605,7 +639,7 @@ test('Save writes a .sight with a 16-byte salt, 12-byte IV and data; Open restor
     assert.equal(await p.readReal(), 'hello world', 'every refusal left the buffer alone');
     // Nothing on the console object touches the buffer.
     assert.deepEqual(Object.keys(p.w.PlainSight).sort(), ['coverFailed', 'coverId', 'coverIds', 'coverText', 'ready', 'selectedCoverId', 'setCover', 'version']);
-    assert.equal(p.w.PlainSight.version, '1.3.6');
+    assert.equal(p.w.PlainSight.version, '1.4.0');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
@@ -1757,6 +1791,211 @@ test('plain .txt download mode: Save downloads a text file named by the moment w
   } finally { p.close(); }
 });
 
+// Reads the entries of a stored (uncompressed) zip archive, checking each
+// entry's CRC-32 with Node's own zlib, so the page's zip writer is checked by
+// an independent implementation.
+function readStoredZip(bytes) {
+  const b = Buffer.from(bytes);
+  const entries = [];
+  let at = 0;
+  while (b.readUInt32LE(at) === 0x04034B50) {
+    const method = b.readUInt16LE(at + 8);
+    const time = b.readUInt16LE(at + 10);
+    const date = b.readUInt16LE(at + 12);
+    const crc = b.readUInt32LE(at + 14);
+    const size = b.readUInt32LE(at + 18);
+    const nameLen = b.readUInt16LE(at + 26);
+    const extraLen = b.readUInt16LE(at + 28);
+    const name = b.subarray(at + 30, at + 30 + nameLen).toString('utf8');
+    const data = b.subarray(at + 30 + nameLen + extraLen, at + 30 + nameLen + extraLen + size);
+    entries.push({ name, method, time, date, crcOk: zlib.crc32(data) === crc, text: data.toString('utf8') });
+    at += 30 + nameLen + extraLen + size;
+  }
+  assert.equal(b.readUInt32LE(b.length - 22), 0x06054B50, 'the archive ends with its directory');
+  assert.equal(b.readUInt16LE(b.length - 12), entries.length, 'the directory lists every entry');
+  return entries;
+}
+
+test('more download formats: .md and .docx are named by the moment, carry their type, need no password, and the choice persists', async () => {
+  const p = await loadPage();
+  try {
+    const pick = (value) => {
+      const radio = p.$('input[name="save-mode"][value="' + value + '"]');
+      radio.checked = true;
+      radio.dispatchEvent(new p.w.Event('change', { bubbles: true }));
+    };
+    pick('md');
+    assert.equal(p.w.localStorage.getItem('plainSight.saveMode'), 'md');
+    assert.equal(p.$('#folder-status').textContent, 'Save downloads a Markdown .md file named by the moment.');
+    p.start();
+    p.type('first line');
+    p.press('Enter');
+    p.type('second <&> line');
+    p.$('#btn-save').click();
+    await p.settle();
+    assert.equal(p.$('#pw').hidden, true, 'no password dialog');
+    assert.equal(p.downloads.length, 1);
+    assert.match(p.downloads[0].name, /^\d{4}-\d{2}-\d{2} \d{2}-\d{2}-\d{2}\.md$/);
+    assert.equal(p.downloads[0].blob.type, 'text/markdown');
+    assert.equal(await p.downloads[0].blob.text(), 'first line\nsecond <&> line');
+    assert.equal(p.toast(), 'Saved ' + p.downloads[0].name);
+
+    p.$('#btn-help').click();
+    pick('docx');
+    assert.equal(p.$('#folder-status').textContent, 'Save downloads a Word .docx file named by the moment.');
+    p.start();
+    p.$('#btn-save').click();
+    await p.settle();
+    assert.equal(p.downloads.length, 2);
+    const doc = p.downloads[1];
+    assert.match(doc.name, /^\d{4}-\d{2}-\d{2} \d{2}-\d{2}-\d{2}\.docx$/);
+    assert.equal(doc.blob.type, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    const entries = readStoredZip(new Uint8Array(await doc.blob.arrayBuffer()));
+    assert.deepEqual(entries.map((e) => e.name), ['[Content_Types].xml', '_rels/.rels', 'word/document.xml'], 'only the three parts a .docx needs: no metadata part');
+    for (const e of entries) {
+      assert.equal(e.crcOk, true, e.name + ': its CRC-32 matches');
+      assert.equal(e.method, 0, e.name + ': stored');
+      assert.deepEqual([e.time, e.date], [0, 33], e.name + ': dated 1 January 1980, so the file says nothing about when it was made');
+    }
+    const body = entries[2].text;
+    assert.ok(body.includes('<w:p><w:r><w:t xml:space="preserve">first line</w:t></w:r></w:p><w:p><w:r><w:t xml:space="preserve">second &lt;&amp;&gt; line</w:t></w:r></w:p>'), 'one paragraph per line, the text escaped: ' + body);
+    assert.equal(/plain words|vault|Plain Sight/i.test(entries.map((e) => e.text).join('')), false, 'no word of the app or other text in the file');
+    assert.equal(await p.readReal(), 'first line\nsecond <&> line', 'saving keeps the text');
+    // The choice survives a new visit.
+    const q = await loadPage({ storage: p.storageDump() });
+    try {
+      assert.equal(q.$('input[name="save-mode"][value="docx"]').checked, true);
+      assert.deepEqual(q.errors, []);
+    } finally { q.close(); }
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('save folder: the files written there can be .txt, .md or .docx, with the counter before the extension; the status names the format and the choice persists', async () => {
+  const folder = fakeFolder('Notes');
+  const p = await loadPage({ folder });
+  try {
+    const pick = (value) => {
+      const radio = p.$('input[name="folder-format"][value="' + value + '"]');
+      radio.checked = true;
+      radio.dispatchEvent(new p.w.Event('change', { bubbles: true }));
+    };
+    assert.equal(p.$('#folder-format').hidden, false, 'the folder format is offered where folders work');
+    assert.equal(p.$('input[name="folder-format"][value="txt"]').checked, true, '.txt by default');
+    p.$('#btn-folder').click();
+    await p.settle();
+    pick('md');
+    assert.equal(p.w.localStorage.getItem('plainSight.folderFormat'), 'md');
+    assert.equal(p.$('#folder-status').textContent, 'Save writes a Markdown file into the folder "Notes".');
+    p.start();
+    p.type('kept as markdown');
+    p.$('#btn-save').click();
+    await p.settle(200);
+    assert.equal(folder.written.length, 1);
+    assert.match(folder.written[0].name, /^\d{4}-\d{2}-\d{2} \d{2}-\d{2}-\d{2}\.md$/);
+    assert.equal(folder.written[0].text, 'kept as markdown');
+    assert.equal(p.toast(), 'Saved ' + folder.written[0].name + ' in Notes');
+    // A name already in the folder gets the counter before the extension.
+    const base = folder.written[0].name.replace(/\.md$/, '');
+    p.$('#btn-help').click();
+    pick('docx');
+    assert.equal(p.$('#folder-status').textContent, 'Save writes a Word file into the folder "Notes".');
+    p.start();
+    folder.files.add(base + '.docx');
+    const realNow = Date;
+    p.w.Date = class extends realNow { constructor(...a) { super(...(a.length ? a : [new realNow(base.replace(/^(\d{4})-(\d{2})-(\d{2}) (\d{2})-(\d{2})-(\d{2})$/, '$1-$2-$3T$4:$5:$6'))])); } };
+    p.$('#btn-save').click();
+    await p.settle(200);
+    p.w.Date = realNow;
+    assert.equal(folder.written.length, 2);
+    assert.equal(folder.written[1].name, base + ' (2).docx', 'the counter goes before .docx');
+    assert.ok(folder.written[1].text instanceof Uint8Array || ArrayBuffer.isView(folder.written[1].text), 'a .docx is written as bytes');
+    const entries = readStoredZip(folder.written[1].text);
+    assert.ok(entries[2].text.includes('kept as markdown'));
+    const q = await loadPage({ storage: p.storageDump(), folder: fakeFolder('Notes') });
+    try {
+      assert.equal(q.$('input[name="folder-format"][value="docx"]').checked, true, 'the choice survives a new visit');
+    } finally { q.close(); }
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('Open reads a plain .txt or .md note: the text comes back, the cover is rebuilt to its length and writing goes on; with text on the page it asks first, and Cancel keeps the page; a .docx is refused', async () => {
+  const p = await loadPage();
+  try {
+    p.start();
+    chooseFile(p, new p.w.File(['hello\r\nworld'], 'note.txt', { type: 'text/plain' }));
+    await p.settle();
+    assert.equal(p.$('#pw').hidden, true, 'an empty page needs no confirmation');
+    assert.equal(p.toast(), 'Opened');
+    assert.equal(await p.readReal(), 'hello\nworld', 'Windows line ends become plain line breaks');
+    assert.equal(p.coverLength(), 'hello\nworld'.length, 'the cover is rebuilt to the length of the note');
+    p.type(' more');
+    assert.equal(await p.readReal(), 'hello\nworld more', 'writing goes on after the note');
+    assert.equal(p.coverLength(), 'hello\nworld more'.length, 'and the cover with it');
+
+    chooseFile(p, new p.w.File(['from markdown'], 'draft.md', { type: 'text/markdown' }));
+    await p.settle();
+    assert.equal(p.$('#pw').hidden, false, 'text on the page: a confirmation first');
+    assert.equal(p.$('#pw-title').textContent, 'Open draft.md?');
+    assert.equal(p.$('#pw-input').hidden, true, 'no password field for a plain file');
+    p.$('#pw-cancel').click();
+    await p.settle();
+    assert.equal(await p.readReal(), 'hello\nworld more', 'Cancel keeps the page');
+    assert.equal(p.$('#pw-input').hidden, false, 'the password field is back for the next dialog');
+
+    chooseFile(p, new p.w.File(['from markdown'], 'draft.md', { type: 'text/markdown' }));
+    await p.settle();
+    p.$('#pw-ok').click();
+    await p.settle();
+    assert.equal(p.toast(), 'Opened');
+    assert.equal(await p.readReal(), 'from markdown');
+
+    chooseFile(p, new p.w.File(['PK'], 'report.docx', { type: 'application/octet-stream' }));
+    await p.settle();
+    assert.equal(p.toast(), 'Open reads .sight, .txt and .md files');
+    assert.equal(await p.readReal(), 'from markdown', 'nothing changed');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('a .docx keeps a tab as a Word tab and leaves out the characters XML cannot hold', async () => {
+  const p = await loadPage({ storage: { 'plainSight.saveMode': 'docx' } });
+  try {
+    p.start();
+    chooseFile(p, new p.w.File(['a\tb\uFFFFc\u0001d\uFFFEe\n\tindented'], 'n.txt', { type: 'text/plain' }));
+    await p.settle();
+    p.$('#btn-save').click();
+    await p.settle();
+    assert.equal(p.downloads.length, 1);
+    const body = readStoredZip(new Uint8Array(await p.downloads[0].blob.arrayBuffer()))[2].text;
+    assert.ok(body.includes('<w:body><w:p><w:r><w:t xml:space="preserve">a</w:t><w:tab/><w:t xml:space="preserve">bcde</w:t></w:r></w:p><w:p><w:r><w:t xml:space="preserve"></w:t><w:tab/><w:t xml:space="preserve">indented</w:t></w:r></w:p></w:body>'), body);
+    assert.equal(await p.readReal(), 'a\tb\uFFFFc\u0001d\uFFFEe\n\tindented', 'the page keeps the text as it is');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('after a confirmation the password dialog still refuses an empty password', async () => {
+  const p = await loadPage();
+  try {
+    p.start();
+    p.type('words');
+    chooseFile(p, new p.w.File(['other'], 'n.txt', { type: 'text/plain' }));
+    await p.settle();
+    p.$('#pw-cancel').click();
+    await p.settle();
+    p.$('#btn-save').click();   // the encrypted download, the default
+    assert.equal(p.$('#pw').hidden, false);
+    assert.equal(p.$('#pw-input').hidden, false);
+    p.$('#pw-ok').click();       // no password typed
+    await p.settle();
+    assert.equal(p.$('#pw').hidden, false, 'an empty password is refused; the dialog stays');
+    assert.equal(p.downloads.length, 0);
+    p.press('Escape');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
 test('folder help text fits the browser: Brave gets its setting, Safari and Firefox their download tip, folder-capable browsers no help', async () => {
   const cases = [
     { opts: { brave: true }, expect: /^Brave keeps folder access switched off\. To write into a folder: open brave:\/\/flags\/#file-system-access-api in a new tab, set it to Enabled, click Relaunch, then come back here\.$/ },
@@ -2032,6 +2271,7 @@ test('device vault: when the copy changes during the intro phrase check, the cov
     assert.equal(q.$('input[name="mode"][value="work"]').checked, true, 'the picked cover stays');
     assert.equal(q.$('#custom-text').value, 'my own cover words', 'the custom text stays');
     assert.equal(q.$('#vault-on').checked, false);
+    assert.equal(q.$('#vault-phrase').value, '', 'the phrase field is emptied by the redraw');
     assert.deepEqual(q.errors, []);
   } finally { q.close(); }
 });
@@ -2246,6 +2486,141 @@ test('device vault: an open intro on a locked tab follows the copy: a same-salt 
   } finally { q.close(); }
 });
 
+test('device vault: Esc during a phrase change\'s first save, then a delete in another tab: nothing comes back', async () => {
+  const p = await loadPage({ slowEncrypt: (n) => (n === 1 ? 1500 : 0) });   // the first save under the new phrase takes 1500 ms
+  try {
+    p.start();
+    p.type('open here');
+    await p.vaultOn('correct horse battery staple');
+    const original = p.storageDump()['plainSight.vault'];
+    p.$('#btn-help').click();
+    p.$('#vault-phrase').value = 'a brand new phrase here';
+    p.start();
+    await sleep(900);                        // the new key is derived, its first save is in flight
+    assert.ok(p.d.body.classList.contains('vault-open'));
+    p.press('Escape');                       // locks; the Esc save queues behind the slow first save
+    p.w.localStorage.removeItem('plainSight.vault');
+    p.w.dispatchEvent(new p.w.StorageEvent('storage', { key: 'plainSight.vault', oldValue: original, newValue: null }));
+    await sleep(2500);
+    assert.equal(p.storageDump()['plainSight.vault'], undefined, 'neither the first save nor the Esc save brought the copy back');
+    assert.ok(!p.d.body.classList.contains('vault-open'));
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('device vault: a delete event with an unreadable old value still drops the queued saves of a locked tab', async () => {
+  const p = await loadPage({ slowEncrypt: (n) => (n === 1 ? 1500 : 0) });
+  try {
+    p.start();
+    p.type('open here');
+    await p.vaultOn('correct horse battery staple');
+    p.$('#btn-help').click();
+    p.$('#vault-phrase').value = 'a brand new phrase here';
+    p.start();
+    await sleep(900);                        // the new key is derived, its first save is in flight
+    p.press('Escape');                       // locks; the Esc save queues behind it
+    p.w.localStorage.removeItem('plainSight.vault');
+    p.w.dispatchEvent(new p.w.StorageEvent('storage', { key: 'plainSight.vault', oldValue: 'not json', newValue: null }));
+    await sleep(2500);
+    assert.equal(p.storageDump()['plainSight.vault'], undefined, 'nothing came back');
+    assert.ok(!p.d.body.classList.contains('vault-open'));
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('device vault: an Esc save that finds the copy gone does not disturb a new vault set up meanwhile', async () => {
+  const p = await loadPage({ slowEncrypt: (n) => (n === 1 ? 1500 : 0) });   // the Esc save is the second encryption
+  try {
+    p.start();
+    p.type('old words');
+    await p.vaultOn('correct horse battery staple');
+    p.press('Escape');                       // the Esc save starts, slowly
+    p.w.localStorage.removeItem('plainSight.vault');   // deleted elsewhere meanwhile; no storage event reaches this tab
+    p.type('new words');
+    p.$('#btn-help').click();
+    p.$('#vault-on').checked = true;
+    p.$('#vault-on').dispatchEvent(new p.w.Event('change', { bubbles: true }));
+    p.$('#vault-phrase').value = 'a brand new phrase here';
+    p.start();                               // a new vault; its first save is immediate
+    await sleep(900);
+    assert.ok(p.d.body.classList.contains('vault-open'), 'the new vault is open');
+    await sleep(1500);                       // the old Esc save lands on a copy that is not its own and is dropped
+    assert.ok(p.d.body.classList.contains('vault-open'), 'still open');
+    assert.equal(await decryptVault(JSON.parse(p.storageDump()['plainSight.vault']), 'a brand new phrase here'), 'new words');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('device vault: a save that finds the copy gone while a phrase change derives locks the tab and drops the change', async () => {
+  const p = await loadPage();
+  let hidden = false;
+  try {
+    p.start();
+    p.type('fallback path');
+    await p.vaultOn('correct horse battery staple');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    p.w.localStorage.removeItem('plainSight.vault');   // deleted elsewhere; no storage event reaches this tab
+    p.$('#btn-help').click();
+    p.$('#vault-phrase').value = 'a brand new phrase here';
+    p.start();                               // the new key derives
+    Object.defineProperty(p.d, 'hidden', { get: () => hidden, configurable: true });
+    hidden = true;
+    p.d.dispatchEvent(new p.w.Event('visibilitychange'));   // the save on hide runs under the old key and finds no copy
+    await sleep(900);
+    assert.ok(!p.d.body.classList.contains('vault-open'), 'locked by the failed save');
+    assert.equal(p.storageDump()['plainSight.vault'], undefined, 'the phrase change wrote nothing');
+    hidden = false;
+    p.d.dispatchEvent(new p.w.Event('visibilitychange'));
+    p.$('#btn-help').click();
+    assert.equal(p.$('#vault-on').checked, false, 'nothing pending');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('device vault: a clear by another document when no copy exists leaves a phrase being typed alone', async () => {
+  const p = await loadPage();
+  try {
+    p.start();
+    p.type('fresh start');
+    p.$('#btn-help').click();
+    p.$('#vault-on').checked = true;
+    p.$('#vault-on').dispatchEvent(new p.w.Event('change', { bubbles: true }));
+    p.$('#vault-phrase').value = 'half a phr';
+    p.w.localStorage.clear();
+    p.w.dispatchEvent(new p.w.StorageEvent('storage', { key: null, oldValue: null, newValue: null }));
+    assert.equal(p.$('#vault-phrase').value, 'half a phr');
+    assert.equal(p.$('#vault-on').checked, true);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('device vault: an open intro showing a saved copy unticks at once when another document clears the storage', async () => {
+  const q = await loadPage({ storage: await lockedCopyStorage() });
+  try {
+    q.$('#btn-help').click();
+    assert.equal(q.$('#vault-on').checked, true);
+    q.w.localStorage.clear();
+    q.w.dispatchEvent(new q.w.StorageEvent('storage', { key: null, oldValue: null, newValue: null }));
+    assert.equal(q.$('#vault-on').checked, false);
+    assert.match(q.$('#vault-status').textContent, /To come back to your text later/);
+    assert.deepEqual(q.errors, []);
+  } finally { q.close(); }
+});
+
+test('a clear by another document redraws the download choice on an open intro', async () => {
+  const p = await loadPage();
+  try {
+    p.$('input[name="save-mode"][value="txt"]').checked = true;
+    p.$('input[name="save-mode"][value="txt"]').dispatchEvent(new p.w.Event('change', { bubbles: true }));
+    assert.match(p.$('#folder-status').textContent, /plain \.txt/);
+    p.w.localStorage.clear();
+    p.w.dispatchEvent(new p.w.StorageEvent('storage', { key: null, oldValue: null, newValue: null }));
+    assert.equal(p.$('input[name="save-mode"][value="sight"]').checked, true);
+    assert.match(p.$('#folder-status').textContent, /encrypted/);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
 test('untick while a first-time vault setup is still deriving its key leaves no copy and no open vault', async () => {
   const p = await loadPage();
   try {
@@ -2267,6 +2642,222 @@ test('untick while a first-time vault setup is still deriving its key leaves no 
   } finally { p.close(); }
 });
 
+test('device vault: an intro reopened while this tab\'s own first save is in flight unticks when another tab then deletes the copy', async () => {
+  const p = await loadPage({ slowEncrypt: (n) => (n === 0 ? 1500 : 0) });
+  try {
+    p.start();
+    p.type('drawn early');
+    p.$('#btn-help').click();
+    p.$('#vault-on').checked = true;
+    p.$('#vault-on').dispatchEvent(new p.w.Event('change', { bubbles: true }));
+    p.$('#vault-phrase').value = 'correct horse battery staple';
+    p.start();
+    await sleep(900);                        // key derived, the first save still encrypting
+    p.$('#btn-help').click();                // the intro draws an open vault with no copy yet
+    assert.match(p.$('#vault-status').textContent, /^The vault is open and saving as you type/);
+    await sleep(1200);                       // the first save lands while the intro is open
+    const record = p.storageDump()['plainSight.vault'];
+    assert.ok(record, 'the copy exists');
+    p.w.localStorage.removeItem('plainSight.vault');
+    p.w.dispatchEvent(new p.w.StorageEvent('storage', { key: 'plainSight.vault', oldValue: record, newValue: null }));
+    assert.equal(p.toast(), 'The saved copy changed in another tab; this tab is locked');
+    assert.ok(!p.d.body.classList.contains('vault-open'), 'locked');
+    assert.equal(p.$('#vault-on').checked, false, 'the intro follows the deleted copy');
+    assert.match(p.$('#vault-status').textContent, /To come back to your text later/);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('device vault: an intro reopened during this tab\'s own setup keeps a phrase being typed when another tab autosaves under the same salt', async () => {
+  const p = await loadPage({ slowEncrypt: (n) => (n === 0 ? 1500 : 0) });
+  try {
+    p.start();
+    p.type('same salt elsewhere');
+    p.$('#btn-help').click();
+    p.$('#vault-on').checked = true;
+    p.$('#vault-on').dispatchEvent(new p.w.Event('change', { bubbles: true }));
+    p.$('#vault-phrase').value = 'correct horse battery staple';
+    p.start();
+    await sleep(900);                        // key derived, the first save still encrypting
+    p.$('#btn-help').click();                // reopened before any copy exists
+    p.$('#vault-phrase').value = 'a new phr';   // a phrase change half typed
+    await sleep(1200);                       // this tab's first save lands under the open intro
+    const original = p.storageDump()['plainSight.vault'];
+    assert.ok(original, 'the copy exists');
+    assert.equal(p.$('#vault-phrase').value, 'a new phr', 'this tab\'s own save leaves the phrase alone');
+    const other = JSON.parse(original);
+    other.data = other.data.slice(0, -4) + (other.data.endsWith('AAAA') ? 'BBBB' : 'AAAA');   // same salt: an autosave elsewhere
+    const rewritten = JSON.stringify(other);
+    p.w.localStorage.setItem('plainSight.vault', rewritten);
+    p.w.dispatchEvent(new p.w.StorageEvent('storage', { key: 'plainSight.vault', oldValue: original, newValue: rewritten }));
+    assert.equal(p.$('#vault-phrase').value, 'a new phr', 'an autosave elsewhere leaves the phrase alone');
+    assert.ok(p.d.body.classList.contains('vault-open'), 'a same-salt save does not lock this tab');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('device vault: an intro reopened while the key derives says the vault is open as soon as the key exists', async () => {
+  const p = await loadPage({ slowDerive: (n) => (n === 0 ? 300 : 0), slowEncrypt: (n) => (n === 0 ? 1500 : 0) });
+  try {
+    p.start();
+    p.type('status follows');
+    p.$('#btn-help').click();
+    p.$('#vault-on').checked = true;
+    p.$('#vault-on').dispatchEvent(new p.w.Event('change', { bubbles: true }));
+    p.$('#vault-phrase').value = 'correct horse battery staple';
+    p.start();
+    p.$('#btn-help').click();                // reopened during the derivation
+    assert.match(p.$('#vault-status').textContent, /^Your phrase is being set up/);
+    await sleep(1000);                       // the key exists, the first save is still in flight
+    assert.ok(p.d.body.classList.contains('vault-open'));
+    assert.equal(p.storageDump()['plainSight.vault'], undefined, 'nothing written yet');
+    assert.equal(p.$('#vault-on').checked, true);
+    assert.match(p.$('#vault-status').textContent, /^The vault is open and saving as you type/);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('device vault: a key derivation that fails after a newer setup started says nothing and leaves the newer setup pending', async () => {
+  const p = await loadPage({ failDerive: (n) => (n === 0 ? 500 : false), slowDerive: (n) => (n === 1 ? 1000 : 0) });
+  try {
+    p.start();
+    p.type('second try wins');
+    p.$('#btn-help').click();
+    p.$('#vault-on').checked = true;
+    p.$('#vault-on').dispatchEvent(new p.w.Event('change', { bubbles: true }));
+    p.$('#vault-phrase').value = 'first phrase fails';
+    p.start();                               // this derivation is refused 500 ms in
+    p.$('#btn-help').click();                // the intro shows the pending setup
+    assert.equal(p.$('#vault-on').checked, true);
+    assert.match(p.$('#vault-status').textContent, /^Your phrase is being set up/);
+    p.$('#vault-phrase').value = 'correct horse battery staple';
+    p.start();                               // a newer setup starts while the first still derives
+    await sleep(700);                        // the first has failed by now; the newer one still derives
+    assert.notEqual(p.toast(), 'The vault could not be set up', 'a superseded failure says nothing');
+    p.$('#btn-help').click();
+    assert.equal(p.$('#vault-on').checked, true, 'the newer setup still shows as pending');
+    assert.match(p.$('#vault-status').textContent, /^Your phrase is being set up/);
+    p.start();                               // closing with an empty phrase keeps the setup
+    await sleep(1200);
+    assert.ok(p.d.body.classList.contains('vault-open'));
+    assert.equal(await decryptVault(JSON.parse(p.storageDump()['plainSight.vault']), 'correct horse battery staple'), 'second try wins');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('device vault: an intro left open across the 10-minute wipe shows the lock, not an open vault (DM-129)', async () => {
+  const p = await loadPage();
+  try {
+    p.start();
+    p.type('kept at the wipe');
+    await p.vaultOn('correct horse battery staple');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    p.$('#btn-help').click();                // the intro left open
+    assert.match(p.$('#vault-status').textContent, /^The vault is open and saving as you type/);
+    const realNow = p.w.Date.now();
+    let fakeNow = realNow;
+    p.w.Date.now = () => fakeNow;
+    const setHidden = (hidden) => {
+      Object.defineProperty(p.d, 'hidden', { get: () => hidden, configurable: true });
+      p.d.dispatchEvent(new p.w.Event('visibilitychange'));
+    };
+    setHidden(true);
+    fakeNow += TEN_MINUTES + 1000;
+    setHidden(false);                        // the wipe locks the vault with the intro still open
+    assert.equal(p.toast(), 'Cleared after 10 minutes in the background');
+    assert.ok(!p.d.body.classList.contains('vault-open'), 'locked by the wipe');
+    assert.equal(p.$('#vault-on').checked, true, 'the copy is still on the device');
+    assert.match(p.$('#vault-status').textContent, /^A saved copy is on this device/);
+    await sleep(600);                        // the save made at the wipe lands
+    assert.match(p.$('#vault-status').textContent, /^A saved copy is on this device/);
+    assert.equal(await decryptVault(JSON.parse(p.storageDump()['plainSight.vault']), 'correct horse battery staple'), 'kept at the wipe');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('device vault: an open intro follows the silent lock when the open vault\'s own save finds its copy gone (DM-129)', async () => {
+  const p = await loadPage();
+  let hidden = false;
+  try {
+    p.start();
+    p.type('silent lock');
+    await p.vaultOn('correct horse battery staple');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    p.w.localStorage.removeItem('plainSight.vault');   // deleted elsewhere; no storage event reaches this tab
+    p.$('#btn-help').click();                // the intro, drawn while the vault still looks open
+    assert.match(p.$('#vault-status').textContent, /^The vault is open and saving as you type/);
+    Object.defineProperty(p.d, 'hidden', { get: () => hidden, configurable: true });
+    hidden = true;
+    p.d.dispatchEvent(new p.w.Event('visibilitychange'));   // the save on hide finds no copy and locks the tab
+    await sleep(600);
+    hidden = false;
+    p.d.dispatchEvent(new p.w.Event('visibilitychange'));
+    assert.ok(!p.d.body.classList.contains('vault-open'), 'locked');
+    assert.equal(p.storageDump()['plainSight.vault'], undefined, 'nothing written');
+    assert.equal(p.$('#vault-on').checked, false, 'the intro follows the copy, which is gone');
+    assert.match(p.$('#vault-status').textContent, /To come back to your text later/);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('device vault: a same-salt save by another tab leaves a locked tab\'s Esc save alone, so the last save wins', async () => {
+  const p = await loadPage({ slowEncrypt: (n) => (n === 1 ? 1500 : 0) });   // the Esc save is the second encryption
+  try {
+    p.start();
+    p.type('kept after Esc');
+    await p.vaultOn('correct horse battery staple');
+    const original = p.storageDump()['plainSight.vault'];
+    p.press('Escape');                       // locks; the Esc save encrypts slowly
+    const other = JSON.parse(original);
+    other.data = other.data.slice(0, -4) + (other.data.endsWith('AAAA') ? 'BBBB' : 'AAAA');   // same salt: another tab's save
+    const rewritten = JSON.stringify(other);
+    p.w.localStorage.setItem('plainSight.vault', rewritten);
+    p.w.dispatchEvent(new p.w.StorageEvent('storage', { key: 'plainSight.vault', oldValue: original, newValue: rewritten }));
+    await sleep(2200);
+    assert.ok(!p.d.body.classList.contains('vault-open'));
+    assert.equal(await decryptVault(JSON.parse(p.storageDump()['plainSight.vault']), 'correct horse battery staple'), 'kept after Esc', 'the Esc save landed after the other tab\'s save');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('device vault: a re-key by another tab while this tab is locked drops its queued first save and Esc save', async () => {
+  const p = await loadPage({ slowEncrypt: (n) => (n === 1 ? 1500 : 0) });   // the first save under the new phrase takes 1500 ms
+  try {
+    const rekeyed = await encryptVaultRecord('the other tab\'s text', 'phrase of the other tab');
+    p.start();
+    p.type('open here');
+    await p.vaultOn('correct horse battery staple');
+    const original = p.storageDump()['plainSight.vault'];
+    p.$('#btn-help').click();
+    p.$('#vault-phrase').value = 'a brand new phrase here';
+    p.start();
+    await sleep(900);                        // the new key is derived, its first save is in flight
+    assert.ok(p.d.body.classList.contains('vault-open'));
+    p.press('Escape');                       // locks; the Esc save queues behind the slow first save
+    p.w.localStorage.setItem('plainSight.vault', rekeyed);   // another tab re-keys the copy meanwhile
+    p.w.dispatchEvent(new p.w.StorageEvent('storage', { key: 'plainSight.vault', oldValue: original, newValue: rekeyed }));
+    await sleep(2500);
+    assert.equal(p.storageDump()['plainSight.vault'], rekeyed, 'neither the first save nor the Esc save overwrote the other tab\'s copy');
+    assert.ok(!p.d.body.classList.contains('vault-open'));
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('device vault: an Esc save that finds the copy gone in a locked tab is dropped without an error', async () => {
+  const p = await loadPage({ slowEncrypt: (n) => (n === 1 ? 1500 : 0) });   // the Esc save is the second encryption
+  try {
+    p.start();
+    p.type('gone meanwhile');
+    await p.vaultOn('correct horse battery staple');
+    p.press('Escape');                       // locks; the Esc save encrypts slowly
+    p.w.localStorage.removeItem('plainSight.vault');   // deleted elsewhere; no storage event reaches this tab
+    await sleep(2200);
+    assert.equal(p.storageDump()['plainSight.vault'], undefined, 'the save is dropped');
+    assert.ok(!p.d.body.classList.contains('vault-open'));
+    assert.deepEqual(p.errors, [], 'nothing thrown on the way');
+  } finally { p.close(); }
+});
+
 // ---------------------------------------------------------------------------
 // Run
 // ---------------------------------------------------------------------------
@@ -2283,5 +2874,6 @@ for (const t of tests) {
     console.log('       ' + String(err && err.stack ? err.stack : err).split('\n').join('\n       '));
   }
 }
-console.log(`\n${passed} passed, ${failed} failed, ${tests.length} total. Errors: ${failed}`);
-process.exit(failed ? 1 : 0);
+if (unhandled) console.log(`\n${unhandled} unhandled promise rejection(s) in the page during the run`);
+console.log(`\n${passed} passed, ${failed} failed, ${tests.length} total. Errors: ${failed + unhandled}`);
+process.exit(failed || unhandled ? 1 : 0);

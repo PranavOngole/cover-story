@@ -132,7 +132,7 @@ test('with the adapter the folder box offers the system picker, no browser help,
     assert.equal(p.$('#btn-folder').hidden, false, 'the folder button shows in the app');
     assert.equal(p.$('#folder-help').hidden, true, 'no browser-specific help in the app');
     assert.equal(p.$('#folder-note').textContent.includes('Chrome'), false, 'the browser sentence is gone');
-    assert.match(p.$('#folder-note').textContent, /straight into that folder\. Plain text means anyone who can open the file can read it\./);
+    assert.match(p.$('#folder-note').textContent, /straight into that folder\. Plain means anyone who can open the file can read it\.\s*$/);
     assert.match(p.$('#vault-on').parentElement.textContent, /Save my text on this computer, encrypted/);
     assert.match(p.$('#intro').textContent, /Nothing you type leaves this app/);
     assert.match(p.$('#intro').textContent, /Closing the window or quitting erases the hidden text/);
