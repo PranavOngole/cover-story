@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "The main window, for the app's own page only. It may call only the app commands granted here; Wave A has none, so it may call nothing.",
+  "windows": ["main"],
+  "local": true,
+  "permissions": []
+}

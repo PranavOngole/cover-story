@@ -1,0 +1,22 @@
+[package]
+name = "plain-sight"
+version = "1.0.0"
+description = "Plain Sight as a desktop app: the web page in a native window"
+authors = ["Pranav Ongole"]
+license = "MIT"
+edition = "2021"
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "=2.7.3", features = [] }
+
+[dependencies]
+tauri = { version = "=2.12.4", features = [] }
+
+# Smallest binary rather than fastest build (DR-06).
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

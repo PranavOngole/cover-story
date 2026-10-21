@@ -5,7 +5,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node tests/smoke.mjs"
+    "test": "node tests/smoke.mjs",
+    "app:dev": "npm --prefix desktop run app:dev",
+    "app:build": "npm --prefix desktop run app:build"
   },
   "repository": {
     "type": "git",

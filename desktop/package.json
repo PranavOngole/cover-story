@@ -1,0 +1,13 @@
+{
+  "name": "plain-sight-desktop",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "copy": "node copy-frontend.mjs",
+    "app:dev": "tauri dev --no-dev-server",
+    "app:build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.12.3"
+  }
+}

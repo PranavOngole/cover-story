@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- The app icon: a plain document page with a folded corner and a few grey
+       text lines on a transparent background. Generic on purpose: no text and
+       no product mark. Regenerate the icon set from desktop/ with
+       npx tauri icon src-tauri/icons/source.svg -o src-tauri/icons -->
+  <path d="M232 104 H656 L824 272 V888 A32 32 0 0 1 792 920 H232 A32 32 0 0 1 200 888 V136 A32 32 0 0 1 232 104 Z"
+        fill="#ffffff" stroke="#bdbdb8" stroke-width="14" stroke-linejoin="round"/>
+  <path d="M656 104 V240 A32 32 0 0 0 688 272 H824 Z"
+        fill="#e9e8e4" stroke="#bdbdb8" stroke-width="14" stroke-linejoin="round"/>
+  <g stroke="#b3b3ae" stroke-width="30" stroke-linecap="round">
+    <path d="M288 392 H736"/>
+    <path d="M288 476 H736"/>
+    <path d="M288 560 H736"/>
+    <path d="M288 644 H736"/>
+    <path d="M288 728 H560"/>
+  </g>
+</svg>
