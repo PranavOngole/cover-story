@@ -10,6 +10,7 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { webcrypto } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { DESKTOP, EVIDENCE, HOME, alive, clearTestData, drive, driveRaw, note, run, sleep, until } from './harness.mjs';
@@ -95,6 +96,84 @@ test('Backspace removes the last character from the hidden buffer', async () => 
   await keys.type('abcd');
   await keys.press('backspace');
   assert.equal(await copyRealText('cmd'), 'abc');
+  await keys.press('escape');
+});
+
+// The page's own focus: a real click in the middle of the document window,
+// so the next Option+Tab starts from the top of the page (Save, then Open).
+async function focusPage() {
+  const w = drive('cgwindows', app.pid).windows.filter((x) => x.layer === 0 && x.onscreen).sort((a, b) => b.width * b.height - a.width * a.height)[0];
+  drive('clickat', app.pid, Math.round(w.x + w.width / 2), Math.round(w.y + w.height / 2));
+  await sleep(300);
+}
+
+// A .sight file made outside the app, by the format the README documents:
+// it is what the web page writes, so opening it in the app proves the two read
+// the same files.
+async function sightFile(text, password) {
+  const salt = webcrypto.getRandomValues(new Uint8Array(16));
+  const iv = webcrypto.getRandomValues(new Uint8Array(12));
+  const base = await webcrypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveKey']);
+  const key = await webcrypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations: 310000, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, false, ['encrypt']);
+  const data = new Uint8Array(await webcrypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(text)));
+  const b64 = (u) => Buffer.from(u).toString('base64');
+  const file = path.join(EVIDENCE, 'made-outside-the-app.sight');
+  writeFileSync(file, JSON.stringify({ format: 'plain-sight', version: 1, cipher: 'AES-256-GCM', kdf: 'PBKDF2-SHA-256', iterations: 310000, salt: b64(salt), iv: b64(iv), data: b64(data) }, null, 2));
+  return file;
+}
+
+// Open from the keyboard: the second button in the page, the system open
+// panel, Go to (Cmd+Shift+G) the file, then the page's password dialog.
+async function openWithKeys(file, password) {
+  await focusPage();
+  await keys.press('alt+tab');
+  await keys.press('alt+tab');
+  await keys.press('space');
+  await until(() => drive('cgwindows', app.pid).windows.filter((x) => x.onscreen).length >= 2, 'the open panel', 8000);
+  await sleep(600);
+  await keys.press('cmd+shift+g');
+  await sleep(800);
+  drive('type', app.pid, file, 10);
+  await sleep(500);
+  await keys.press('return');
+  await sleep(1200);
+  await keys.press('return');
+  await until(() => drive('cgwindows', app.pid).windows.filter((x) => x.onscreen).length === 1, 'the open panel to close', 8000);
+  await sleep(700);
+  await keys.type(password);
+  await keys.press('return');
+  await sleep(3000);   // the key derives from the password (310,000 rounds)
+}
+
+test('Open shows the system open panel; a wrong password changes nothing; the right one restores a file made outside the app', async () => {
+  const file = await sightFile('opened from a file made outside the app', 'outside password 2026');
+  await keys.press('escape');
+  await openWithKeys(file, 'not the right password');
+  assert.equal(await copyRealText('cmd'), null, 'a wrong password leaves the page empty');
+  await openWithKeys(file, 'outside password 2026');
+  assert.equal(await copyRealText('cmd'), 'opened from a file made outside the app');
+});
+
+test('Cmd+C without a peek copies nothing of the real text', async () => {
+  const marker = 'clipboard marker ' + Date.now();
+  execFileSync('pbcopy', [], { input: marker });
+  await keys.press('cmd+c');
+  await sleep(300);
+  assert.equal(drive('clip-text').text, marker);
+});
+
+test('a window blur ends a peek: with the About panel in front, Cmd+C copies nothing', async () => {
+  await keys.press('cmd+shift+g');               // peek on
+  drive('menu', app.pid, 'Plain Sight', 'About Plain Sight');
+  await until(() => drive('cgwindows', app.pid).windows.filter((x) => x.onscreen).length >= 2, 'the About panel', 5000);
+  await keys.press('cmd+w');                     // close the About panel
+  await sleep(500);
+  await focusPage();
+  const marker = 'clipboard marker ' + Date.now();
+  execFileSync('pbcopy', [], { input: marker });
+  await keys.press('cmd+c');                     // would copy if the peek were still on
+  await sleep(300);
+  assert.equal(drive('clip-text').text, marker, 'the peek ended when the window lost focus');
   await keys.press('escape');
 });
 

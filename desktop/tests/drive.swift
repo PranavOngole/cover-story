@@ -333,6 +333,22 @@ case "click":
     }
     emit(["ok": true, "at": [point.x, point.y]])
 
+case "clickat":
+    // clickat <pid> <x> <y>: a real left click at a screen point (top-left
+    // origin), posted to the app's process, for example to put the focus on
+    // the page itself.
+    needTrust()
+    let pid = pidArg()
+    guard args.count > 3, let x = Double(args[2]), let y = Double(args[3]) else { fail("usage: clickat <pid> <x> <y>") }
+    if !isFrontmost(pid) { fail("the app is not in front; the click would not reach it") }
+    for type in [CGEventType.leftMouseDown, .leftMouseUp] {
+        guard let event = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: CGPoint(x: x, y: y), mouseButton: .left) else { fail("could not create a mouse event") }
+        event.setIntegerValueField(.mouseEventClickState, value: 1)
+        event.postToPid(pid)
+        usleep(30_000)
+    }
+    emit(["ok": true, "at": [x, y]])
+
 case "tree":
     // tree <pid> [depth]: the accessibility tree of every window, for debugging.
     needTrust()
