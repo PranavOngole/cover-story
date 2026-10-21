@@ -22,6 +22,9 @@
     forgetFolder: () => invoke('forget_folder').then(() => undefined),
     // The file name used, such as "2026-10-20 14-55-03 (2).txt".
     writeTextFile: (base, text) => invoke('write_text_file', { base, text }),
+    // Save without a folder: the app writes the file into Downloads and answers
+    // with the name it used, or fails, so the page's toast tells the truth.
+    saveDownload: (name, text) => invoke('save_download', { name, text }),
     onQuit: (callback) => { if (typeof callback === 'function') quitCallback = callback; }
   }));
 

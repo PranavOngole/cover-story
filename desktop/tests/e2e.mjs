@@ -9,6 +9,7 @@
 // Run from desktop/: npm run test:e2e   (exit code 0 only when every test passes)
 
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import {
@@ -206,15 +207,46 @@ test('a download name that is taken gets " (2)" and the file already there is le
     taken.push(name);
   }
   await page.click('btn-save');
-  const name = (await page.waitToast('Saved 2')).replace(/^Saved /, '');
-  assert.ok(taken.includes(name), 'the page asked for a name that was taken: ' + name);
-  const numbered = name.replace(/\.txt$/, ' (2).txt');
+  const numbered = (await page.waitToast('Saved 2')).replace(/^Saved /, '');
+  assert.match(numbered, / \(2\)\.txt$/, 'the toast names the numbered file the app wrote: ' + numbered);
+  assert.ok(taken.includes(numbered.replace(' (2).txt', '.txt')), 'the page asked for a name that was taken');
   await until(() => newDownloads().includes(numbered), 'the numbered file ' + numbered, 10000);
   assert.equal(readFileSync(path.join(DOWNLOADS, numbered), 'utf8'), 'saved through the app');
   for (const n of taken) assert.equal(readFileSync(path.join(DOWNLOADS, n), 'utf8'), 'placed here by the test, must stay as it is', n + ' was not overwritten');
   await page.openIntro();
   await page.choose('save-mode', 'sight');
   await page.start();
+});
+
+test('a Save the app cannot write says "Could not save" in both modes and writes nothing (DM-202)', async () => {
+  // A home whose Downloads folder cannot be written, as after "Don't Allow".
+  const home = path.join(EVIDENCE, 'home-without-downloads');
+  const blocked = path.join(home, 'Downloads');
+  mkdirSync(blocked, { recursive: true });
+  execFileSync('chmod', ['555', blocked]);
+  await stopApp(app);
+  try {
+    await launch({ HOME: home });
+    await page.press('Escape');
+    await page.openIntro();
+    await page.choose('save-mode', 'txt');
+    await page.start();
+    await page.type('words that cannot be written');
+    await page.click('btn-save');
+    await page.waitToast('Could not save');
+    await page.openIntro();
+    await page.choose('save-mode', 'sight');
+    await page.start();
+    await page.click('btn-save');
+    await page.password(PASSWORD);
+    await page.waitToast('Could not save');
+    assert.equal(await page.peekText(), 'words that cannot be written', 'the text stays');
+    assert.deepEqual(readdirSync(blocked), [], 'nothing was written');
+  } finally {
+    await stopApp(app);
+    execFileSync('chmod', ['755', blocked]);
+    await launch();
+  }
 });
 
 test('the shell shows nothing but the app: navigation away and new windows are refused', async () => {
@@ -366,13 +398,16 @@ test('the adapter cannot be replaced, gives no path, refuses any other file name
     let deleted = false; try { deleted = delete window.PlainSightNative; } catch (e) {}
     return { frozen: Object.isFrozen(n), replaced, deleted, still: window.PlainSightNative === n, keys: Object.keys(n).sort() };
   })()`);
-  assert.deepEqual(facts, { frozen: true, replaced: false, deleted: false, still: true, keys: ['forgetFolder', 'onQuit', 'pickFolder', 'savedFolder', 'writeTextFile'] });
+  assert.deepEqual(facts, { frozen: true, replaced: false, deleted: false, still: true, keys: ['forgetFolder', 'onQuit', 'pickFolder', 'saveDownload', 'savedFolder', 'writeTextFile'] });
   await js(`(() => { window.__r = {}; const I = window.__TAURI_INTERNALS__.invoke; const N = window.PlainSightNative;
     const note = (k, p) => p.then((v) => { window.__r[k] = 'ok ' + JSON.stringify(v); }, (e) => { window.__r[k] = 'refused ' + String(e); });
     note('saved', N.savedFolder());
     note('traversal', N.writeTextFile('../../outside', 'x'));
     note('nameWithSlash', N.writeTextFile('2026-10-21 00-00-00/x', 'x'));
     note('extension', N.writeTextFile('2026-10-21 00-00-00.txt', 'x'));
+    note('downloadTraversal', N.saveDownload('../../outside.txt', 'x'));
+    note('downloadSlash', N.saveDownload('untitled-draft-20261021-0000.sight/../../x', 'x'));
+    note('downloadOtherName', N.saveDownload('notes.sh', 'x'));
     note('dialog', I('plugin:dialog|open', {}));
     note('window', I('plugin:window|close', {}));
     note('event', I('plugin:event|listen', { event: 'x', handler: 0 }));
@@ -384,6 +419,7 @@ test('the adapter cannot be replaced, gives no path, refuses any other file name
   note('adapter probes: ' + JSON.stringify(r));
   assert.equal(r.saved, 'ok {"name":"Notes for the test"}', 'only the name');
   for (const k of ['traversal', 'nameWithSlash', 'extension']) assert.match(r[k], /^refused .*moment/, k);
+  for (const k of ['downloadTraversal', 'downloadSlash', 'downloadOtherName']) assert.match(r[k], /^refused .*not one Save makes/, k);
   for (const k of ['dialog', 'window', 'event', 'fs', 'unknown']) assert.match(r[k], /^refused /, k + ' is refused');
   assert.equal(existsSync(path.join(FOLDER, '..', '..', 'outside.txt')), false);
 });
@@ -411,6 +447,70 @@ test('"Stop using the folder" forgets it, in the app\'s data too, and Save asks 
   await page.press('Escape');
   await picture('b03-after-stop.png');
 });
+
+// ---------------------------------------------------------------------------
+// Wave C: the window title, the context menu, and quitting like Esc. The test
+// build answers {"windowTitle": true} and acts on {"close": true},
+// {"quit": "menu"} and {"quit": "terminate"} (src/e2e.rs): the red button or
+// Cmd+W, the app's Quit item, and the Dock's Quit (or a logout).
+// ---------------------------------------------------------------------------
+const windowTitle = () => ask({ windowTitle: true });
+
+test('the window title follows the cover on screen', async () => {
+  await page.press('Escape');
+  await until(async () => (await windowTitle()) === 'Untitled draft', 'the novel title', 5000);
+  await page.openIntro();
+  await page.choose('mode', 'work');
+  await page.start();
+  await until(async () => (await windowTitle()) === 'Q3 planning notes', 'the work title', 5000);
+  await page.openIntro();
+  await page.choose('mode', 'paper');
+  await page.start();
+  await until(async () => (await windowTitle()) === 'Manuscript draft', 'the paper title', 5000);
+  await page.openIntro();
+  await page.choose('mode', 'book');
+  await page.start();
+  await until(async () => (await windowTitle()) === 'Untitled draft', 'back to the novel title', 5000);
+});
+
+test('a right click gives no menu on the page, and the usual one in the text fields', async () => {
+  const r = await js(`(() => {
+    const fire = (el) => { const e = new MouseEvent('contextmenu', { bubbles: true, cancelable: true }); el.dispatchEvent(e); return e.defaultPrevented; };
+    return { page: fire(document.getElementById('cover')), body: fire(document.body), field: fire(document.getElementById('custom-text')), password: fire(document.getElementById('pw-input')) };
+  })()`);
+  assert.deepEqual(r, { page: true, body: true, field: false, password: false });
+});
+
+// Each quit path, straight after typing with the vault open: the last
+// keystrokes must be in the copy on disk when the app is gone, and the phrase
+// must reopen it after a relaunch.
+for (const [how, request] of [['closing the window', { close: true }], ['the Quit menu item', { quit: 'menu' }], ['the Dock\'s Quit (terminate)', { quit: 'terminate' }]]) {
+  test(`${how} works like Esc: the vault keeps the last keystrokes, the app ends, and the phrase reopens them`, async () => {
+    const words = 'typed just before ' + how;
+    await page.press('Escape');
+    await page.type(PHRASE);
+    await page.press('e', { meta: true });
+    await page.press('Enter', { meta: true });
+    await until(() => js(`document.body.classList.contains('vault-open')`), 'the vault to open', 10000);
+    await page.press('Escape');            // locked again, empty page
+    await page.type(PHRASE);
+    await page.press('e', { meta: true });
+    await page.press('Enter', { meta: true });
+    await until(() => js(`document.body.classList.contains('vault-open')`), 'the vault to open again', 10000);
+    const before = await page.peekText();
+    await page.type(words);               // no pause: the autosave has not run
+    const t0 = Date.now();
+    await ask(request);
+    await until(() => !alive(app.pid), 'the app to end after ' + how, 8000);
+    note(how + ': the app ended ' + (Date.now() - t0) + ' ms after the request');
+    await launch();
+    await page.type(PHRASE);
+    await page.press('e', { meta: true });
+    await page.press('Enter', { meta: true });
+    await until(() => js(`document.body.classList.contains('vault-open')`), 'the vault to reopen', 10000);
+    assert.equal(await page.peekText(), before + words, 'the copy holds every keystroke typed before ' + how);
+  });
+}
 
 await run(tests, {
   name: 'e2e',

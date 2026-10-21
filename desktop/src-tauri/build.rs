@@ -8,6 +8,7 @@ fn main() {
             "saved_folder",
             "forget_folder",
             "write_text_file",
+            "save_download",
             "quit_ready",
         ]),
     ))

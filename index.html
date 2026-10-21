@@ -1327,7 +1327,11 @@
     const p = (n) => String(n).padStart(2, '0');
     return d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '-' + p(d.getHours()) + p(d.getMinutes());
   }
-  function downloadText(text, name, type = 'application/json') {
+  // Returns the name the file was saved under. The app writes the file itself
+  // and answers with the name it used (numbered if taken) or fails, so the
+  // page never says Saved for a file that was not written.
+  async function downloadText(text, name, type = 'application/json') {
+    if (native) return native.saveDownload(name, text);
     const blob = new Blob([text], { type });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -1337,6 +1341,7 @@
     a.click();
     body.removeChild(a);
     setTimeout(() => URL.revokeObjectURL(url), 1000);
+    return name;
   }
 
   async function onSave() {
@@ -1364,8 +1369,7 @@
       // is the browser's download setting.
       const name = folderFileName();
       try {
-        downloadText(real, name, 'text/plain');
-        toast('Saved ' + name);
+        toast('Saved ' + await downloadText(real, name, 'text/plain'));
       } catch (err) {
         toast('Could not save');
       }
@@ -1376,7 +1380,7 @@
     try {
       const json = await exportEncrypted(password);
       const slug = cover.tabTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'draft';
-      downloadText(json, slug + '-' + fileStamp() + FILE_EXT);
+      await downloadText(json, slug + '-' + fileStamp() + FILE_EXT);
       toast('Saved');
     } catch (err) {
       toast('Could not save');

@@ -9,6 +9,7 @@
     "allow-saved-folder",
     "allow-forget-folder",
     "allow-write-text-file",
+    "allow-save-download",
     "allow-quit-ready"
   ]
 }

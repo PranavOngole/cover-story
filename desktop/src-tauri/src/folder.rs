@@ -1,8 +1,11 @@
-//! The folder Save writes into (decision D-07). The page asks for a folder
+//! Where Save writes. With a folder chosen (decision D-07), the page asks for it
 //! through the system picker and then writes plain text files named by the
 //! moment into it. The folder's path stays here: the page only ever gets the
 //! folder's name, and it can only write `.txt` files named
-//! "YYYY-MM-DD HH-MM-SS" into the folder the user picked.
+//! "YYYY-MM-DD HH-MM-SS" into the folder the user picked. Without a folder,
+//! Save writes the page's own download into the Downloads folder through
+//! `save_download`, so the page learns whether the file was really written
+//! (DM-202).
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, ErrorKind, Write};
@@ -137,6 +140,58 @@ pub fn write_text_file(
     folder.write(&base, &text)
 }
 
+/// Save without a folder: writes the page's file into the Downloads folder
+/// under the page's own name, numbered when that name is taken, and returns the
+/// name used. A failure reaches the page, which then says it could not save.
+#[tauri::command(async)]
+pub fn save_download<R: Runtime>(
+    window: WebviewWindow<R>,
+    name: String,
+    text: String,
+) -> Result<String, String> {
+    if !is_download_name(&name) {
+        return Err("The file name is not one Save makes".to_owned());
+    }
+    let downloads = window
+        .path()
+        .download_dir()
+        .map_err(|_| "The Downloads folder is not available".to_owned())?;
+    write_new(&downloads, &name, &text).map_err(|e| format!("Could not save the file: {e}"))
+}
+
+/// A name Save gives a download, and nothing else: "YYYY-MM-DD HH-MM-SS.txt",
+/// or a cover's title in lower case with hyphens followed by
+/// "-YYYYMMDD-HHMM.sight" (index.html, onSave).
+fn is_download_name(name: &str) -> bool {
+    if let Some(stem) = name.strip_suffix(".txt") {
+        return is_moment(stem);
+    }
+    let Some(stem) = name.strip_suffix(".sight") else {
+        return false;
+    };
+    // "-YYYYMMDD-HHMM" is the last 14 characters; the title comes before it.
+    const STAMP: &[u8] = b"-00000000-0000";
+    if !stem.is_ascii() || stem.len() <= STAMP.len() {
+        return false;
+    }
+    let (title, stamp) = stem.split_at(stem.len() - STAMP.len());
+    let stamp_ok = stamp.bytes().zip(STAMP).all(|(b, &s)| {
+        if s == b'0' {
+            b.is_ascii_digit()
+        } else {
+            b == s
+        }
+    });
+    let title_ok = title.len() <= 60
+        && !title.starts_with('-')
+        && !title.ends_with('-')
+        && !title.contains("--")
+        && title
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+    stamp_ok && title_ok
+}
+
 /// The system folder picker: folders only, a sheet on the document window,
 /// starting in Documents, with a New Folder button. None when cancelled.
 async fn choose<R: Runtime>(window: WebviewWindow<R>) -> Result<Option<PathBuf>, String> {
@@ -257,6 +312,45 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn only_the_names_save_makes_are_accepted_as_downloads() {
+        for good in [
+            "2026-10-20 14-55-03.txt",
+            "untitled-draft-20261020-1455.sight",
+            "q3-planning-notes-20261020-1455.sight",
+            "manuscript-draft-20261020-1455.sight",
+            "draft-20261020-1455.sight",
+        ] {
+            assert!(is_download_name(good), "{good} is a name Save makes");
+        }
+        for bad in [
+            "",
+            ".sight",
+            "-20261020-1455.sight",
+            "untitled-draft-20261020-1455.txt",
+            "untitled-draft-2026102-14550.sight",
+            "Untitled-draft-20261020-1455.sight",
+            "untitled--draft-20261020-1455.sight",
+            "untitled-draft--20261020-1455.sight",
+            "../untitled-draft-20261020-1455.sight",
+            "a/b-20261020-1455.sight",
+            "untitled draft-20261020-1455.sight",
+            "untitled-draft-20261020-1455.sight.exe",
+            "untitled-draft-20261020-1455 (2).sight",
+            "2026-10-20 14-55-03 (2).txt",
+            "2026-10-20 14-55-03.TXT",
+            "notes.sh",
+            "\u{e9}t\u{e9}-20261020-1455.sight",
+        ] {
+            assert!(!is_download_name(bad), "{bad:?} is refused");
+        }
+        let long = format!("{}-20261020-1455.sight", "a".repeat(61));
+        assert!(
+            !is_download_name(&long),
+            "a title longer than 60 characters is refused"
+        );
     }
 
     #[test]

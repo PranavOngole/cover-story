@@ -15,6 +15,10 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+// A promise the page leaves rejected is recorded, not fatal, so a test that
+// expects a toast still reports its own assertion.
+const unhandled = [];
+process.on('unhandledRejection', (err) => { unhandled.push(String(err && err.message ? err.message : err)); });
 const HTML = readFileSync(path.join(ROOT, 'index.html'), 'utf8');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const STAMP = /^\d{4}-\d{2}-\d{2} \d{2}-\d{2}-\d{2}$/;
@@ -22,7 +26,7 @@ const STAMP = /^\d{4}-\d{2}-\d{2} \d{2}-\d{2}-\d{2}$/;
 // A fake adapter with the same surface as desktop/adapter.js. It records
 // every call; files is the set of names already in the folder, so the
 // counter rule can be checked from the page's side.
-function fakeNative({ saved = null, pick = { name: 'Build_Test_1' }, failWrite = false } = {}) {
+function fakeNative({ saved = null, pick = { name: 'Build_Test_1' }, failWrite = false, failDownload = false, downloadAnswer = null } = {}) {
   const calls = [];
   const files = new Set();
   let quit = null;
@@ -43,6 +47,11 @@ function fakeNative({ saved = null, pick = { name: 'Build_Test_1' }, failWrite =
         for (let n = 2; files.has(name); n++) name = base + ' (' + n + ').txt';
         files.add(name);
         return name;
+      },
+      saveDownload: async (name, text) => {
+        calls.push(['saveDownload', name, text]);
+        if (failDownload) throw new Error('Could not save the file: Operation not permitted');
+        return downloadAnswer || name;
       },
       onQuit: (callback) => { calls.push(['onQuit']); quit = callback; }
     }
@@ -278,6 +287,74 @@ test('quitting with the vault open writes the last text, locks the vault and set
     assert.equal(plain, 'typed just before quitting', 'the copy holds the last keystrokes when the quit promise settles');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
+});
+
+test('in the app the plain .txt Save goes through the app, and the toast names the file the app wrote', async () => {
+  const native = fakeNative({ downloadAnswer: 'numbered by the app (2).txt' });
+  const p = await loadPage({ native, storage: { 'plainSight.introSeen': '1', 'plainSight.saveMode': 'txt' } });
+  try {
+    await p.settle();
+    p.type('plain words');
+    p.$('#btn-save').click();
+    await p.settle();
+    const saves = native.calls.filter((c) => c[0] === 'saveDownload');
+    assert.equal(saves.length, 1);
+    assert.match(saves[0][1], /^\d{4}-\d{2}-\d{2} \d{2}-\d{2}-\d{2}\.txt$/);
+    assert.equal(saves[0][2], 'plain words');
+    assert.equal(p.toast(), 'Saved numbered by the app (2).txt', 'the toast names what the app wrote');
+    assert.equal(p.downloads.length, 0, 'no browser download in the app');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('in the app the encrypted Save goes through the app after the password, as a .sight file that opens with it', async () => {
+  const native = fakeNative();
+  const p = await loadPage({ native, storage: { 'plainSight.introSeen': '1' } });
+  try {
+    await p.settle();
+    p.type('secret words');
+    p.$('#btn-save').click();
+    await p.settle();
+    p.$('#pw-input').value = 'a file password';
+    p.$('#pw-ok').click();
+    await p.settle(800);   // the key derives from the password
+    const saves = native.calls.filter((c) => c[0] === 'saveDownload');
+    assert.equal(saves.length, 1);
+    assert.match(saves[0][1], /^untitled-draft-\d{8}-\d{4}\.sight$/);
+    const record = JSON.parse(saves[0][2]);
+    const key = await webcrypto.subtle.deriveKey(
+      { name: 'PBKDF2', salt: Buffer.from(record.salt, 'base64'), iterations: record.iterations, hash: 'SHA-256' },
+      await webcrypto.subtle.importKey('raw', new TextEncoder().encode('a file password'), 'PBKDF2', false, ['deriveKey']),
+      { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
+    const plain = new TextDecoder().decode(await webcrypto.subtle.decrypt({ name: 'AES-GCM', iv: Buffer.from(record.iv, 'base64') }, key, Buffer.from(record.data, 'base64')));
+    assert.equal(plain, 'secret words');
+    assert.equal(p.toast(), 'Saved');
+    assert.equal(p.downloads.length, 0);
+  } finally { p.close(); }
+});
+
+test('in the app a Save the app could not write says so, in both modes, and never says Saved (DM-202)', async () => {
+  for (const mode of ['txt', 'sight']) {
+    const native = fakeNative({ failDownload: true });
+    const storage = { 'plainSight.introSeen': '1' };
+    if (mode === 'txt') storage['plainSight.saveMode'] = 'txt';
+    const p = await loadPage({ native, storage });
+    try {
+      await p.settle();
+      p.type('not written');
+      p.$('#btn-save').click();
+      await p.settle();
+      if (mode === 'sight') {
+        p.$('#pw-input').value = 'a file password';
+        p.$('#pw-ok').click();
+        await p.settle(800);
+      }
+      assert.equal(native.calls.filter((c) => c[0] === 'saveDownload').length, 1, mode + ': the app was asked');
+      assert.equal(p.toast(), 'Could not save', mode + ': the failure is told');
+      assert.equal(await p.real(), 'not written', mode + ': the text stays');
+      assert.deepEqual(unhandled, [], mode + ': the page handled the failure itself');
+    } finally { p.close(); }
+  }
 });
 
 let passed = 0;
