@@ -1,7 +1,7 @@
 // Checks the built app itself, not its source (DR-06, DR-08): the bundle's
-// files and size, its Info.plist, its signature, that it carries no test hook,
-// and that the page files embedded in its binary are exactly index.html and
-// the three covers, as they are in the repository.
+// files and size, its Info.plist, its signature and the entitlements in it,
+// that it carries no test hook, and that the page files embedded in its binary
+// are exactly index.html and the three covers, as they are in the repository.
 //
 // Run from desktop/ after `npm run app:build`:
 //   node tests/bundle.mjs [path/to/Plain Sight.app]
@@ -50,11 +50,28 @@ function domNodes(html) {
   return out;
 }
 
+// A property list as plutil reads it.
+const plist = (xml) => JSON.parse(execFileSync('plutil', ['-convert', 'json', '-o', '-', '-'], { input: xml, encoding: 'utf8' }));
+
 const tests = [];
 const test = (name, fn) => tests.push({ name, fn });
 
-test('the bundle holds the shell and nothing else: Info.plist, the binary, the icon and the signature', () => {
-  assert.deepEqual(files(APP), ['Contents/Info.plist', 'Contents/MacOS/plain-sight', 'Contents/Resources/icon.icns', 'Contents/_CodeSignature/CodeResources']);
+test('the bundle holds the shell and nothing else: Info.plist, the binary, the icon, the container migration manifest and the signature', () => {
+  assert.deepEqual(files(APP), ['Contents/Info.plist', 'Contents/MacOS/plain-sight', 'Contents/Resources/container-migration.plist', 'Contents/Resources/icon.icns', 'Contents/_CodeSignature/CodeResources']);
+});
+
+test('the container migration manifest is the repository\'s, byte for byte (D-37)', () => {
+  const bundled = readFileSync(path.join(APP, 'Contents/Resources/container-migration.plist'));
+  assert.equal(sha(bundled), sha(readFileSync(path.join(DESKTOP, 'src-tauri/container-migration.plist'))));
+});
+
+test('the signature carries exactly the entitlements of Entitlements.plist: the App Sandbox, no network (D-37)', () => {
+  const shown = spawnSync('codesign', ['-d', '--entitlements', '-', '--xml', APP], { encoding: 'utf8' });
+  assert.equal(shown.status, 0, shown.stderr);
+  const signed = plist(shown.stdout);
+  assert.deepEqual(signed, plist(readFileSync(path.join(DESKTOP, 'src-tauri/Entitlements.plist'))));
+  assert.equal(signed['com.apple.security.app-sandbox'], true, 'sandboxed');
+  assert.deepEqual(Object.keys(signed).filter((k) => k.startsWith('com.apple.security.network.')), [], 'no network entitlement');
 });
 
 test('the app is small: well under 10 MB (DR-06)', () => {

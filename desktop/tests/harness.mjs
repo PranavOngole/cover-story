@@ -13,7 +13,7 @@
 
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash, webcrypto } from 'node:crypto';
-import { createWriteStream, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { createWriteStream, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -145,7 +145,13 @@ export const DATA_DIRS = [
   `Library/Saved Application State/${ID}.savedState`,
   // An executable run outside a bundle keeps its WebKit data under its own name.
   'Library/WebKit/plain-sight',
-  'Library/Caches/plain-sight'
+  'Library/Caches/plain-sight',
+  // The sandboxed app (D-37) keeps all of its data in its container. macOS
+  // asks the person at the Mac before a program outside the sandbox opens
+  // another app's container (Apple, "Accessing files from the macOS App
+  // Sandbox"), unless that program has Full Disk Access, so moving it aside
+  // can put that question on screen.
+  `Library/Containers/${ID}`
 ].map((p) => path.join(HOME, p));
 let backupDir = null;
 export function backupAppData() {
@@ -153,15 +159,29 @@ export function backupAppData() {
     throw new Error('an earlier run left app data in ' + BACKUP_ROOT + '; put it back by hand before running again');
   }
   backupDir = path.join(BACKUP_ROOT, String(Date.now()));
+  const aside = (dir) => path.join(backupDir, Buffer.from(dir).toString('base64url'));
   const moved = [];
   for (const dir of DATA_DIRS) {
     if (!existsSync(dir)) continue;
     mkdirSync(backupDir, { recursive: true });
-    renameSync(dir, path.join(backupDir, Buffer.from(dir).toString('base64url')));
+    try {
+      renameSync(dir, aside(dir));
+    } catch (err) {
+      // A move that macOS refuses (the container's, say) puts back what was
+      // already moved, so the run stops with every folder in its place. The
+      // empty backup folder is then removed, never anything with data in it.
+      for (const done of moved.reverse()) renameSync(aside(done), done);
+      rmSync(path.join(backupDir, 'moved.json'), { force: true });
+      rmdirSync(backupDir);
+      if (!readdirSync(BACKUP_ROOT).length) rmdirSync(BACKUP_ROOT);
+      backupDir = null;
+      throw new Error('could not move ' + dir + ' aside (' + (err.code || err.message) + '); everything was put back');
+    }
     moved.push(dir);
+    // Written after every move, so a run that is stopped leaves an exact record.
+    writeFileSync(path.join(backupDir, 'moved.json'), JSON.stringify(moved, null, 2));
   }
-  if (moved.length) writeFileSync(path.join(backupDir, 'moved.json'), JSON.stringify(moved, null, 2));
-  else backupDir = null;
+  if (!moved.length) backupDir = null;
   note('app data moved aside: ' + JSON.stringify(moved));
 }
 export function clearTestData() {
