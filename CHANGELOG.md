@@ -61,3 +61,7 @@ Save now has a plain `.txt` download mode, chosen on the intro screen and kept i
 ## 1.3.1, 2026-10-21: deployment allowlist
 
 The Delivery Manager's gate on 1.2.2 found that every deployment since the first one had carried local tool folders from the working directory (a `.gstack` folder with a local terminal token and browser logs, and the gate agents' worktree copies), because `.vercelignore` listed what to exclude rather than what to include. `.vercelignore` is now an allowlist of `index.html` and `covers/` only; the deployment was rebuilt and the exposed paths return 404. Nothing typed by any user was involved: those files were local tool state, not page data. The README's deployment sentence is corrected.
+
+## 1.3.2, 2026-10-21: fourth gate fixes
+
+From the 1.2.2 gate: a folder file is now named by the moment of the click, not by the end of the permission prompt (DM-116); "Stop using the folder" is proven to reach other tabs (DM-115); and tests now guard the four fixes the suite had left unproven, including untick during a phrase change and a folder dropped while the permission prompt is up (DM-118). The Delivery Manager's definition now lists every file in each deployment and expects exactly the page and the three covers. Suite now 57 tests.

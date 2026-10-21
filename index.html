@@ -1244,8 +1244,8 @@
   }
   // Writes a new file. A name that already exists (two saves in one second,
   // or an older file) gets a counter before the extension.
-  async function folderWrite(text) {
-    const base = folderFileName().replace(/\.txt$/, '');
+  async function folderWrite(text, stamp) {
+    const base = (stamp || folderFileName()).replace(/\.txt$/, '');
     let name = base + '.txt';
     for (let n = 2; n < 100; n++) {
       let exists = true;
@@ -1339,10 +1339,11 @@
       // during the permission prompt.
       const text = real;
       const handle = folderHandle;
+      const stamp = folderFileName();   // named by the click, not by the end of the permission prompt
       if (!(await folderReady())) { toast('No permission for the folder. Choose it again under the ? button.'); return; }
       if (folderHandle !== handle) { toast('The folder changed; press Save again'); return; }
       try {
-        const name = await folderWrite(text);
+        const name = await folderWrite(text, stamp);
         toast('Saved ' + name + ' in ' + handle.name);
       } catch (err) {
         toast('Could not write to the folder');
@@ -1595,7 +1596,7 @@
   // reads or returns the hidden buffer in any form, encrypted or not. Save and
   // Open are reachable only through their buttons.
   window.PlainSight = Object.freeze({
-    version: '1.3.1',
+    version: '1.3.2',
     coverIds: COVER_IDS.slice(),
     coverId: () => (cover ? cover.id : null),
     coverText: () => coverText,

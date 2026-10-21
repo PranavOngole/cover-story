@@ -601,7 +601,7 @@ test('Save writes a .sight with a 16-byte salt, 12-byte IV and data; Open restor
     assert.equal(await p.readReal(), 'hello world', 'every refusal left the buffer alone');
     // Nothing on the console object touches the buffer.
     assert.deepEqual(Object.keys(p.w.PlainSight).sort(), ['coverFailed', 'coverId', 'coverIds', 'coverText', 'ready', 'selectedCoverId', 'setCover', 'version']);
-    assert.equal(p.w.PlainSight.version, '1.3.1');
+    assert.equal(p.w.PlainSight.version, '1.3.2');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
@@ -1674,7 +1674,8 @@ test('save folder: a folder change in another tab reaches this tab, which stops 
   try {
     p.$('#btn-folder').click();
     await p.settle();
-    assert.equal(p.w.localStorage.getItem('plainSight.folderVersion') !== null, true, 'the change is announced to other tabs');
+    const announced = p.w.localStorage.getItem('plainSight.folderVersion');
+    assert.equal(announced !== null, true, 'the change is announced to other tabs');
     p.start();
     // Another tab forgot the folder: it bumps the announcement; this tab reloads the handle (none here) and drops it.
     p.w.dispatchEvent(new p.w.StorageEvent('storage', { key: 'plainSight.folderVersion', oldValue: '1', newValue: '2' }));
@@ -1684,6 +1685,26 @@ test('save folder: a folder change in another tab reaches this tab, which stops 
     await p.settle();
     assert.equal(folder.written.length, 0, 'nothing written to the old folder');
     assert.equal(p.$('#pw').hidden, false, 'Save downloads instead');
+    p.press('Escape');
+    // Forgetting a folder is announced too, and an open intro in the other tab is redrawn.
+    const f2 = fakeFolder('Again');
+    p.w.showDirectoryPicker = async () => f2.handle;
+    p.$('#btn-help').click();
+    p.$('#btn-folder').click();
+    await p.settle();
+    const afterChoose = p.w.localStorage.getItem('plainSight.folderVersion');
+    assert.notEqual(afterChoose, announced, 'choosing announces');
+    await sleep(5);
+    p.$('#btn-folder-forget').click();
+    await p.settle();
+    assert.notEqual(p.w.localStorage.getItem('plainSight.folderVersion'), afterChoose, 'forgetting announces');
+    // Intro open while the other tab changes the folder: the box redraws.
+    p.$('#btn-folder').click();
+    await p.settle();
+    assert.match(p.$('#folder-status').textContent, /"Again"/);
+    p.w.dispatchEvent(new p.w.StorageEvent('storage', { key: 'plainSight.folderVersion', oldValue: '1', newValue: '3' }));
+    await p.settle();
+    assert.match(p.$('#folder-status').textContent, /downloads/, 'the open intro shows the download state after the other tab dropped the folder');
     p.press('Escape');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
@@ -1767,6 +1788,58 @@ test('vault writes land in the order asked for: a slow older write never overwri
     p.press('Escape');                  // the Esc save ('AB') encrypts fast
     await sleep(1300);                  // both have finished
     assert.equal(await decryptVault(JSON.parse(p.storageDump()['plainSight.vault']), phrase), 'AB', 'the newer save is what stays');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('save folder: the file is named by the moment of the click, not the end of the permission prompt; a folder dropped during the prompt is not written to', async () => {
+  const folder = fakeFolder('Slow', { permissionDelay: 1500 });
+  const p = await loadPage({ folder });
+  try {
+    p.$('#btn-folder').click();
+    await p.settle();
+    p.start();
+    p.type('named at click');
+    const RealDate = p.w.Date;
+    let fixed = new RealDate(2026, 9, 21, 9, 30, 0).getTime();
+    p.w.Date = class extends RealDate { constructor(...a) { super(...(a.length ? a : [fixed])); } static now() { return fixed; } };
+    p.$('#btn-save').click();
+    fixed += 2000;                       // the clock moves on while the prompt is up
+    await sleep(1900);
+    assert.equal(folder.written.length, 1);
+    assert.equal(folder.written[0].name, '2026-10-21 09-30-00.txt', 'the name is the click moment');
+    // Forget the folder while the prompt is up: nothing is written and the toast says so.
+    p.$('#btn-save').click();
+    await sleep(100);
+    p.$('#btn-help').click();
+    p.$('#btn-folder-forget').click();
+    await p.settle();
+    p.start();
+    await sleep(1800);
+    assert.equal(folder.written.length, 1, 'no second file');
+    assert.equal(p.toast(), 'The folder changed; press Save again');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('untick while a phrase change is still writing leaves no copy behind', async () => {
+  const phrase = 'correct horse battery staple';
+  const p = await loadPage({ slowEncrypt: 400 });
+  try {
+    p.start();
+    p.type('to be removed');
+    await p.vaultOn(phrase);
+    await sleep(900);
+    p.$('#btn-help').click();
+    p.$('#vault-phrase').value = 'a brand new phrase here';
+    p.start();                            // re-key: derive, then a slow fresh write
+    await sleep(350);
+    p.$('#btn-help').click();
+    p.$('#vault-on').checked = false;
+    p.start();                            // untick while that write is in flight
+    await sleep(1200);
+    assert.equal(p.storageDump()['plainSight.vault'], undefined, 'the late re-key write did not resurrect the copy');
+    assert.ok(!p.d.body.classList.contains('vault-open'));
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
