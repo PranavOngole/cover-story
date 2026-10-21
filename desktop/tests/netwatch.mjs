@@ -15,10 +15,12 @@ import { writeFileSync } from 'node:fs';
 const [seconds = '600', report = 'netwatch.json'] = process.argv.slice(2);
 const deadline = Date.now() + Number(seconds) * 1000;
 const DATA = /\/Library\/WebKit\/(com\.pranavongole\.plainsight|plain-sight)\//;
-// Which processes are the app. NETWATCH_APP replaces the pattern only for the
-// positive control that shows this watch does see a process that uses the network.
-const APP = process.env.NETWATCH_APP ? new RegExp(process.env.NETWATCH_APP) : /\/(MacOS|release)\/plain-sight$/;
-const FIND = process.env.NETWATCH_APP ? '.' : 'plain-sight';
+// Which processes are the app: those named plain-sight, the release bundle's
+// executable and a test build's alike (by name, so a pgrep or a shell that
+// names the app's path in its arguments is not taken for it). NETWATCH_APP, a
+// pattern for the command line, replaces this only for the positive control
+// that shows this watch does see a process that uses the network.
+const APP = process.env.NETWATCH_APP ? new RegExp(process.env.NETWATCH_APP) : null;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const run = (cmd, args) => { try { return execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }); } catch (err) { return String(err.stdout || ''); } };
 
@@ -47,11 +49,11 @@ process.on('SIGTERM', () => { stopped = true; });
 process.on('SIGINT', () => { stopped = true; });
 
 function refresh() {
-  for (const line of run('pgrep', ['-fl', FIND]).split('\n')) {
+  const found = APP ? run('pgrep', ['-fl', '.']) : run('pgrep', ['-x', 'plain-sight']);
+  for (const line of found.split('\n')) {
     const [first, ...cmd] = line.trim().split(' ');
     const pid = Number(first);
-    // The app itself: the release bundle's executable or a test build's.
-    if (Number.isInteger(pid) && pid > 0 && pid !== process.pid && APP.test(cmd.join(' '))) appPids.add(pid);
+    if (Number.isInteger(pid) && pid > 0 && pid !== process.pid && (!APP || APP.test(cmd.join(' ')))) appPids.add(pid);
   }
   for (const line of run('pgrep', ['-f', 'com.apple.WebKit.Networking']).split('\n')) {
     const pid = Number(line.trim());
