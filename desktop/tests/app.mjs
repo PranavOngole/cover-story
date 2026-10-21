@@ -13,7 +13,7 @@ import { execFileSync } from 'node:child_process';
 import { webcrypto } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { DESKTOP, EVIDENCE, HOME, alive, clearTestData, drive, driveRaw, note, run, sleep, until } from './harness.mjs';
+import { DESKTOP, EVIDENCE, HOME, NotRun, alive, clearTestData, drive, driveRaw, note, run, sleep, until } from './harness.mjs';
 
 const APP = process.env.PLAIN_SIGHT_APP || path.join(DESKTOP, 'src-tauri/target/release/bundle/macos/Plain Sight.app');
 let app = null;   // { pid }
@@ -105,12 +105,43 @@ test('Backspace removes the last character from the hidden buffer', async () => 
   await keys.press('escape');
 });
 
-// The page's own focus: a real click in the middle of the document window,
-// so the next Option+Tab starts from the top of the page (Save, then Open).
+// The page's own focus: a real click in the middle of the document window.
 async function focusPage() {
   const w = drive('cgwindows', app.pid).windows.filter((x) => x.layer === 0 && x.onscreen).sort((a, b) => b.width * b.height - a.width * a.height)[0];
   drive('clickat', app.pid, Math.round(w.x + w.width / 2), Math.round(w.y + w.height / 2));
   await sleep(300);
+}
+
+// A clean page: Esc twice erases the text, closes the intro and any dialog.
+async function cleanPage() {
+  await keys.press('escape');
+  await keys.press('escape');
+}
+
+// The page's buttons and fields are pressed through Accessibility by their
+// DOM id, as a click would press them; text still goes in by real keys.
+// (Counting Option+Tab presses broke whenever the page gained a control.)
+// WebKit may build its accessibility tree a moment after the first request,
+// so the first look waits up to 15 s. If Accessibility never reaches the
+// page, the tests that need it report not run, with the reason.
+let pageReachable = null;
+async function reachPage() {
+  if (pageReachable === null) {
+    const t0 = Date.now();
+    pageReachable = await until(() => { const c = driveRaw('controls', app.pid); return c.ok && c.controls.length > 0; }, 'the page through Accessibility', 15000).then(() => true, () => false);
+    note('Accessibility reaches the page: ' + pageReachable + ' (' + (Date.now() - t0) + ' ms)');
+  }
+  if (!pageReachable) throw new NotRun('Accessibility shows no web area in the release app, so its page controls cannot be pressed');
+}
+async function pressControl(id) {
+  await reachPage();
+  await until(() => { drive('press', app.pid, id); return true; }, 'the control ' + id, 8000);
+  await sleep(400);
+}
+async function focusControl(id) {
+  await reachPage();
+  await until(() => { drive('focus', app.pid, id); return true; }, 'focus on ' + id, 8000);
+  await sleep(250);
 }
 
 // A .sight file made outside the app, by the format the README documents:
@@ -128,13 +159,10 @@ async function sightFile(text, password) {
   return file;
 }
 
-// Open from the keyboard: the second button in the page, the system open
-// panel, Go to (Cmd+Shift+G) the file, then the page's password dialog.
+// Open: the page's Open button, the system open panel, Go to (Cmd+Shift+G)
+// the file, then the page's password dialog, typed with real keys.
 async function openWithKeys(file, password) {
-  await focusPage();
-  await keys.press('alt+tab');
-  await keys.press('alt+tab');
-  await keys.press('space');
+  await pressControl('btn-open');
   await until(() => drive('cgwindows', app.pid).windows.filter((x) => x.onscreen).length >= 2, 'the open panel', 8000);
   await sleep(600);
   await keys.press('cmd+shift+g');
@@ -153,48 +181,57 @@ async function openWithKeys(file, password) {
 
 test('Open shows the system open panel; a wrong password changes nothing; the right one restores a file made outside the app', async () => {
   const file = await sightFile('opened from a file made outside the app', 'outside password 2026');
-  await keys.press('escape');
+  await cleanPage();
   await openWithKeys(file, 'not the right password');
   assert.equal(await copyRealText('cmd'), null, 'a wrong password leaves the page empty');
   await openWithKeys(file, 'outside password 2026');
   assert.equal(await copyRealText('cmd'), 'opened from a file made outside the app');
 });
 
-test('Cmd+C without a peek copies nothing of the real text', async () => {
+// Without a peek the page leaves Cmd+C to the app's Edit menu, whose Copy
+// with nothing selected may empty the clipboard; what matters is that none of
+// the real text reaches it.
+test('Cmd+C without a peek puts none of the real text on the clipboard', async () => {
+  await cleanPage();
+  await keys.type('not for the clipboard');
   const marker = 'clipboard marker ' + Date.now();
   execFileSync('pbcopy', [], { input: marker });
   await keys.press('cmd+c');
   await sleep(300);
-  assert.equal(drive('clip-text').text, marker);
+  const text = drive('clip-text').text;
+  note('clipboard after Cmd+C without a peek: ' + JSON.stringify(text));
+  assert.ok(!text.includes('not for the clipboard'), 'the real text stays off the clipboard');
+  await cleanPage();
 });
 
-test('a window blur ends a peek: with the About panel in front, Cmd+C copies nothing', async () => {
+test('a window blur ends a peek: after the About panel has had the focus, Cmd+C puts none of the real text on the clipboard', async () => {
+  await cleanPage();
+  await keys.type('hidden while away');
   await keys.press('cmd+shift+g');               // peek on
   drive('menu', app.pid, 'Plain Sight', 'About Plain Sight');
   await until(() => drive('cgwindows', app.pid).windows.filter((x) => x.onscreen).length >= 2, 'the About panel', 5000);
+  await sleep(500);
   await keys.press('cmd+w');                     // close the About panel
   await sleep(500);
   await focusPage();
   const marker = 'clipboard marker ' + Date.now();
   execFileSync('pbcopy', [], { input: marker });
-  await keys.press('cmd+c');                     // would copy if the peek were still on
+  await keys.press('cmd+c');                     // would copy the real text if the peek were still on
   await sleep(300);
-  assert.equal(drive('clip-text').text, marker, 'the peek ended when the window lost focus');
-  await keys.press('escape');
+  const text = drive('clip-text').text;
+  note('clipboard after the About panel and Cmd+C: ' + JSON.stringify(text));
+  assert.ok(!text.includes('hidden while away'), 'the peek ended when the window lost focus');
+  await cleanPage();
 });
 
-// Wave B: the real system folder picker, reached the way a keyboard user
-// reaches it. On a first launch the intro's Start button has the focus;
-// Option+Shift+Tab walks back through the textarea, the two radio groups and
-// then the folder button (Safari's engine skips buttons on plain Tab).
+// Wave B: the real system folder picker, from the intro's folder button.
 const BUILD_TEST = path.join(HOME, 'Documents', 'Plain-Sight', 'Build_Test_1');
 
-test('the system folder picker opens as a sheet on the window, from the keyboard', async () => {
+test('the system folder picker opens from the folder button, at the normal window level', async () => {
   await quitIfRunning();
-  clearTestData();   // a first launch again, so the intro is up with Start focused
+  clearTestData();   // a first launch again, so the intro is up
   await launch();
-  for (let i = 0; i < 4; i++) await keys.press('alt+shift+tab');
-  await keys.press('space');
+  await pressControl('btn-folder');
   const sheet = await until(() => {
     const w = drive('cgwindows', app.pid).windows.filter((x) => x.onscreen);
     return w.length >= 2 ? w : null;
@@ -218,8 +255,7 @@ test('choosing ~/Documents/Plain-Sight/Build_Test_1 in the picker, then Save, wr
   await sleep(600);
   const before = new Set(existsSync(BUILD_TEST) ? readdirSync(BUILD_TEST) : []);
   await keys.type('Written by Plain Sight Desktop into the folder chosen in the system picker.');
-  await keys.press('alt+tab');  // the first button in the page: Save
-  await keys.press('space');
+  await pressControl('btn-save');
   const fresh = await until(() => { const n = readdirSync(BUILD_TEST).filter((f) => !before.has(f)); return n.length ? n : null; }, 'a new file in Build_Test_1', 8000);
   assert.equal(fresh.length, 1);
   assert.match(fresh[0], /^\d{4}-\d{2}-\d{2} \d{2}-\d{2}-\d{2}\.txt$/);
@@ -240,9 +276,11 @@ test('Cmd+W closes the window, and closing the window quits the app', async () =
   app = null;
 });
 
-test('a click on the window\'s red close button quits the app', async () => {
+// Pressed through Accessibility: a posted click on the title bar's buttons
+// does not register (app-run-1), while the press runs the button's own action.
+test('the window\'s red close button quits the app', async () => {
   await launch();
-  drive('close-button', app.pid, 'click');
+  drive('close-button', app.pid);
   await until(() => !alive(app.pid), 'the app to quit after the close button', 10000);
   app = null;
 });
@@ -272,12 +310,10 @@ test('the vault in the release app keeps the text typed just before Cmd+Q, in it
   await quitIfRunning();
   clearTestData();   // a first launch, so the intro is up
   await launch();
-  drive('press', app.pid, 'vault-on');
-  await sleep(300);
-  drive('focus', app.pid, 'vault-phrase');
-  await sleep(200);
+  await pressControl('vault-on');
+  await focusControl('vault-phrase');
   await keys.type(VAULT_PHRASE);
-  drive('press', app.pid, 'btn-start');
+  await pressControl('btn-start');
   await sleep(2500);   // the key derives from the phrase
   const words = 'kept in the release vault';
   await keys.type(words);
