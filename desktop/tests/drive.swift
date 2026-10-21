@@ -340,6 +340,26 @@ case "quit-app":
     guard let running = NSRunningApplication(processIdentifier: pid) else { fail("no app with that pid") }
     emit(["ok": running.terminate(), "pid": Int(pid)])
 
+case "panel-button":
+    // panel-button <pid> <button title>: presses a button by its title in one
+    // of the app's dialogs or sheets (the Open panel, the folder panel), never
+    // in the page, through Accessibility.
+    needTrust()
+    let pid = pidArg()
+    guard args.count > 2 else { fail("missing button title") }
+    var panels: [AXUIElement] = []
+    for w in windows(pid) {
+        if (attr(w, kAXSubroleAttribute) as? String) == "AXDialog" { panels.append(w) }
+        panels.append(contentsOf: children(w).filter { role($0) == "AXSheet" })   // a sheet is a child of its window
+    }
+    var found: AXUIElement? = nil
+    for panel in panels {
+        if let b = firstMatch(panel, { role($0) == "AXButton" && string($0, kAXTitleAttribute) == args[2] }) { found = b; break }
+    }
+    guard let button = found else { fail("no button \(args[2]) in \(panels.count) dialogs or sheets") }
+    let result = AXUIElementPerformAction(button, kAXPressAction as CFString)
+    emit(["ok": result == .success, "axError": result.rawValue, "panels": panels.count])
+
 case "close-button":
     // close-button <pid> [click]: the red close button of the app's document
     // window, pressed through Accessibility (the button sends its window

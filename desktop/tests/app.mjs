@@ -159,20 +159,41 @@ async function sightFile(text, password) {
   return file;
 }
 
+// The page's Open panel is an app-modal dialog titled "Open" at window level
+// 8; Accessibility lists it about a second before it is on screen, and while
+// it is open the app takes no other input, so a test that fails with it open
+// cancels it (diag-open-panel, app-run-2).
+const openPanelShown = () => (driveRaw('windows', app.pid).windows || []).some((w) => w.title === 'Open' && w.subrole === 'AXDialog');
+async function inPanel(isOpen, steps) {
+  try { await steps(); } catch (err) {
+    // Cancel until it is gone: Esc may close only the Go-to box on top of it.
+    for (let i = 0; i < 4 && isOpen(); i++) {
+      if (!driveRaw('panel-button', app.pid, 'Cancel').ok) await keys.press('escape');
+      await sleep(1000);
+    }
+    throw err;
+  }
+}
+const openPanelBusy = () => (driveRaw('windows', app.pid).windows || []).some((w) => w.title === 'Open' && (w.sheets || []).length > 0);
+
 // Open: the page's Open button, the system open panel, Go to (Cmd+Shift+G)
-// the file, then the page's password dialog, typed with real keys.
+// the file typed with real keys, the panel's Open button, then the page's
+// password dialog, typed with real keys.
 async function openWithKeys(file, password) {
   await pressControl('btn-open');
-  await until(() => drive('cgwindows', app.pid).windows.filter((x) => x.onscreen).length >= 2, 'the open panel', 8000);
-  await sleep(600);
-  await keys.press('cmd+shift+g');
+  await until(() => openPanelShown() && drive('cgwindows', app.pid).windows.some((w) => w.onscreen && w.layer === 8), 'the open panel on screen', 10000);
   await sleep(800);
-  drive('type', app.pid, file, 10);
-  await sleep(500);
-  await keys.press('return');
-  await sleep(1200);
-  await keys.press('return');
-  await until(() => drive('cgwindows', app.pid).windows.filter((x) => x.onscreen).length === 1, 'the open panel to close', 8000);
+  await inPanel(openPanelShown, async () => {
+    await keys.press('cmd+shift+g');
+    await sleep(1000);
+    drive('type', app.pid, file, 10);
+    await sleep(800);
+    await keys.press('return');   // go to the file, which is then selected
+    await until(() => !openPanelBusy(), 'the Go-to box to close', 8000);
+    await sleep(800);
+    await until(() => { drive('panel-button', app.pid, 'Open'); return true; }, 'the panel\'s Open button', 5000);
+    await until(() => !openPanelShown(), 'the open panel to close', 8000);
+  });
   await sleep(700);
   await keys.type(password);
   await keys.press('return');
@@ -233,24 +254,29 @@ test('the system folder picker opens from the folder button, at the normal windo
   await launch();
   await pressControl('btn-folder');
   const sheet = await until(() => {
-    const w = drive('cgwindows', app.pid).windows.filter((x) => x.onscreen);
+    const w = drive('cgwindows', app.pid).windows.filter((x) => x.onscreen && x.width > 400);
     return w.length >= 2 ? w : null;
-  }, 'a second window (the picker) on screen', 8000);
+  }, 'a second large window (the picker) on screen', 10000);
   note('windows with the picker open: ' + JSON.stringify(sheet));
   const levels = sheet.map((w) => w.layer);
   writeFileSync(path.join(EVIDENCE, 'picker-windows.json'), JSON.stringify(sheet, null, 2));
   assert.ok(levels.every((l) => l === 0), 'the picker sits at the normal window level, not above other apps: layers ' + levels.join(', '));
 });
 
+// The folder panel is a sheet on the document window (rfd); its default
+// button chooses the folder shown.
+const folderSheetShown = () => drive('cgwindows', app.pid).windows.filter((x) => x.onscreen && x.layer === 0 && x.width > 400).length >= 2;
 test('choosing ~/Documents/Plain-Sight/Build_Test_1 in the picker, then Save, writes the text there', async () => {
-  await keys.press('cmd+shift+g');
-  await sleep(800);
-  drive('type', app.pid, BUILD_TEST, 10);
-  await sleep(500);
-  await keys.press('return');   // go to the folder
-  await sleep(1200);
-  await keys.press('return');   // choose it
-  await until(() => drive('cgwindows', app.pid).windows.filter((x) => x.onscreen).length === 1, 'the picker to close', 8000);
+  await inPanel(folderSheetShown, async () => {
+    await keys.press('cmd+shift+g');
+    await sleep(1000);
+    drive('type', app.pid, BUILD_TEST, 10);
+    await sleep(800);
+    await keys.press('return');   // go to the folder
+    await sleep(1500);
+    await keys.press('return');   // choose it (the panel's default button)
+    await until(() => !folderSheetShown(), 'the picker to close', 8000);
+  });
   await keys.press('escape');   // Esc on the intro applies it like Start
   await sleep(600);
   const before = new Set(existsSync(BUILD_TEST) ? readdirSync(BUILD_TEST) : []);
