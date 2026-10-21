@@ -73,12 +73,12 @@ Two tabs of the page in the same browser share one copy: each tab saves on its o
 
 ### Browser support
 
-| Browser | Type, peek, copy, clear, vault | Encrypted `.sight` download | Plain `.txt` download | Write straight into a folder |
-|---|---|---|---|---|
-| Chrome, Edge, Chromium | yes | yes | yes | yes |
-| Brave | yes | yes | yes | after turning on `brave://flags/#file-system-access-api` and relaunching; the page shows this |
-| Safari | yes | yes | yes, and Safari can ask where each file goes (Settings, General, File download location: Ask for each download) | no, the browser has no folder access |
-| Firefox | yes | yes | yes, and Firefox can ask where each file goes (Settings, General, Downloads) | no, the browser has no folder access |
+| Browser | Type, peek, copy, clear, vault | Encrypted `.sight` download | Plain `.txt` download | Write straight into a folder | Checked on this version |
+|---|---|---|---|---|---|
+| Chrome, Edge, Chromium | by design | by design | by design | by design | not yet; nothing has run in these browsers on this version, and the folder column has only ever run against the test suite's simulated folder |
+| Brave | by design | by design | by design | after turning on `brave://flags/#file-system-access-api` and relaunching; the page shows this | the folder button was seen by Pranav on 1.2.x; the save itself and this version not yet |
+| Safari | by design | by design | by design, with a warning: Safari opens downloaded text files in TextEdit by itself unless "Open safe files after downloading" is off (Settings, General), which would show your text on screen; Safari can also ask where each file goes (File download location: Ask for each download) | no, the browser has no folder access | headless WebKit (Safari's engine) on every version; the automatic opening of downloads is a Safari setting that headless runs cannot show |
+| Firefox | by design | by design | by design, and Firefox can ask where each file goes (Settings, General, Downloads) | no, the browser has no folder access | not yet |
 
 The page detects whether folder access exists and shows the matching note in "Where Save writes" on the intro screen. The browser family is read only to pick the wording of that note; nothing else depends on it.
 
@@ -125,7 +125,7 @@ What it does not protect against:
 - A weak phrase. Anyone who can read the browser's storage on your device can try phrases offline; the slow key derivation helps, a long phrase helps more.
 - The browser's own memory. While the page is open, the plain text is in the browser's memory, and a crash dump or swap file could hold it.
 - Shared computers. The vault copy stays on the device after Esc; on a machine other people use, leave the vault off or delete the copy before you leave.
-- Plain text files. Saving into a folder writes your words unencrypted to disk, where any program, backup or person with access to that folder can read them. Use the encrypted download or the vault when that matters.
+- Plain text files. Saving into a folder, or choosing the plain `.txt` download, writes your words unencrypted to disk, where any program, backup or person with access to that folder can read them, and a browser set to open downloads may display them at once. Use the encrypted download or the vault when that matters.
 
 Corporate IT may treat a page like this as an exfiltration or monitoring-evasion tool. Using it on a managed machine may break policy regardless of what you type. It exists to demonstrate a client-side technique and an honest threat model, not to defeat an employer's monitoring.
 
@@ -137,7 +137,7 @@ Corporate IT may treat a page like this as an exfiltration or monitoring-evasion
 - The hidden text is append-only. You can peek, copy and backspace, but not move the cursor back and edit.
 - The page has to be served over http (see "Run locally"). Opening `index.html` directly shows a notice instead of a cover.
 - Peek, copy and unlock are keyboard chords, so they do not work from a touch screen.
-- Saving into a folder needs the File System Access API, which Chromium browsers offer (Brave behind a setting) and Safari and Firefox do not; those two get the plain `.txt` download instead. The folder path was checked here with a simulated folder in the test suite and by Pranav in Brave; the plain download was checked in headless WebKit.
+- Saving into a folder needs the File System Access API, which Chromium browsers offer (Brave behind a setting) and Safari and Firefox do not; those two get the plain `.txt` download instead. The folder path was checked here with a simulated folder in the test suite; the plain download was checked in headless WebKit; real-browser runs on this version are listed in the browser table.
 - With the vault on, the page saves 1.5 seconds after the last keystroke and again when the tab is hidden, on Esc and on the way out of the page. Closing or reloading the tab within about a second of typing can still lose those last keystrokes from the copy, because the browser may not wait for the encryption to finish.
 - Tested headless in WebKit (Safari's engine): no console errors, all three covers, the chords, the vault, save and open, and no horizontal overflow at 390px. Current Chrome, Edge and Firefox use the same standard APIs (WebCrypto, ES modules, the Clipboard API with a fallback) and are expected to work, but they have not been checked on this version.
 
@@ -190,7 +190,7 @@ The suite (`tests/smoke.mjs`) loads the real `index.html` in jsdom and drives it
 
 ## Deployment
 
-The site is deployed with the Vercel CLI (`vercel --prod`) as plain static files with no framework and no build step. `.vercelignore` is an allowlist: everything is excluded except `index.html` and `covers/`, so nothing else in the working folder can reach the deployment. Until 21 October 2026 it was a list of exclusions and the deployment carried local tool files; see the changelog for 1.3.1.
+The site is deployed with the Vercel CLI (`vercel --prod`) as plain static files with no framework and no build step. `.vercelignore` is an allowlist: everything is excluded except `index.html` and `covers/`, so nothing else in the working folder can reach the deployment. Until 20 October 2026 it was a list of exclusions and the deployment carried local tool files; see the changelog for 1.3.1.
 
 ## Fictional content
 

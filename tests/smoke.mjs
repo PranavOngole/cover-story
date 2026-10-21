@@ -601,7 +601,7 @@ test('Save writes a .sight with a 16-byte salt, 12-byte IV and data; Open restor
     assert.equal(await p.readReal(), 'hello world', 'every refusal left the buffer alone');
     // Nothing on the console object touches the buffer.
     assert.deepEqual(Object.keys(p.w.PlainSight).sort(), ['coverFailed', 'coverId', 'coverIds', 'coverText', 'ready', 'selectedCoverId', 'setCover', 'version']);
-    assert.equal(p.w.PlainSight.version, '1.3.2');
+    assert.equal(p.w.PlainSight.version, '1.3.4');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
@@ -1755,10 +1755,10 @@ test('plain .txt download mode: Save downloads a text file named by the moment w
 
 test('folder help text fits the browser: Brave gets its setting, Safari and Firefox their download tip, folder-capable browsers no help', async () => {
   const cases = [
-    { opts: { brave: true }, expect: /brave:\/\/flags\/#file-system-access-api/ },
-    { opts: { userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15' }, expect: /Ask for each download/ },
-    { opts: { userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14.0; rv:120.0) Gecko/20100101 Firefox/120.0' }, expect: /Always ask you where to save files/ },
-    { opts: { userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' }, expect: /cannot write into a folder, so Save downloads a file\.$/ }
+    { opts: { brave: true }, expect: /^Brave keeps folder access switched off\. To write into a folder: open brave:\/\/flags\/#file-system-access-api in a new tab, set it to Enabled, click Relaunch, then come back here\.$/ },
+    { opts: { userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15' }, expect: /^Safari cannot write into a folder, so Save downloads a file\. To choose where each file goes: Safari menu, Settings, General, "File download location", pick "Ask for each download"\. Safari also opens downloaded text files in TextEdit by itself unless "Open safe files after downloading" is off in the same settings pane; with the plain \.txt choice, that would put your text on screen\.$/ },
+    { opts: { userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14.0; rv:120.0) Gecko/20100101 Firefox/120.0' }, expect: /^Firefox cannot write into a folder, so Save downloads a file\. To choose where each file goes: Settings, General, Downloads, "Always ask you where to save files"\.$/ },
+    { opts: { userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' }, expect: /^This browser cannot write into a folder, so Save downloads a file\.$/ }
   ];
   for (const c of cases) {
     const p = await loadPage(c.opts);
@@ -1840,6 +1840,151 @@ test('untick while a phrase change is still writing leaves no copy behind', asyn
     await sleep(1200);
     assert.equal(p.storageDump()['plainSight.vault'], undefined, 'the late re-key write did not resurrect the copy');
     assert.ok(!p.d.body.classList.contains('vault-open'));
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('forgetting the folder names the download choice correctly, and a choice change in another tab redraws an open intro', async () => {
+  const folder = fakeFolder('Notes');
+  const p = await loadPage({ folder });
+  try {
+    p.$('input[name="save-mode"][value="txt"]').checked = true;
+    p.$('input[name="save-mode"][value="txt"]').dispatchEvent(new p.w.Event('change', { bubbles: true }));
+    p.$('#btn-folder').click();
+    await p.settle();
+    p.$('#btn-folder-forget').click();
+    await p.settle();
+    assert.equal(p.toast(), 'Save downloads a plain .txt file again');
+    assert.match(p.$('#folder-status').textContent, /plain \.txt/);
+    // Another tab switches the choice back to encrypted: the open intro here redraws.
+    p.w.localStorage.removeItem('plainSight.saveMode');
+    p.w.dispatchEvent(new p.w.StorageEvent('storage', { key: 'plainSight.saveMode', oldValue: 'txt', newValue: null }));
+    assert.match(p.$('#folder-status').textContent, /encrypted/);
+    assert.equal(p.$('input[name="save-mode"][value="sight"]').checked, true);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('an intro opened and closed while a first-time setup is still deriving keeps the setup', async () => {
+  const p = await loadPage();
+  try {
+    p.start();
+    p.type('kept');
+    p.$('#btn-help').click();
+    p.$('#vault-on').checked = true;
+    p.$('#vault-on').dispatchEvent(new p.w.Event('change', { bubbles: true }));
+    p.$('#vault-phrase').value = 'correct horse battery staple';
+    p.start();                           // key derivation starts
+    p.$('#btn-help').click();            // the intro reopens at once
+    assert.equal(p.$('#vault-on').checked, true, 'the pending setup shows as ticked');
+    assert.match(p.$('#vault-status').textContent, /being set up/);
+    p.start();                           // closed again without touching the box
+    assert.equal(p.$('#intro').hidden, true, 'the intro closes with an empty phrase field');
+    await sleep(900);
+    assert.ok(p.d.body.classList.contains('vault-open'), 'the vault opened');
+    const record = JSON.parse(p.storageDump()['plainSight.vault']);
+    assert.equal(await decryptVault(record, 'correct horse battery staple'), 'kept');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('after another tab deletes the copy, the intro no longer shows a setup as pending', async () => {
+  const p = await loadPage();
+  try {
+    p.start();
+    p.type('gone soon');
+    await p.vaultOn('correct horse battery staple');    // setup complete, vault open
+    assert.ok(p.d.body.classList.contains('vault-open'));
+    p.w.localStorage.removeItem('plainSight.vault');    // another tab unticked
+    p.w.dispatchEvent(new p.w.StorageEvent('storage', { key: 'plainSight.vault', oldValue: 'x', newValue: null }));
+    assert.ok(!p.d.body.classList.contains('vault-open'), 'this tab locked');
+    p.$('#btn-help').click();
+    assert.equal(p.$('#vault-on').checked, false, 'nothing stored, nothing open, nothing pending');
+    assert.match(p.$('#vault-status').textContent, /To come back to your text later/);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+async function lockedCopyStorage() {
+  const p = await loadPage();
+  try {
+    p.start();
+    p.type('saved text');
+    await p.vaultOn('correct horse battery staple');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    return p.storageDump();
+  } finally { p.close(); }
+}
+
+test('device vault: an untick during an unlock in flight drops the unlock, so nothing reopens on a deleted copy', async () => {
+  const q = await loadPage({ storage: await lockedCopyStorage() });
+  try {
+    q.type('correct horse battery staple');
+    q.unlockChord();                         // the key derives in the background
+    q.$('#btn-help').click();
+    q.$('#vault-on').checked = false;
+    q.start();                               // untick: the copy is deleted at once
+    assert.equal(q.toast(), 'Saved copy deleted from this device');
+    await sleep(900);
+    assert.ok(!q.d.body.classList.contains('vault-open'), 'nothing reopened');
+    assert.equal(q.storageDump()['plainSight.vault'] || '', '', 'no copy written back');
+    assert.equal(await q.readReal(), 'correct horse battery staple', 'the typed phrase stays as text');
+    assert.deepEqual(q.errors, []);
+  } finally { q.close(); }
+});
+
+test('device vault: a copy deleted by another tab during an unlock in flight drops the unlock', async () => {
+  const q = await loadPage({ storage: await lockedCopyStorage() });
+  try {
+    q.type('correct horse battery staple');
+    q.unlockChord();
+    const original = q.storageDump()['plainSight.vault'];
+    q.w.localStorage.removeItem('plainSight.vault');
+    q.w.dispatchEvent(new q.w.StorageEvent('storage', { key: 'plainSight.vault', oldValue: original, newValue: null }));
+    await sleep(900);
+    assert.ok(!q.d.body.classList.contains('vault-open'), 'nothing reopened');
+    assert.equal(q.storageDump()['plainSight.vault'], undefined, 'no copy written back');
+    assert.equal(await q.readReal(), 'correct horse battery staple');
+    assert.deepEqual(q.errors, []);
+  } finally { q.close(); }
+});
+
+test('device vault: a copy deleted by another tab while the intro checks a phrase leaves the vault closed and says so', async () => {
+  const q = await loadPage({ storage: await lockedCopyStorage() });
+  try {
+    q.$('#btn-help').click();
+    assert.equal(q.$('#vault-on').checked, true, 'a locked copy shows as ticked');
+    q.$('#vault-phrase').value = 'correct horse battery staple';
+    q.start();                               // the phrase is checked against the copy in the background
+    const original = q.storageDump()['plainSight.vault'];
+    q.w.localStorage.removeItem('plainSight.vault');
+    q.w.dispatchEvent(new q.w.StorageEvent('storage', { key: 'plainSight.vault', oldValue: original, newValue: null }));
+    await sleep(900);
+    assert.ok(!q.d.body.classList.contains('vault-open'), 'not opened on a deleted copy');
+    assert.equal(q.$('#intro').hidden, false, 'the intro stays open');
+    assert.equal(q.toast(), 'The saved copy changed in another tab');
+    assert.equal(q.$('#vault-on').checked, false, 'the intro now shows that no copy exists');
+    assert.deepEqual(q.errors, []);
+  } finally { q.close(); }
+});
+
+test('untick while a first-time vault setup is still deriving its key leaves no copy and no open vault', async () => {
+  const p = await loadPage();
+  try {
+    p.start();
+    p.type('never stored');
+    p.$('#btn-help').click();
+    p.$('#vault-on').checked = true;
+    p.$('#vault-on').dispatchEvent(new p.w.Event('change', { bubbles: true }));
+    p.$('#vault-phrase').value = 'correct horse battery staple';
+    p.start();                           // key derivation starts (about 200 ms)
+    p.$('#btn-help').click();
+    p.$('#vault-on').checked = false;
+    p.start();                           // untick before the key exists
+    assert.equal(p.toast(), 'Vault setup cancelled');
+    await sleep(900);
+    assert.equal(p.storageDump()['plainSight.vault'], undefined, 'no copy written');
+    assert.ok(!p.d.body.classList.contains('vault-open'), 'not open');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
