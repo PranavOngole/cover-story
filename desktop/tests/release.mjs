@@ -130,7 +130,8 @@ test('no network use was seen from the app or its web view during these launches
   const report = JSON.parse(readFileSync(watch.report, 'utf8'));
   note('netwatch: ' + JSON.stringify({ appPids: report.appPids, networkPids: report.networkPids, samples: report.samples, sockets: report.sockets.length, nettop: report.nettopLinesForOurPids.length, verdict: report.verdict }));
   for (const pid of launched) assert.ok(report.appPids.includes(pid), 'the watch saw launch ' + pid);
-  assert.ok(report.networkPids.length >= 1, 'the watch found the web view\'s networking process');
+  // Each launch has its own WebKit networking process; one per launch must be watched (DM-219).
+  assert.ok(report.networkPids.length >= launched.length, 'a networking process watched for each of the ' + launched.length + ' launches: ' + report.networkPids.length);
   assert.equal(report.verdict, 'no network use seen');
 });
 

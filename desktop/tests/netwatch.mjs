@@ -26,7 +26,6 @@ const run = (cmd, args) => { try { return execFileSync(cmd, args, { encoding: 'u
 
 const appPids = new Set();
 const networkPids = new Set();
-const notOurs = new Set();
 const sockets = [];
 let samples = 0;
 let stopped = false;
@@ -57,10 +56,11 @@ function refresh() {
   }
   for (const line of run('pgrep', ['-f', 'com.apple.WebKit.Networking']).split('\n')) {
     const pid = Number(line.trim());
-    if (!pid || networkPids.has(pid) || notOurs.has(pid)) continue;
+    if (!pid || networkPids.has(pid)) continue;
     // A networking process works for one app; ours holds our web data open.
+    // One that does not yet is checked again at every sample, since a new
+    // launch's process opens the folder a moment after it starts (DM-219).
     if (DATA.test(run('lsof', ['-p', String(pid), '-Fn']))) networkPids.add(pid);
-    else notOurs.add(pid);
   }
 }
 

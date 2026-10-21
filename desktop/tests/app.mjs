@@ -247,6 +247,55 @@ test('a click on the window\'s red close button quits the app', async () => {
   app = null;
 });
 
+// The vault in the release app (AC-3.3, DM-223): turned on in the intro, the
+// text typed and Cmd+Q pressed at once, the vault's record found in the release
+// app's own web data folder, and the phrase with the chord reopening it after
+// a relaunch.
+const VAULT_PHRASE = 'release vault phrase 2026';
+function vaultRecordInReleaseData() {
+  const dir = path.join(HOME, 'Library/WebKit/com.pranavongole.plainsight');
+  const out = execFileSync('python3', ['-c', `
+import os, sqlite3, sys
+found = []
+for root, _, files in os.walk(sys.argv[1]):
+    for f in files:
+        if f.lower() == 'localstorage.sqlite3':
+            c = sqlite3.connect('file:' + os.path.join(root, f) + '?mode=ro', uri=True)
+            if c.execute("select count(*) from ItemTable where key = 'plainSight.vault'").fetchone()[0]:
+                found.append(os.path.join(root, f))
+print(len(found))
+`, dir], { encoding: 'utf8' });
+  return Number(out.trim());
+}
+
+test('the vault in the release app keeps the text typed just before Cmd+Q, in its own web data, and the phrase reopens it after a relaunch', async () => {
+  await quitIfRunning();
+  clearTestData();   // a first launch, so the intro is up
+  await launch();
+  drive('press', app.pid, 'vault-on');
+  await sleep(300);
+  drive('focus', app.pid, 'vault-phrase');
+  await sleep(200);
+  await keys.type(VAULT_PHRASE);
+  drive('press', app.pid, 'btn-start');
+  await sleep(2500);   // the key derives from the phrase
+  const words = 'kept in the release vault';
+  await keys.type(words);
+  await keys.press('cmd+q');   // at once, before the autosave runs
+  await until(() => !alive(app.pid), 'the app to quit', 10000);
+  app = null;
+  assert.equal(vaultRecordInReleaseData(), 1, 'one vault record, in ~/Library/WebKit/com.pranavongole.plainsight');
+  await launch();
+  await keys.type(VAULT_PHRASE);
+  await keys.press('cmd+e');
+  await keys.press('cmd+return');
+  await sleep(2500);   // the key derives again
+  assert.equal(await copyRealText('cmd'), words, 'the reopened vault holds every keystroke typed before Cmd+Q');
+  await keys.press('cmd+q');
+  await until(() => !alive(app.pid), 'the app to quit', 10000);
+  app = null;
+});
+
 await run(tests, {
   name: 'app',
   needUnlocked: true,
