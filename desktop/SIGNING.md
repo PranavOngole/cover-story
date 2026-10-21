@@ -30,4 +30,4 @@ To give the app to other people without that step, it needs a Developer ID signa
 6. Check the result: `spctl -a -vvv "src-tauri/target/release/bundle/macos/Plain Sight.app"` should say `accepted` and `source=Notarized Developer ID`, and `codesign -dv --verbose=4` should show the Developer ID and the runtime flag.
 7. To hand the app out as a single file, add `"dmg"` to `bundle.targets` in `tauri.conf.json`, then check the disk image before sharing it: `spctl -a -t open --context context:primary-signature -v <the .dmg>`.
 
-The Mac App Store is out of scope (DR-07): it would also need the App Sandbox, a different certificate and Apple's review.
+The Mac App Store is now the goal (D-37, in place of DR-07's "out of scope"). It needs the App Sandbox, other certificates, a provisioning profile, a signed installer package and Apple's review; the steps are in `APPSTORE.md`.

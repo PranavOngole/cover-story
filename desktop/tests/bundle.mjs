@@ -80,12 +80,13 @@ test('the app is small: well under 10 MB (DR-06)', () => {
   assert.ok(bytes < 10 * 1024 * 1024);
 });
 
-test('Info.plist names the app, its identifier, its version and the macOS it needs', () => {
+test('Info.plist names the app, its identifier, its version, the macOS it needs and its App Store category', () => {
   const read = (key) => execFileSync('plutil', ['-extract', key, 'raw', '-o', '-', path.join(APP, 'Contents/Info.plist')], { encoding: 'utf8' }).trim();
   assert.equal(read('CFBundleIdentifier'), 'com.pranavongole.plainsight');
   assert.equal(read('CFBundleName'), 'Plain Sight');
   assert.equal(read('CFBundleShortVersionString'), '1.0.0');
   assert.equal(read('LSMinimumSystemVersion'), '11.0');
+  assert.equal(read('LSApplicationCategoryType'), 'public.app-category.productivity', 'the App Store category (D-37)');
   assert.match(execFileSync('lipo', ['-archs', BIN], { encoding: 'utf8' }).trim(), /^arm64$/);
 });
 

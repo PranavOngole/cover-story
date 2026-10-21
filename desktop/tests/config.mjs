@@ -223,6 +223,9 @@ test('the one bundled resource moves the vault and the app\'s data folder into t
   });
 });
 
+test('the App Store lists the app under Productivity (D-37)', () => {
+  assert.equal(conf.bundle.category, 'Productivity');
+});
 
 test('the e2e build copies the page first, so it never embeds an old page (DM-205)', () => {
   const pkg = JSON.parse(read(DESKTOP, 'package.json'));
