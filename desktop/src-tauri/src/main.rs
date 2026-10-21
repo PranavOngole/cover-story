@@ -9,7 +9,8 @@
 // commands through the adapter in desktop/adapter.js: five for Save
 // (folder.rs) and one to say it is ready to quit (quit.rs). Closing the window and quitting
 // both work like Esc first (quit.rs), the window's title follows the page, and
-// the menu bar is the app's own (menu.rs).
+// the menu bar is the app's own (menu.rs). The chosen folder is remembered as
+// a security-scoped bookmark (bookmark.rs).
 
 // No console window behind the app on Windows release builds (Windows comes later).
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -18,6 +19,7 @@ use tauri::webview::NewWindowResponse;
 use tauri::window::Color;
 use tauri::{Manager, Url, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
+mod bookmark;
 mod folder;
 mod menu;
 mod quit;

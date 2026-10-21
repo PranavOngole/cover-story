@@ -6,6 +6,11 @@
 //! Save writes the page's own download into the Downloads folder through
 //! `save_download`, so the page learns whether the file was really written
 //! (DM-202).
+//!
+//! The macOS App Sandbox (D-37) lets an app into a folder only after the user
+//! picks it in the system panel. So the folder is remembered as a
+//! security-scoped bookmark (bookmark.rs), which lets the app back in after a
+//! quit.
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, ErrorKind, Write};
@@ -15,58 +20,111 @@ use std::sync::{Mutex, MutexGuard};
 use serde::Serialize;
 use tauri::{Manager, Runtime, State, WebviewWindow};
 
-/// The remembered folder, in memory and in a small file in the app's data
-/// directory so that it survives a quit.
+use crate::bookmark::{Access, Bookmarks, Opened, System};
+
+/// The file in the app's data folder that holds the bookmark.
+const BOOKMARK: &str = "folder.bookmark";
+
+/// The file in which the app kept the folder's plain path before the sandbox.
+const PLAIN_PATH: &str = "folder.txt";
+
+/// The remembered folder, in memory and, as a bookmark, in a small file in the
+/// app's data directory, so that it survives a quit.
 pub struct Folder {
-    /// Where the choice is kept on disk; None if the data directory is unknown.
+    /// Where the bookmark is kept on disk; None if the data directory is unknown.
     file: Option<PathBuf>,
+    /// The system's bookmarks; a stand-in in the tests.
+    bookmarks: Box<dyn Bookmarks>,
     /// The folder. Writes hold the lock, so two saves run one after the other.
-    path: Mutex<Option<PathBuf>>,
+    current: Mutex<Option<Remembered>>,
+}
+
+/// A remembered folder.
+enum Remembered {
+    /// Save writes into `path`. The sandbox's access to the folder is held
+    /// until the folder is forgotten or replaced, which drops it.
+    Open { path: PathBuf, _access: Access },
+    /// The bookmark did not open at launch: a folder on a drive that is not
+    /// plugged in, say. It stays remembered and shown under its name, the
+    /// next write tries the bookmark again, and until it opens a write fails
+    /// and the page says so.
+    Closed { bookmark: Vec<u8>, name: String },
+}
+
+impl Remembered {
+    fn shown(&self) -> Shown {
+        match self {
+            Remembered::Open { path, .. } => Shown::of(path),
+            Remembered::Closed { name, .. } => Shown { name: name.clone() },
+        }
+    }
 }
 
 impl Folder {
-    /// Reads the choice once, at start. A folder that no longer exists is still
-    /// remembered: an unplugged drive may come back, and until then a write
-    /// fails and the page says so.
+    /// Reads the choice once, at start, through the system's bookmarks.
     pub fn load(data_dir: Option<PathBuf>) -> Self {
-        let file = data_dir.map(|dir| dir.join("folder.txt"));
-        let path = file
+        Folder::with(data_dir, Box::new(System))
+    }
+
+    fn with(data_dir: Option<PathBuf>, bookmarks: Box<dyn Bookmarks>) -> Self {
+        if let Some(dir) = &data_dir {
+            // The build before the sandbox kept the folder's plain path in
+            // folder.txt. Inside the sandbox a path opens nothing: the app may
+            // only enter a folder the user picked in the panel, or one that a
+            // bookmark lets it back into. So that file counts as no folder and
+            // is removed, and the page asks for the folder again.
+            let _ = fs::remove_file(dir.join(PLAIN_PATH));
+        }
+        let file = data_dir.map(|dir| dir.join(BOOKMARK));
+        let current = file
             .as_deref()
-            .and_then(|file| fs::read_to_string(file).ok())
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute()); // never a path relative to wherever the app runs
+            .and_then(|file| reopen(file, bookmarks.as_ref()));
         Folder {
             file,
-            path: Mutex::new(path),
+            bookmarks,
+            current: Mutex::new(current),
         }
     }
 
-    fn lock(&self) -> Result<MutexGuard<'_, Option<PathBuf>>, String> {
-        self.path
+    fn lock(&self) -> Result<MutexGuard<'_, Option<Remembered>>, String> {
+        self.current
             .lock()
             .map_err(|_| "The folder is not available".to_owned())
     }
 
-    /// Remembers a newly chosen folder, on disk first and then in memory.
+    /// Remembers a newly chosen folder: its bookmark is made and opened, kept
+    /// on disk, and then held in memory. All of that comes before the folder
+    /// it replaces is let go, so a failure leaves that folder in use.
     fn remember(&self, path: PathBuf) -> Result<Shown, String> {
         let file = self
             .file
             .as_deref()
             .ok_or("The app's data folder is not available")?;
         let mut current = self.lock()?;
-        store(file, &path).map_err(|e| format!("Could not remember the folder: {e}"))?;
-        let shown = Shown::of(&path);
-        *current = Some(path);
+        let failed = |e: String| format!("Could not remember the folder: {e}");
+        let bookmark = self.bookmarks.create(&path).map_err(failed)?;
+        let opened = self.bookmarks.open(&bookmark).map_err(failed)?;
+        store(file, opened.renewed.as_deref().unwrap_or(&bookmark))
+            .map_err(|e| failed(e.to_string()))?;
+        let folder = Remembered::Open {
+            path: opened.path,
+            _access: opened.access,
+        };
+        let shown = folder.shown();
+        // The folder this replaces is dropped here, which stops the app's
+        // access to it.
+        *current = Some(folder);
         Ok(shown)
     }
 
     fn shown(&self) -> Result<Option<Shown>, String> {
-        Ok(self.lock()?.as_deref().map(Shown::of))
+        Ok(self.lock()?.as_ref().map(Remembered::shown))
     }
 
     /// Forgets the folder, on disk first and then in memory, so a failure
     /// leaves it remembered in both and the page, which keeps showing it,
-    /// still agrees with the app (DM-220).
+    /// still agrees with the app (DM-220). Dropping it from memory stops the
+    /// app's access to it.
     fn forget(&self) -> Result<(), String> {
         let mut current = self.lock()?;
         if let Some(Err(e)) = self.file.as_deref().map(fs::remove_file) {
@@ -85,10 +143,53 @@ impl Folder {
         if !is_moment(base) {
             return Err("The file name must be a moment, YYYY-MM-DD HH-MM-SS".to_owned());
         }
-        let current = self.lock()?;
-        let dir = current.as_deref().ok_or("No folder is chosen")?;
-        write_new(dir, &format!("{base}.txt"), text)
-            .map_err(|e| format!("Could not write the file: {e}"))
+        let failed = |e: String| format!("Could not write the file: {e}");
+        let mut current = self.lock()?;
+        let folder = current.as_mut().ok_or("No folder is chosen")?;
+        let dir = match folder {
+            Remembered::Open { path, .. } => path.clone(),
+            Remembered::Closed { bookmark, .. } => {
+                let file = self
+                    .file
+                    .as_deref()
+                    .ok_or("The app's data folder is not available")?;
+                let opened = self.bookmarks.open(bookmark).map_err(failed)?;
+                let path = opened.path.clone();
+                *folder = kept(file, opened);
+                path
+            }
+        };
+        write_new(&dir, &format!("{base}.txt"), text).map_err(|e| failed(e.to_string()))
+    }
+}
+
+/// The folder whose bookmark is kept in `file`, or None if there is none. A
+/// bookmark that does not open is kept as a closed folder; data that is not a
+/// bookmark counts as no folder and is removed, like folder.txt.
+fn reopen(file: &Path, bookmarks: &dyn Bookmarks) -> Option<Remembered> {
+    let bookmark = fs::read(file).ok()?;
+    if let Ok(opened) = bookmarks.open(&bookmark) {
+        return Some(kept(file, opened));
+    }
+    match bookmarks.name(&bookmark) {
+        Some(name) => Some(Remembered::Closed { bookmark, name }),
+        None => {
+            let _ = fs::remove_file(file);
+            None
+        }
+    }
+}
+
+/// An opened folder as the app keeps it. A stale bookmark is replaced on disk
+/// by its renewal; if that write fails, the old bookmark stays, which still
+/// opens and is renewed at the next launch.
+fn kept(file: &Path, opened: Opened) -> Remembered {
+    if let Some(fresh) = &opened.renewed {
+        let _ = store(file, fresh);
+    }
+    Remembered::Open {
+        path: opened.path,
+        _access: opened.access,
     }
 }
 
@@ -198,6 +299,12 @@ fn is_download_name(name: &str) -> bool {
 
 /// The system folder picker: folders only, a sheet on the document window,
 /// starting in Documents, with a New Folder button. None when cancelled.
+///
+/// In the sandbox the panel itself lets the app into the chosen folder until
+/// the app quits (Apple: the system starts access on URLs from open panels).
+/// rfd hands back only the path, so that access cannot be stopped early; the
+/// access that remember() starts through the folder's bookmark is the one
+/// stopped when the folder is forgotten or replaced.
 async fn choose<R: Runtime>(window: WebviewWindow<R>) -> Result<Option<PathBuf>, String> {
     // Test builds only: the end-to-end tests run while the screen is locked,
     // where no panel can be used, so they name the folder in the environment.
@@ -233,19 +340,16 @@ async fn choose<R: Runtime>(window: WebviewWindow<R>) -> Result<Option<PathBuf>,
     Ok(chosen.await.map(|handle| handle.path().to_path_buf()))
 }
 
-/// Keeps the folder's path in `file` atomically: a temporary file in the same
+/// Keeps the bookmark in `file` atomically: a temporary file in the same
 /// directory, flushed to disk, then renamed over the old one, so a crash never
-/// leaves half a path behind.
-fn store(file: &Path, folder: &Path) -> io::Result<()> {
-    let text = folder
-        .to_str()
-        .ok_or_else(|| io::Error::new(ErrorKind::InvalidData, "path is not UTF-8"))?;
+/// leaves half a bookmark behind.
+fn store(file: &Path, bookmark: &[u8]) -> io::Result<()> {
     if let Some(dir) = file.parent() {
         fs::create_dir_all(dir)?;
     }
     let temp = file.with_extension("tmp");
     let mut out = fs::File::create(&temp)?;
-    out.write_all(text.as_bytes())?;
+    out.write_all(bookmark)?;
     out.sync_all()?;
     fs::rename(&temp, file)
 }
@@ -306,6 +410,7 @@ fn write_new(dir: &Path, name: &str, text: &str) -> io::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     const BASE: &str = "2026-10-20 14-55-03";
 
@@ -316,6 +421,93 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// A stand-in for the system's bookmarks, which logs each folder opened
+    /// and each access stopped, with the folder whose bookmark was on disk at
+    /// that moment. Its bookmark of a folder is "bookmark:" and the path, or
+    /// "stale:" and the path for one that needs renewing. Like the system's,
+    /// it is made only of a folder that exists and opens while it exists.
+    #[derive(Clone)]
+    struct Fake {
+        log: Arc<Mutex<Vec<String>>>,
+        file: PathBuf,
+    }
+
+    impl Fake {
+        fn log(&self) -> Vec<String> {
+            self.log.lock().unwrap().clone()
+        }
+
+        fn note(&self, line: String) {
+            self.log.lock().unwrap().push(line);
+        }
+
+        /// The name of the folder whose bookmark is on disk, or "nothing".
+        fn on_disk(&self) -> String {
+            fs::read(&self.file)
+                .ok()
+                .and_then(|bookmark| self.name(&bookmark))
+                .unwrap_or_else(|| "nothing".to_owned())
+        }
+    }
+
+    fn path_of(bookmark: &[u8]) -> Option<PathBuf> {
+        let text = std::str::from_utf8(bookmark).ok()?;
+        let path = text
+            .strip_prefix("bookmark:")
+            .or_else(|| text.strip_prefix("stale:"))?;
+        Some(PathBuf::from(path))
+    }
+
+    impl Bookmarks for Fake {
+        fn create(&self, folder: &Path) -> Result<Vec<u8>, String> {
+            match folder.is_dir() {
+                true => Ok(format!("bookmark:{}", folder.display()).into_bytes()),
+                false => Err("there is no such folder".to_owned()),
+            }
+        }
+
+        fn open(&self, bookmark: &[u8]) -> Result<Opened, String> {
+            let path = path_of(bookmark).ok_or("not a bookmark")?;
+            if !path.is_dir() {
+                return Err("the folder is not there".to_owned());
+            }
+            let name = self.name(bookmark).unwrap();
+            self.note(format!("open {name}"));
+            let renewed = bookmark
+                .starts_with(b"stale:")
+                .then(|| format!("bookmark:{}", path.display()).into_bytes());
+            let fake = self.clone();
+            let access = Access::new(move || {
+                let on_disk = fake.on_disk();
+                fake.note(format!("stop {name}, on disk: {on_disk}"));
+            });
+            Ok(Opened {
+                path,
+                renewed,
+                access,
+            })
+        }
+
+        fn name(&self, bookmark: &[u8]) -> Option<String> {
+            let path = path_of(bookmark)?;
+            Some(path.file_name()?.to_string_lossy().into_owned())
+        }
+    }
+
+    /// The app's Folder over the data folder `data`, with the stand-in.
+    fn load(data: &Path) -> (Folder, Fake) {
+        let fake = Fake {
+            log: Arc::default(),
+            file: data.join(BOOKMARK),
+        };
+        let folder = Folder::with(Some(data.to_path_buf()), Box::new(fake.clone()));
+        (folder, fake)
+    }
+
+    fn shown_name(folder: &Folder) -> Option<String> {
+        folder.shown().unwrap().map(|shown| shown.name)
     }
 
     #[test]
@@ -451,46 +643,174 @@ mod tests {
     }
 
     #[test]
-    fn a_chosen_folder_is_remembered_across_a_restart() {
+    fn a_chosen_folder_is_kept_as_a_bookmark_and_opened_again_after_a_restart() {
         let dir = scratch("remember");
         let data = dir.join("data");
-        let chosen = dir.join("Build_Test_1"); // does not exist: still remembered
-        let shown = Folder::load(Some(data.clone()))
-            .remember(chosen.clone())
-            .unwrap();
+        let chosen = dir.join("Build_Test_1");
+        fs::create_dir(&chosen).unwrap();
+        let (folder, fake) = load(&data);
+        let shown = folder.remember(chosen.clone()).unwrap();
         assert_eq!(shown.name, "Build_Test_1", "the page gets the name only");
-        let again = Folder::load(Some(data.clone()));
-        assert_eq!(again.lock().unwrap().as_deref(), Some(chosen.as_path()));
         assert_eq!(
-            again.shown().unwrap().map(|s| s.name).as_deref(),
-            Some("Build_Test_1")
+            fs::read(data.join(BOOKMARK)).unwrap(),
+            fake.create(&chosen).unwrap(),
+            "the bookmark is kept byte for byte"
         );
         assert!(
             !data.join("folder.tmp").exists(),
             "the temporary file was renamed"
         );
-        fs::write(data.join("folder.txt"), "relative/path").unwrap();
-        assert!(
-            Folder::load(Some(data)).shown().unwrap().is_none(),
-            "a relative path is ignored"
+        drop(folder); // the app ends
+        let (again, fake) = load(&data);
+        assert_eq!(fake.log(), ["open Build_Test_1"], "opened at launch");
+        assert_eq!(shown_name(&again).as_deref(), Some("Build_Test_1"));
+        assert_eq!(again.write(BASE, "text").unwrap(), format!("{BASE}.txt"));
+        assert_eq!(
+            fs::read_to_string(chosen.join(format!("{BASE}.txt"))).unwrap(),
+            "text"
         );
         fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
-    fn forgetting_clears_the_folder_in_memory_and_on_disk() {
+    fn the_plain_path_kept_before_the_sandbox_counts_as_no_folder_and_is_removed() {
+        let dir = scratch("plain-path");
+        let data = dir.join("data");
+        fs::create_dir_all(&data).unwrap();
+        fs::write(data.join(PLAIN_PATH), dir.to_str().unwrap()).unwrap();
+        let (folder, fake) = load(&data);
+        assert_eq!(shown_name(&folder), None, "no folder: the page asks again");
+        assert!(!data.join(PLAIN_PATH).exists(), "folder.txt is removed");
+        assert!(fake.log().is_empty(), "nothing is opened");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_file_that_holds_no_bookmark_counts_as_no_folder_and_is_removed() {
+        let dir = scratch("no-bookmark");
+        let data = dir.join("data");
+        fs::create_dir_all(&data).unwrap();
+        fs::write(data.join(BOOKMARK), "not a bookmark").unwrap();
+        let (folder, _) = load(&data);
+        assert_eq!(shown_name(&folder), None);
+        assert!(!data.join(BOOKMARK).exists());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_stale_bookmark_is_renewed_at_launch() {
+        let dir = scratch("stale");
+        let data = dir.join("data");
+        let chosen = dir.join("Notes");
+        fs::create_dir_all(&data).unwrap();
+        fs::create_dir(&chosen).unwrap();
+        fs::write(data.join(BOOKMARK), format!("stale:{}", chosen.display())).unwrap();
+        let (folder, fake) = load(&data);
+        assert_eq!(shown_name(&folder).as_deref(), Some("Notes"));
+        assert_eq!(
+            fs::read(data.join(BOOKMARK)).unwrap(),
+            fake.create(&chosen).unwrap(),
+            "the renewed bookmark replaced the stale one"
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_folder_that_does_not_open_at_launch_stays_remembered_and_opens_at_a_later_write() {
+        let dir = scratch("unplugged");
+        let data = dir.join("data");
+        let chosen = dir.join("On a drive");
+        let unplugged = dir.join("unplugged");
+        fs::create_dir(&chosen).unwrap();
+        load(&data).0.remember(chosen.clone()).unwrap();
+        fs::rename(&chosen, &unplugged).unwrap(); // the drive is unplugged
+        let (folder, fake) = load(&data);
+        assert_eq!(
+            shown_name(&folder).as_deref(),
+            Some("On a drive"),
+            "still shown, under its name"
+        );
+        let failed = folder.write(BASE, "text").unwrap_err();
+        assert!(failed.starts_with("Could not write the file"), "{failed}");
+        assert!(data.join(BOOKMARK).exists(), "still remembered on disk");
+        fs::rename(&unplugged, &chosen).unwrap(); // and plugged in again
+        assert_eq!(folder.write(BASE, "text").unwrap(), format!("{BASE}.txt"));
+        assert_eq!(fake.log(), ["open On a drive"], "opened by the write");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn forgetting_removes_the_bookmark_first_and_then_stops_the_access() {
         let dir = scratch("forget");
         let data = dir.join("data");
-        let folder = Folder::load(Some(data.clone()));
-        folder.remember(dir.clone()).unwrap();
+        let chosen = dir.join("Notes");
+        fs::create_dir(&chosen).unwrap();
+        let (folder, fake) = load(&data);
+        folder.remember(chosen).unwrap();
         folder.forget().unwrap();
-        assert!(folder.shown().unwrap().is_none());
-        assert!(!data.join("folder.txt").exists());
-        assert!(
-            Folder::load(Some(data)).shown().unwrap().is_none(),
-            "nothing after a restart"
-        );
+        assert_eq!(fake.log(), ["open Notes", "stop Notes, on disk: nothing"]);
+        assert_eq!(shown_name(&folder), None);
+        assert!(!data.join(BOOKMARK).exists());
+        assert_eq!(shown_name(&load(&data).0), None, "nothing after a restart");
         folder.forget().unwrap(); // forgetting twice is fine
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_new_choice_is_kept_on_disk_before_the_old_folder_is_let_go() {
+        let dir = scratch("replace");
+        let data = dir.join("data");
+        let (first, second) = (dir.join("First"), dir.join("Second"));
+        fs::create_dir(&first).unwrap();
+        fs::create_dir(&second).unwrap();
+        let (folder, fake) = load(&data);
+        folder.remember(first).unwrap();
+        assert_eq!(folder.remember(second.clone()).unwrap().name, "Second");
+        assert_eq!(
+            fake.log(),
+            ["open First", "open Second", "stop First, on disk: Second"],
+            "the first folder's access stops once the second's bookmark is on disk"
+        );
+        assert_eq!(folder.write(BASE, "text").unwrap(), format!("{BASE}.txt"));
+        assert!(second.join(format!("{BASE}.txt")).exists());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_choice_that_cannot_be_kept_changes_nothing() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("choice-fails");
+        let data = dir.join("data");
+        let (first, second) = (dir.join("First"), dir.join("Second"));
+        fs::create_dir(&first).unwrap();
+        fs::create_dir(&second).unwrap();
+        let (folder, fake) = load(&data);
+        folder.remember(first.clone()).unwrap();
+        let failed = folder
+            .remember(dir.join("not there"))
+            .map(|s| s.name)
+            .unwrap_err();
+        assert!(
+            failed.starts_with("Could not remember the folder"),
+            "{failed}"
+        );
+        // The bookmark cannot be written into a data folder that is read-only.
+        fs::set_permissions(&data, fs::Permissions::from_mode(0o555)).unwrap();
+        let failed = folder.remember(second).map(|s| s.name);
+        fs::set_permissions(&data, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(failed
+            .unwrap_err()
+            .starts_with("Could not remember the folder"));
+        assert_eq!(
+            fake.log(),
+            ["open First", "open Second", "stop Second, on disk: First"],
+            "the second folder's access ends with the failed choice; the first's is kept"
+        );
+        assert_eq!(shown_name(&folder).as_deref(), Some("First"));
+        assert_eq!(
+            fs::read(data.join(BOOKMARK)).unwrap(),
+            fake.create(&first).unwrap()
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -499,20 +819,20 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let dir = scratch("forget-fails");
         let data = dir.join("data");
-        let folder = Folder::load(Some(data.clone()));
-        folder.remember(dir.clone()).unwrap();
-        // folder.txt cannot be deleted from a data folder that is read-only.
+        let chosen = dir.join("Notes");
+        fs::create_dir(&chosen).unwrap();
+        let (folder, fake) = load(&data);
+        folder.remember(chosen).unwrap();
+        // The bookmark cannot be deleted from a data folder that is read-only.
         fs::set_permissions(&data, fs::Permissions::from_mode(0o555)).unwrap();
         let failed = folder.forget();
         fs::set_permissions(&data, fs::Permissions::from_mode(0o755)).unwrap();
         assert!(failed
             .unwrap_err()
             .starts_with("Could not forget the folder"));
-        assert!(
-            folder.shown().unwrap().is_some(),
-            "still remembered in memory"
-        );
-        assert!(data.join("folder.txt").exists(), "and on disk");
+        assert!(shown_name(&folder).is_some(), "still remembered in memory");
+        assert!(data.join(BOOKMARK).exists(), "and on disk");
+        assert_eq!(fake.log(), ["open Notes"], "and its access is kept");
         assert_eq!(
             folder.write(BASE, "text").unwrap(),
             format!("{BASE}.txt"),
@@ -524,12 +844,14 @@ mod tests {
     #[test]
     fn a_write_needs_a_folder_and_a_moment() {
         let dir = scratch("write");
-        let folder = Folder::load(Some(dir.join("data")));
+        let chosen = dir.join("Notes");
+        fs::create_dir(&chosen).unwrap();
+        let (folder, _) = load(&dir.join("data"));
         assert_eq!(
             folder.write(BASE, "text").unwrap_err(),
             "No folder is chosen"
         );
-        folder.remember(dir.clone()).unwrap();
+        folder.remember(chosen.clone()).unwrap();
         for base in ["notes", "2026-10-20 14-55-03.txt", "../escape"] {
             assert!(
                 folder.write(base, "text").is_err(),
@@ -545,7 +867,7 @@ mod tests {
             "2026-10-20 14-55-03 (2).txt"
         );
         assert_eq!(
-            fs::read_to_string(dir.join("2026-10-20 14-55-03.txt")).unwrap(),
+            fs::read_to_string(chosen.join("2026-10-20 14-55-03.txt")).unwrap(),
             "the text"
         );
         fs::remove_dir_all(&dir).unwrap();

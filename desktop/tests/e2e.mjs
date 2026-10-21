@@ -390,8 +390,12 @@ test('a name already in the folder gets the next number and the file there is le
 });
 
 test('the folder is remembered across a relaunch, in the app\'s own data folder', async () => {
-  const file = path.join(HOME, 'Library/Application Support', ID, 'folder.txt');
-  assert.equal(readFileSync(file, 'utf8'), FOLDER, 'the path is kept by the app, in its data folder');
+  // A security-scoped bookmark of the folder (bookmark.rs), never its plain path.
+  const data = path.join(HOME, 'Library/Application Support', ID);
+  const bookmark = readFileSync(path.join(data, 'folder.bookmark'));
+  assert.equal(bookmark.subarray(0, 4).toString('latin1'), 'book', 'the app keeps a bookmark, in its data folder');
+  assert.ok(bookmark.includes(Buffer.from(path.basename(FOLDER))), 'a bookmark of the chosen folder');
+  assert.equal(existsSync(path.join(data, 'folder.txt')), false, 'no plain path is kept');
   await stopApp(app);
   await launch({ PLAIN_SIGHT_E2E_PICK: '/nonexistent/should-not-be-used' });
   await page.openIntro();
@@ -452,7 +456,7 @@ test('"Stop using the folder" forgets it, in the app\'s data too, and Save asks 
   await page.openIntro();
   await page.click('btn-folder-forget');
   await until(async () => (await page.text('folder-status')) === 'Save downloads an encrypted .sight file.', 'the status to change back');
-  assert.equal(existsSync(path.join(HOME, 'Library/Application Support', ID, 'folder.txt')), false, 'the remembered path is deleted');
+  assert.equal(existsSync(path.join(HOME, 'Library/Application Support', ID, 'folder.bookmark')), false, 'the bookmark is deleted');
   await page.start();
   await page.click('btn-save');
   await until(() => page.shown('pw'), 'the password dialog');
