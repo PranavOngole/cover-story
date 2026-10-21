@@ -786,7 +786,9 @@
     resetCover();
     if (peeking) realEl.textContent = '';
     updateHeader();
-    if (!introEl.hidden) vaultRefresh();   // an intro left open across the 10-minute wipe shows the lock (DM-129)
+    vaultPhraseEl.value = '';                  // a phrase typed on the intro and not submitted goes with the wipe (DM-131)
+    if (!pwEl.hidden) finishPassword(null);    // an Open or Save still waiting for its password is cancelled (DM-131)
+    if (!introEl.hidden) vaultStatusRefresh();   // an intro left open across the 10-minute wipe says the vault is locked (DM-129)
   }
 
   function dialogOpen() { return !introEl.hidden || !pwEl.hidden; }
@@ -1070,7 +1072,7 @@
     vaultKey = key;
     vaultSalt = salt;
     body.classList.add('vault-open');
-    if (!introEl.hidden) vaultRefresh();   // an intro reopened during the setup says the vault is open
+    if (!introEl.hidden) vaultStatusRefresh();   // an intro reopened during the setup says the vault is open once the key exists; the box stays as the person left it
     await vaultWrite(key, salt, real, true);
   }
   // Opens a stored copy with a phrase from the intro. Returns true on success,
@@ -1124,12 +1126,12 @@
         const current = vaultStored();
         if (!current || current.salt !== record.salt) {
           if (vaultOpen() && record.salt === bytesToBase64(vaultSalt)) vaultLock();   // the open vault's copy is gone or re-keyed; an older key's save is just dropped
-          if (!introEl.hidden) vaultRefresh();   // an open intro follows the copy, which is gone or another tab's now (DM-129)
+          if (!introEl.hidden) vaultStatusRefresh();   // the status follows the copy, which is gone or another tab's now (DM-129)
           return;
         }
       }
       storageSet(STORAGE.vault, JSON.stringify(record));
-      if (!introEl.hidden) vaultRefresh();   // an open intro follows this tab's own copy: a delete or clear elsewhere redraws it, an autosave does not
+      if (!introEl.hidden) vaultStatusRefresh();   // the intro follows this tab's own copy, so another tab's delete or clear redraws it later and an autosave does not; the box and a phrase being typed are left alone
     };
     writeChain = writeChain.then(run, run);
     return writeChain;
@@ -1471,13 +1473,13 @@
 
   // Draws the vault controls from the current state: no encryption on this
   // address, a saved copy, an open vault, a setup still deriving its key, or none.
-  // vaultRender also empties the phrase field; vaultRefresh keeps it, for the
-  // redraws caused by this tab's own setup or save while the intro is open.
+  // Only opening the intro and another tab's change call it: it sets the box and
+  // empties the phrase field. This tab's own setup, saves, wipe and locks call
+  // vaultStatusRefresh instead, which updates the status line and the salt the
+  // intro follows and nothing the person may be holding: a box just unticked or
+  // a phrase being typed stays as it is until Start applies it (DM-130).
   function vaultRender() {
     vaultPhraseEl.value = '';
-    vaultRefresh();
-  }
-  function vaultRefresh() {
     if (!cryptoAvailable()) {
       drawnSalt = null;
       vaultOnEl.checked = false;
@@ -1492,7 +1494,16 @@
     const pending = vaultSetupPending();   // a setup still deriving its key shows as ticked, so an untick is deliberate
     vaultOnEl.checked = stored || vaultOpen() || pending;
     vaultPhraseEl.disabled = !vaultOnEl.checked;
-    vaultStatusEl.textContent = vaultOpen()
+    vaultStatusEl.textContent = vaultStatusText(stored, pending);
+  }
+  function vaultStatusRefresh() {
+    if (!cryptoAvailable()) return;
+    const record = vaultStored();
+    drawnSalt = record === null ? null : record.salt;
+    vaultStatusEl.textContent = vaultStatusText(record !== null, vaultSetupPending());
+  }
+  function vaultStatusText(stored, pending) {
+    return vaultOpen()
       ? 'The vault is open and saving as you type. Untick to delete the saved copy. Enter a new phrase to change it.'
       : pending
       ? 'Your phrase is being set up. Untick to cancel it.'
@@ -1672,7 +1683,7 @@
   // reads or returns the hidden buffer in any form, encrypted or not. Save and
   // Open are reachable only through their buttons.
   window.PlainSight = Object.freeze({
-    version: '1.3.8',
+    version: '1.3.9',
     coverIds: COVER_IDS.slice(),
     coverId: () => (cover ? cover.id : null),
     coverText: () => coverText,

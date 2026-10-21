@@ -638,7 +638,7 @@ test('Save writes a .sight with a 16-byte salt, 12-byte IV and data; Open restor
     assert.equal(await p.readReal(), 'hello world', 'every refusal left the buffer alone');
     // Nothing on the console object touches the buffer.
     assert.deepEqual(Object.keys(p.w.PlainSight).sort(), ['coverFailed', 'coverId', 'coverIds', 'coverText', 'ready', 'selectedCoverId', 'setCover', 'version']);
-    assert.equal(p.w.PlainSight.version, '1.3.8');
+    assert.equal(p.w.PlainSight.version, '1.3.9');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
@@ -2588,8 +2588,8 @@ test('device vault: an open intro follows the silent lock when the open vault\'s
     p.d.dispatchEvent(new p.w.Event('visibilitychange'));
     assert.ok(!p.d.body.classList.contains('vault-open'), 'locked');
     assert.equal(p.storageDump()['plainSight.vault'], undefined, 'nothing written');
-    assert.equal(p.$('#vault-on').checked, false, 'the intro follows the copy, which is gone');
-    assert.match(p.$('#vault-status').textContent, /To come back to your text later/);
+    assert.match(p.$('#vault-status').textContent, /To come back to your text later/, 'the status follows the lock and the missing copy');
+    assert.equal(p.$('#vault-on').checked, true, 'the box keeps the person\'s choice until Start');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
@@ -2652,6 +2652,170 @@ test('device vault: an Esc save that finds the copy gone in a locked tab is drop
   } finally { p.close(); }
 });
 
+test('device vault: an untick made on the intro stands through this tab\'s own autosave, and Start then deletes the copy (DM-130)', async () => {
+  const p = await loadPage();
+  try {
+    p.start();
+    p.type('private words');
+    await p.vaultOn('correct horse battery staple');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    p.type(' and more');                     // an autosave is due 1.5 s on
+    p.$('#btn-help').click();
+    assert.equal(p.$('#vault-on').checked, true);
+    p.$('#vault-phrase').value = 'an abandoned new phrase';   // a new phrase typed, then the person changes their mind
+    p.$('#vault-on').checked = false;
+    p.$('#vault-on').dispatchEvent(new p.w.Event('change', { bubbles: true }));
+    const before = p.storageDump()['plainSight.vault'];
+    await sleep(VAULT_SAVE_DELAY_MS + 400);  // the autosave lands under the open intro
+    assert.notEqual(p.storageDump()['plainSight.vault'], before, 'the autosave landed');
+    assert.equal(p.$('#vault-on').checked, false, 'this tab\'s own save does not tick the box again');
+    p.start();
+    await sleep(300);
+    assert.equal(p.toast(), 'Saved copy deleted from this device');
+    assert.ok(!p.storageDump()['plainSight.vault'], 'the copy is deleted, not re-keyed under the abandoned phrase');
+    assert.ok(!p.d.body.classList.contains('vault-open'));
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('device vault: an untick made on an intro reopened during the setup stands when the key arrives, and Start then leaves no copy (DM-130)', async () => {
+  const p = await loadPage({ slowDerive: (n) => (n === 0 ? 600 : 0) });
+  try {
+    p.start();
+    p.type('first words');
+    p.$('#btn-help').click();
+    p.$('#vault-on').checked = true;
+    p.$('#vault-on').dispatchEvent(new p.w.Event('change', { bubbles: true }));
+    p.$('#vault-phrase').value = 'correct horse battery staple';
+    p.start();                               // the setup derives for 600 ms and more
+    p.$('#btn-help').click();                // reopened during the derivation
+    assert.match(p.$('#vault-status').textContent, /^Your phrase is being set up/);
+    p.$('#vault-on').checked = false;        // the person cancels
+    p.$('#vault-on').dispatchEvent(new p.w.Event('change', { bubbles: true }));
+    await sleep(1200);                       // the key arrives and the first write lands
+    assert.equal(p.$('#vault-on').checked, false, 'the key\'s arrival does not tick the box again');
+    p.start();
+    await sleep(300);
+    assert.ok(!p.d.body.classList.contains('vault-open'), 'no vault');
+    assert.ok(!p.storageDump()['plainSight.vault'], 'no copy');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('device vault: an untick made on the intro stands across the 10-minute wipe, and Start then deletes the copy (DM-130)', async () => {
+  const p = await loadPage();
+  try {
+    p.start();
+    p.type('kept until Start');
+    await p.vaultOn('correct horse battery staple');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    p.$('#btn-help').click();
+    p.$('#vault-on').checked = false;        // the person wants the copy deleted
+    p.$('#vault-on').dispatchEvent(new p.w.Event('change', { bubbles: true }));
+    const realNow = p.w.Date.now();
+    let fakeNow = realNow;
+    p.w.Date.now = () => fakeNow;
+    const setHidden = (hidden) => {
+      Object.defineProperty(p.d, 'hidden', { get: () => hidden, configurable: true });
+      p.d.dispatchEvent(new p.w.Event('visibilitychange'));
+    };
+    setHidden(true);
+    fakeNow += TEN_MINUTES + 1000;
+    setHidden(false);                        // the wipe locks the vault with the intro still open
+    assert.equal(p.toast(), 'Cleared after 10 minutes in the background');
+    assert.equal(p.$('#vault-on').checked, false, 'the wipe does not tick the box again');
+    assert.match(p.$('#vault-status').textContent, /^A saved copy is on this device/);
+    await sleep(600);                        // the save made at the wipe lands
+    p.start();
+    await sleep(300);
+    assert.equal(p.toast(), 'Saved copy deleted from this device');
+    assert.ok(!p.storageDump()['plainSight.vault'], 'the copy is deleted');
+    assert.ok(!p.d.body.classList.contains('vault-open'));
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('device vault: a phrase typed into the intro but not submitted does not survive the 10-minute wipe (DM-131)', async () => {
+  const q = await loadPage({ storage: await lockedCopyStorage() });
+  try {
+    q.type('typed later');                   // text on the page, so the wipe arms
+    q.$('#btn-help').click();
+    q.$('#vault-phrase').value = 'correct horse battery staple';   // typed, not submitted
+    const realNow = q.w.Date.now();
+    let fakeNow = realNow;
+    q.w.Date.now = () => fakeNow;
+    const setHidden = (hidden) => {
+      Object.defineProperty(q.d, 'hidden', { get: () => hidden, configurable: true });
+      q.d.dispatchEvent(new q.w.Event('visibilitychange'));
+    };
+    setHidden(true);
+    fakeNow += TEN_MINUTES + 1000;
+    setHidden(false);
+    assert.equal(q.toast(), 'Cleared after 10 minutes in the background');
+    assert.equal(q.$('#vault-phrase').value, '', 'the phrase typed before the wipe is gone');
+    q.press('Escape');                       // someone at the machine: Esc on the intro applies it like Start
+    await sleep(900);
+    assert.ok(!q.d.body.classList.contains('vault-open'), 'nothing opened');
+    assert.deepEqual(q.errors, []);
+  } finally { q.close(); }
+});
+
+test('a password typed into the Open dialog but not submitted does not survive the 10-minute wipe: the wipe ends the dialog (DM-131)', async () => {
+  const p = await loadPage();
+  try {
+    p.start();
+    p.type('file contents');
+    p.$('#btn-save').click();
+    await p.submitPassword('file password');
+    await p.settle(400);
+    const json = await p.downloads[0].blob.text();
+    p.press('Escape');
+    p.type('other text');                    // the buffer is not empty, so the wipe arms
+    chooseFile(p, makeCoverFile(p.w, json));
+    await p.settle();
+    assert.equal(p.$('#pw').hidden, false, 'the dialog waits for the password');
+    p.$('#pw-input').value = 'file password';   // typed, not submitted
+    const realNow = p.w.Date.now();
+    let fakeNow = realNow;
+    p.w.Date.now = () => fakeNow;
+    const setHidden = (hidden) => {
+      Object.defineProperty(p.d, 'hidden', { get: () => hidden, configurable: true });
+      p.d.dispatchEvent(new p.w.Event('visibilitychange'));
+    };
+    setHidden(true);
+    fakeNow += TEN_MINUTES + 1000;
+    setHidden(false);
+    assert.equal(p.toast(), 'Cleared after 10 minutes in the background');
+    assert.equal(p.$('#pw').hidden, true, 'the wipe ended the waiting dialog');
+    p.$('#pw-ok').click();                   // someone at the machine
+    await sleep(600);
+    assert.equal(await p.readReal(), '', 'nothing opened');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('device vault: another tab\'s re-key empties a phrase half typed on this tab\'s open intro, although this tab\'s own saves leave it alone', async () => {
+  const p = await loadPage();
+  try {
+    const rekeyed = await encryptVaultRecord('the other tab\'s text', 'phrase of the other tab');
+    p.start();
+    p.type('open here');
+    await p.vaultOn('correct horse battery staple');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    const original = p.storageDump()['plainSight.vault'];
+    p.$('#btn-help').click();
+    p.$('#vault-phrase').value = 'half a phr';
+    p.w.localStorage.setItem('plainSight.vault', rekeyed);
+    p.w.dispatchEvent(new p.w.StorageEvent('storage', { key: 'plainSight.vault', oldValue: original, newValue: rekeyed }));
+    assert.equal(p.toast(), 'The saved copy changed in another tab; this tab is locked');
+    assert.ok(!p.d.body.classList.contains('vault-open'));
+    assert.equal(p.$('#vault-phrase').value, '', 'the phrase meant for the old copy is gone');
+    assert.equal(p.$('#vault-on').checked, true, 'the box shows the other tab\'s locked copy');
+    assert.match(p.$('#vault-status').textContent, /^A saved copy is on this device/);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
 // ---------------------------------------------------------------------------
 // Run
 // ---------------------------------------------------------------------------
@@ -2668,6 +2832,7 @@ for (const t of tests) {
     console.log('       ' + String(err && err.stack ? err.stack : err).split('\n').join('\n       '));
   }
 }
+await sleep(100);   // a rejection raised by the last test's page lands before the count
 if (unhandled) console.log(`\n${unhandled} unhandled promise rejection(s) in the page during the run`);
 console.log(`\n${passed} passed, ${failed} failed, ${tests.length} total. Errors: ${failed + unhandled}`);
 process.exit(failed || unhandled ? 1 : 0);
