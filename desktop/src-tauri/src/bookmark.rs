@@ -117,8 +117,11 @@ mod mac {
                 let path = url.to_file_path().ok_or("the path is not usable")?;
                 // SAFETY: an ordinary call on a file URL; it has no conditions.
                 let started = unsafe { url.startAccessingSecurityScopedResource() };
-                // Apple's steps: a stale bookmark is made again from the
-                // resolved URL, once access has started.
+                // A stale bookmark is made again from the resolved URL. Apple's
+                // page lists that before starting access; here access is
+                // started first, so the app is inside the folder while the new
+                // bookmark is made. The first sandboxed launch checks a renewal
+                // (ledger D-39).
                 let renewed = if stale.as_bool() {
                     bookmark(&url).ok()
                 } else {
