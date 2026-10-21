@@ -9,7 +9,7 @@
 // Run from desktop/: npm run test:e2e   (exit code 0 only when every test passes)
 
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import {
   DESKTOP, DOWNLOADS, EVIDENCE, HOME, ID, alive, decryptRecord, drive, isCoverPrefix, newDownloads, note, novelText,
@@ -52,8 +52,8 @@ async function picture(name) {
   return path.join(PICTURES, name);
 }
 
-async function launch() {
-  const child = spawnApp(EXE, { PLAIN_SIGHT_E2E_DIR: PROBE });
+async function launch(env = {}) {
+  const child = spawnApp(EXE, { PLAIN_SIGHT_E2E_DIR: PROBE, ...env });
   app = { child, pid: child.pid };
   await until(() => documentWindows().length === 1, 'the app window', 20000);
   await until(async () => (await js('window.PlainSight && window.PlainSight.coverId()')) !== null, 'the cover to load', 15000);
@@ -264,6 +264,149 @@ test('a wrong phrase does nothing', async () => {
   await sleep(2500);
   assert.equal(await js(`document.body.classList.contains('vault-open')`), false);
   assert.equal(await page.peekText(), 'this is not the phrase at all');
+});
+
+// ---------------------------------------------------------------------------
+// Wave B: the folder, through the app's adapter. The test build's picker
+// returns PLAIN_SIGHT_E2E_PICK instead of showing the panel (the real panel is
+// tested with real keys in app.mjs).
+// ---------------------------------------------------------------------------
+const FOLDER = path.join(EVIDENCE, 'folders', 'Notes for the test');
+const folderFiles = () => (existsSync(FOLDER) ? readdirSync(FOLDER).sort() : []);
+const stamp = (d) => { const p = (n) => String(n).padStart(2, '0'); return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + '-' + p(d.getMinutes()) + '-' + p(d.getSeconds()); };
+
+test('in the app the intro speaks of an app, not a browser, and offers the system folder picker', async () => {
+  mkdirSync(FOLDER, { recursive: true });
+  await stopApp(app);
+  await launch({ PLAIN_SIGHT_E2E_PICK: FOLDER });
+  await page.press('Escape');
+  await page.openIntro();
+  const intro = await js(`document.getElementById('intro').textContent`);
+  assert.equal(/browser/i.test(intro), false, 'no browser in the intro');
+  assert.equal(/\btab\b/i.test(intro), false, 'no tab in the intro');
+  assert.match(intro, /Nothing you type leaves this app/);
+  assert.match(intro, /Save my text on this computer, encrypted/);
+  assert.equal(await page.shown('btn-folder'), true, 'the folder button shows');
+  assert.equal(await page.shown('folder-help'), false, 'no browser help');
+  assert.equal(await page.text('folder-status'), 'Save downloads an encrypted .sight file.');
+  await picture('b01-intro-app-wording.png');
+});
+
+test('choosing a folder: the toast and the status name the folder, never its path', async () => {
+  await page.click('btn-folder');
+  await page.waitToast('Save now writes into Notes for the test');
+  assert.equal(await page.text('folder-status'), 'Save writes a plain text file into the folder "Notes for the test".');
+  assert.equal(await page.shown('btn-folder-forget'), true);
+  assert.equal(await js(`document.body.innerText.includes(${JSON.stringify(EVIDENCE)})`), false, 'the path is nowhere on the page');
+  await picture('b02-folder-chosen.png');
+  await page.start();
+});
+
+test('Save writes the exact text into the folder as a .txt named by the moment, with no password', async () => {
+  await page.type('first words into the folder');
+  const downloads = newDownloads().length;
+  await page.click('btn-save');
+  const toast = await page.waitToast(' in Notes for the test');
+  const name = toast.replace(/^Saved /, '').replace(/ in Notes for the test$/, '');
+  assert.match(name, /^\d{4}-\d{2}-\d{2} \d{2}-\d{2}-\d{2}\.txt$/);
+  assert.equal(readFileSync(path.join(FOLDER, name), 'utf8'), 'first words into the folder');
+  assert.equal(await page.shown('pw'), false, 'no password asked');
+  assert.equal(newDownloads().length, downloads, 'nothing downloaded');
+});
+
+test('two saves in the same second keep both files: the second gets " (2)"', async () => {
+  let pair = null;
+  for (let attempt = 0; attempt < 5 && !pair; attempt++) {
+    const before = new Set(folderFiles());
+    await js(`(() => { const b = document.getElementById('btn-save'); b.click(); b.click(); return true; })()`);
+    await sleep(1200);
+    const fresh = folderFiles().filter((n) => !before.has(n));
+    const first = fresh.find((n) => !n.includes(' ('));
+    if (first && fresh.includes(first.replace(/\.txt$/, ' (2).txt'))) pair = [first, first.replace(/\.txt$/, ' (2).txt')];
+  }
+  assert.ok(pair, 'a same-second pair was written');
+  for (const n of pair) assert.equal(readFileSync(path.join(FOLDER, n), 'utf8'), 'first words into the folder');
+});
+
+test('a name already in the folder gets the next number and the file there is left untouched', async () => {
+  const taken = [];
+  for (let s = 0; s < 4; s++) {
+    const name = stamp(new Date(Date.now() + s * 1000)) + '.txt';
+    if (!existsSync(path.join(FOLDER, name))) { writeFileSync(path.join(FOLDER, name), 'placed by the test'); taken.push(name); }
+  }
+  await page.click('btn-save');
+  const name = (await page.waitToast(' in Notes for the test')).replace(/^Saved /, '').replace(/ in Notes for the test$/, '');
+  assert.match(name, / \(\d+\)\.txt$/, 'the saved name is numbered: ' + name);
+  assert.equal(readFileSync(path.join(FOLDER, name), 'utf8'), 'first words into the folder');
+  for (const n of taken) assert.equal(readFileSync(path.join(FOLDER, n), 'utf8'), 'placed by the test', n + ' untouched');
+});
+
+test('the folder is remembered across a relaunch, in the app\'s own data folder', async () => {
+  const file = path.join(HOME, 'Library/Application Support', ID, 'folder.txt');
+  assert.equal(readFileSync(file, 'utf8'), FOLDER, 'the path is kept by the app, in its data folder');
+  await stopApp(app);
+  await launch({ PLAIN_SIGHT_E2E_PICK: '/nonexistent/should-not-be-used' });
+  await page.openIntro();
+  assert.equal(await page.text('folder-status'), 'Save writes a plain text file into the folder "Notes for the test".');
+  await page.start();
+  await page.type('after the relaunch');
+  const count = folderFiles().length;
+  await page.click('btn-save');
+  await page.waitToast(' in Notes for the test');
+  assert.equal(folderFiles().length, count + 1);
+});
+
+test('the adapter cannot be replaced, gives no path, refuses any other file name, and the page can call nothing else', async () => {
+  const facts = await js(`(() => {
+    const n = window.PlainSightNative;
+    let replaced = false; try { window.PlainSightNative = {}; replaced = window.PlainSightNative !== n; } catch (e) {}
+    let deleted = false; try { deleted = delete window.PlainSightNative; } catch (e) {}
+    return { frozen: Object.isFrozen(n), replaced, deleted, still: window.PlainSightNative === n, keys: Object.keys(n).sort() };
+  })()`);
+  assert.deepEqual(facts, { frozen: true, replaced: false, deleted: false, still: true, keys: ['forgetFolder', 'onQuit', 'pickFolder', 'savedFolder', 'writeTextFile'] });
+  await js(`(() => { window.__r = {}; const I = window.__TAURI_INTERNALS__.invoke; const N = window.PlainSightNative;
+    const note = (k, p) => p.then((v) => { window.__r[k] = 'ok ' + JSON.stringify(v); }, (e) => { window.__r[k] = 'refused ' + String(e); });
+    note('saved', N.savedFolder());
+    note('traversal', N.writeTextFile('../../outside', 'x'));
+    note('nameWithSlash', N.writeTextFile('2026-10-21 00-00-00/x', 'x'));
+    note('extension', N.writeTextFile('2026-10-21 00-00-00.txt', 'x'));
+    note('dialog', I('plugin:dialog|open', {}));
+    note('window', I('plugin:window|close', {}));
+    note('event', I('plugin:event|listen', { event: 'x', handler: 0 }));
+    note('fs', I('plugin:fs|read_text_file', { path: '/etc/hosts' }));
+    note('unknown', I('quit_ready'));
+    return true; })()`);
+  await sleep(1500);
+  const r = await js('window.__r');
+  note('adapter probes: ' + JSON.stringify(r));
+  assert.equal(r.saved, 'ok {"name":"Notes for the test"}', 'only the name');
+  for (const k of ['traversal', 'nameWithSlash', 'extension']) assert.match(r[k], /^refused .*moment/, k);
+  for (const k of ['dialog', 'window', 'event', 'fs', 'unknown']) assert.match(r[k], /^refused /, k + ' is refused');
+  assert.equal(existsSync(path.join(FOLDER, '..', '..', 'outside.txt')), false);
+});
+
+test('a folder that has gone away: Save says it could not write, and the text stays', async () => {
+  const moved = FOLDER + ' (moved away)';
+  renameSync(FOLDER, moved);
+  try {
+    await page.click('btn-save');
+    await page.waitToast('Could not write to the folder');
+    assert.equal(await page.peekText(), 'after the relaunch');
+  } finally {
+    renameSync(moved, FOLDER);
+  }
+});
+
+test('"Stop using the folder" forgets it, in the app\'s data too, and Save asks for a password again', async () => {
+  await page.openIntro();
+  await page.click('btn-folder-forget');
+  await until(async () => (await page.text('folder-status')) === 'Save downloads an encrypted .sight file.', 'the status to change back');
+  assert.equal(existsSync(path.join(HOME, 'Library/Application Support', ID, 'folder.txt')), false, 'the remembered path is deleted');
+  await page.start();
+  await page.click('btn-save');
+  await until(() => page.shown('pw'), 'the password dialog');
+  await page.press('Escape');
+  await picture('b03-after-stop.png');
 });
 
 await run(tests, {
