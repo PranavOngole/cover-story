@@ -92,6 +92,20 @@ function dependencyNames() {
   return names;
 }
 
+// Every line inside a dependencies table of Cargo.toml, [dependencies] and
+// [x.dependencies.name] alike.
+function dependencyLines() {
+  const lines = [];
+  let inDeps = false;
+  for (const raw of cargo.split('\n')) {
+    const line = raw.trim();
+    const header = line.match(/^\[(.+)\]$/);
+    if (header) { inDeps = /(^|\.)(build-|dev-)?dependencies(\.|$)/.test(header[1].replace(/'[^']*'/g, '')); continue; }
+    if (inDeps && line && !line.startsWith('#')) lines.push(line);
+  }
+  return lines;
+}
+
 test('the shell links no network crate and no Tauri plugin beyond the folder picker (DR-04, DR-06)', () => {
   const deps = dependencyNames();
   assert.ok(deps.includes('tauri') && deps.includes('rfd'), 'the dependency list was read: ' + deps.join(', '));
@@ -99,6 +113,19 @@ test('the shell links no network crate and no Tauri plugin beyond the folder pic
     assert.ok(!/^(reqwest|hyper|ureq|isahc|curl|rustls|native-tls|openssl|tungstenite|websocket|h2|surf|attohttpc)([-_].*)?$/.test(d), 'no network crate: ' + d);
     assert.ok(!d.startsWith('tauri-plugin-'), 'no Tauri plugin: ' + d);
   }
+});
+
+test('every crate comes from crates.io under its own name: no renamed, git, path or patched dependency (QA-C-05)', () => {
+  // A renamed dependency (name = { package = "reqwest" }) would slip past the
+  // name check above; a git, path or patched source would bypass the pinned
+  // registry versions. The bundle check reads the resolved build graph too.
+  const source = /(^|[{,])\s*(package|git|path|registry|branch|rev|tag)\s*=/;
+  for (const line of dependencyLines()) assert.ok(!source.test(line), 'no renamed or non-registry dependency: ' + line);
+  assert.ok(!/^\[(patch|replace)([.\]])/m.test(cargo), 'no [patch] or [replace] section');
+  const lock = read(TAURI, 'Cargo.lock');
+  const sources = [...lock.matchAll(/^source = "([^"]+)"$/gm)].map((m) => m[1]);
+  assert.ok(sources.length > 100, 'the lock file was read: ' + sources.length + ' sources');
+  for (const src of new Set(sources)) assert.equal(src, 'registry+https://github.com/rust-lang/crates.io-index', 'every locked crate is from crates.io');
 });
 
 test('Tauri is pinned and built without extra features; the test hook is never on by default (DM-205)', () => {
@@ -116,6 +143,8 @@ test('no remote access to the app\'s commands, no asset protocol, the app and no
   assert.ok(!conf.app.security.assetProtocol || conf.app.security.assetProtocol.enable !== true, 'no asset protocol');
   assert.ok(conf.bundle.targets.includes('app') && conf.bundle.targets.every((t) => t === 'app' || t === 'dmg'), 'targets: ' + conf.bundle.targets);
   assert.equal(conf.bundle.macOS.minimumSystemVersion, '11.0', 'the first macOS of Apple Silicon, which is all the build runs on');
+  for (const key of ['resources', 'externalBin', 'fileAssociations']) assert.equal(conf.bundle[key], undefined, 'nothing else bundled: bundle.' + key);
+  assert.equal(conf.bundle.macOS.frameworks, undefined, 'no extra frameworks');
 });
 
 test('the e2e build copies the page first, so it never embeds an old page (DM-205)', () => {

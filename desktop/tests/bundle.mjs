@@ -10,6 +10,7 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { createHash } from 'node:crypto';
+import os from 'node:os';
 import path from 'node:path';
 import { brotliDecompressSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
@@ -77,6 +78,19 @@ test('the whole bundle is sealed with an ad-hoc signature and the hardened runti
   const info = spawnSync('codesign', ['-dv', APP], { encoding: 'utf8' }).stderr;
   assert.match(info, /Identifier=com\.pranavongole\.plainsight/);
   assert.match(info, /flags=0x[0-9a-f]+\(adhoc,runtime\)/);
+});
+
+test('the crates the app is built from hold no network crate and no Tauri plugin (cargo tree, QA-C-05)', () => {
+  // The resolved graph for the Mac build, build scripts included, so a crate
+  // renamed in Cargo.toml or pulled in by another one is seen by its own name.
+  const tree = execFileSync('cargo', ['tree', '--offline', '--target', 'aarch64-apple-darwin', '-e', 'normal,build', '--prefix', 'none',
+    '--manifest-path', path.join(DESKTOP, 'src-tauri/Cargo.toml')], { encoding: 'utf8', env: { ...process.env, PATH: path.join(os.homedir(), '.cargo/bin') + ':' + process.env.PATH } });
+  const crates = new Set(tree.split('\n').map((l) => l.trim().split(' ')[0]).filter(Boolean));
+  assert.ok(crates.has('tauri') && crates.has('rfd') && crates.size > 100, 'the build graph was read: ' + crates.size + ' crates');
+  for (const c of crates) {
+    assert.ok(!/^(reqwest|hyper|ureq|isahc|curl|rustls|native-tls|openssl|tungstenite|websocket|h2|surf|attohttpc)([-_].*)?$/.test(c), 'no network crate: ' + c);
+    assert.ok(!c.startsWith('tauri-plugin-'), 'no Tauri plugin: ' + c);
+  }
 });
 
 test('the binary carries no test hook (the e2e feature is not in it)', () => {
