@@ -29,16 +29,28 @@
   }));
 
   // Closing the window or quitting the app runs this first. The page's quit
-  // callback (Esc's wipe and the vault's last write) gets up to 2.5 seconds,
-  // then the app is told it may end. A failing callback must not keep the app
-  // open, and quit_ready is refused unless the app is really quitting.
+  // callback (Esc's wipe and the vault's last write) gets up to 1.8 seconds.
+  // WebKit's networking process keeps a localStorage write in a transaction
+  // that it commits half a second later (SQLiteStorageArea, transactionDuration
+  // 500 ms), so an app that ended at once could lose the vault's last write
+  // (QA-C-01). A storage estimate goes the same way as the write and is
+  // answered after it, so its answer (or 0.4 s) means the write has arrived;
+  // then the commit gets 0.7 s, and the app is told it may end. All of it stays
+  // inside the app's own 3 s safety timer (quit.rs). A failing callback must
+  // not keep the app open, and quit_ready is refused unless the app is really
+  // quitting.
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   fixed('__plainSightQuit', async () => {
     try {
       await Promise.race([
         new Promise((resolve) => resolve(quitCallback ? quitCallback() : undefined)),
-        new Promise((resolve) => setTimeout(resolve, 2500))
+        wait(1800)
       ]);
     } catch (err) { /* the app ends anyway */ }
+    try {
+      await Promise.race([navigator.storage.estimate(), wait(400)]);
+    } catch (err) { /* no storage estimate: the wait below still applies */ }
+    await wait(700);
     return invoke('quit_ready').catch(() => {});
   });
 

@@ -557,7 +557,11 @@ for (const [how, quit] of QUIT_PATHS) {
     const t0 = Date.now();
     await quit();
     await until(() => !alive(app.pid), 'the app to end after ' + how, 8000);
-    note(how + ': the app ended ' + (Date.now() - t0) + ' ms after the request');
+    const ms = Date.now() - t0;
+    note(how + ': the app ended ' + ms + ' ms after the request');
+    // Through the page's quit (never sooner than its 0.7 s commit wait), and
+    // ended by the page's answer, not the 3 s safety timer.
+    assert.ok(ms >= 600 && ms < 2500, how + ': ended after ' + ms + ' ms');
     await launch();
     await page.type(PHRASE);
     await page.press('e', { meta: true });

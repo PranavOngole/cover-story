@@ -47,17 +47,20 @@ async function open() {
   await until(() => documentWindows().length === 1, 'the document window', 15000);
   await sleep(1500);
 }
-// Each way out runs the page's Esc first and ends when the page says it is
-// done (quit_ready). The adapter stops waiting for the page after 2.5 s and the
-// app's own safety timer ends it after 3 s, so an end well inside 2 s shows
-// the page answered.
+// Each way out runs the page's Esc first and ends when the adapter says the
+// page is done (quit_ready), which is never sooner than 0.7 s: the adapter
+// waits that long for WebKit to commit the page's last write (adapter.js). The
+// app's own safety timer ends it after 3 s. So an end between 0.6 s and 2.5 s
+// shows the way out went through the page and the page answered; an end at
+// once would mean the page's Esc was skipped.
 async function ended(how) {
   const t0 = Date.now();
   await until(() => !alive(app.pid), 'the app to end after ' + how, 8000);
   const ms = Date.now() - t0;
   note(how + ': ended after ' + ms + ' ms');
   app = null;
-  assert.ok(ms < 2000, how + ' ended after ' + ms + ' ms, too late for the page\'s answer');
+  assert.ok(ms >= 600, how + ' ended after ' + ms + ' ms, sooner than the page\'s quit allows');
+  assert.ok(ms < 2500, how + ' ended after ' + ms + ' ms, too late for the page\'s answer');
 }
 
 const tests = [];
