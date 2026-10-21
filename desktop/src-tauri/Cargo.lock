@@ -2213,6 +2213,12 @@ checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 name = "plain-sight"
 version = "1.0.0"
 dependencies = [
+ "block2",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "objc2-web-kit",
+ "serde_json",
  "tauri",
  "tauri-build",
 ]

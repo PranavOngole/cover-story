@@ -6,7 +6,9 @@
 // deployment follows the same rule in .vercelignore.
 //
 // Anything unexpected in covers/ stops the copy with an error instead of being
-// bundled or quietly skipped, so a stray file is noticed by a person.
+// bundled or quietly skipped, so a stray file is noticed by a person. The one
+// exception is .DS_Store, which Finder writes into any folder it shows: it is
+// left out and the log says so.
 
 import { createHash } from 'node:crypto';
 import { copyFileSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs';
@@ -40,6 +42,7 @@ try { covers = readdirSync(path.join(repo, 'covers')).sort(); } catch { fail('th
 const files = ['index.html'];
 for (const name of covers) {
   const rel = 'covers/' + name;
+  if (name === '.DS_Store') { console.log(rel + '  skipped (Finder metadata, never bundled)'); continue; }
   if (!name.endsWith('.js') || !isRegularFile(path.join(repo, rel))) fail(rel + ' is not a regular .js file');
   files.push(rel);
 }

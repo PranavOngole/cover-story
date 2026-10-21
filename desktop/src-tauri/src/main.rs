@@ -18,6 +18,10 @@ use tauri::webview::{DownloadEvent, NewWindowResponse};
 use tauri::window::Color;
 use tauri::{Manager, Runtime, Url, Webview, WebviewUrl, WebviewWindowBuilder};
 
+// Test builds only; see the module.
+#[cfg(feature = "e2e")]
+mod e2e;
+
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
@@ -46,6 +50,8 @@ fn main() {
                 .on_new_window(|_, _| NewWindowResponse::Deny)
                 .on_download(move |webview, event| save_download(&webview, event, &handed_out))
                 .build()?;
+            #[cfg(feature = "e2e")]
+            e2e::watch(app.handle().clone());
             Ok(())
         })
         .run(tauri::generate_context!())

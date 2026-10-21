@@ -5,7 +5,10 @@
   "scripts": {
     "copy": "node copy-frontend.mjs",
     "app:dev": "tauri dev --no-dev-server",
-    "app:build": "tauri build"
+    "app:build": "tauri build",
+    "test:app": "node tests/app.mjs",
+    "build:e2e": "cargo build --release --features e2e --target-dir src-tauri/target/e2e --manifest-path src-tauri/Cargo.toml",
+    "test:e2e": "node tests/e2e.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.12.3"
