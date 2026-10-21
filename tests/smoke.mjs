@@ -34,21 +34,24 @@ async function importCover(id) {
 }
 
 // With slowEncrypt set, every AES-GCM encryption in the page takes that many
-// milliseconds, so a test can press Esc while a vault write is in flight.
+// milliseconds (or, given a function, the milliseconds it returns for the nth
+// encryption), so a test can press Esc while a vault write is in flight.
 function cryptoFor(slowEncrypt) {
   if (!slowEncrypt) return webcrypto;
+  let calls = 0;
+  const delayFor = () => (typeof slowEncrypt === 'function' ? slowEncrypt(calls++) : slowEncrypt);
   return {
     getRandomValues: (a) => webcrypto.getRandomValues(a),
     subtle: {
       importKey: (...a) => webcrypto.subtle.importKey(...a),
       deriveKey: (...a) => webcrypto.subtle.deriveKey(...a),
       decrypt: (...a) => webcrypto.subtle.decrypt(...a),
-      encrypt: async (...a) => { await sleep(slowEncrypt); return webcrypto.subtle.encrypt(...a); }
+      encrypt: async (...a) => { await sleep(delayFor()); return webcrypto.subtle.encrypt(...a); }
     }
   };
 }
 
-async function loadPage({ random = () => 1, storage = {}, inject = true, folder = null, slowEncrypt = 0 } = {}) {
+async function loadPage({ random = () => 1, storage = {}, inject = true, folder = null, slowEncrypt = 0, userAgent = undefined, brave = false } = {}) {
   const errors = [];
   const downloads = [];
   const copied = [];
@@ -62,6 +65,8 @@ async function loadPage({ random = () => 1, storage = {}, inject = true, folder 
     pretendToBeVisual: true,
     virtualConsole,
     beforeParse(window) {
+      if (userAgent) Object.defineProperty(window.navigator, 'userAgent', { value: userAgent, configurable: true });
+      if (brave) Object.defineProperty(window.navigator, 'brave', { value: { isBrave: async () => true }, configurable: true });
       // Deterministic typos: Math.random() === 1 means "never a typo".
       window.Math.random = random;
       // jsdom has no crypto.subtle, URL.createObjectURL or navigator.clipboard.
@@ -596,7 +601,7 @@ test('Save writes a .sight with a 16-byte salt, 12-byte IV and data; Open restor
     assert.equal(await p.readReal(), 'hello world', 'every refusal left the buffer alone');
     // Nothing on the console object touches the buffer.
     assert.deepEqual(Object.keys(p.w.PlainSight).sort(), ['coverFailed', 'coverId', 'coverIds', 'coverText', 'ready', 'selectedCoverId', 'setCover', 'version']);
-    assert.equal(p.w.PlainSight.version, '1.2.2');
+    assert.equal(p.w.PlainSight.version, '1.3.0');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
@@ -1001,7 +1006,7 @@ test('localStorage never holds the hidden text: only the three known keys, and n
     p.start();
     const secret = 'zq7 secret phrase 991';
     p.type(secret);
-    const allowed = ['plainSight.introSeen', 'plainSight.cover', 'plainSight.customText', 'plainSight.folderVersion'];
+    const allowed = ['plainSight.introSeen', 'plainSight.cover', 'plainSight.customText', 'plainSight.folderVersion', 'plainSight.saveMode'];
     const check = (label) => {
       const ls = p.w.localStorage;
       for (let i = 0; i < ls.length; i++) {
@@ -1435,7 +1440,8 @@ test('save folder: without the folder API the picker is hidden and Save download
   try {
     assert.equal(typeof p.w.showDirectoryPicker, 'undefined');
     assert.equal(p.$('#btn-folder').hidden, true);
-    assert.match(p.$('#folder-status').textContent, /does not offer folder access/);
+    assert.match(p.$('#folder-status').textContent, /downloads an encrypted/);
+    assert.equal(p.$('#folder-help').hidden, false, 'the browser-specific help shows instead');
     p.start();
     p.type('abc');
     p.$('#btn-save').click();
@@ -1679,6 +1685,88 @@ test('save folder: a folder change in another tab reaches this tab, which stops 
     assert.equal(folder.written.length, 0, 'nothing written to the old folder');
     assert.equal(p.$('#pw').hidden, false, 'Save downloads instead');
     p.press('Escape');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('plain .txt download mode: Save downloads a text file named by the moment with no password; the choice persists; it applies in every browser', async () => {
+  const p = await loadPage();
+  try {
+    assert.equal(p.$('input[name="save-mode"][value="sight"]').checked, true, 'encrypted download by default');
+    p.$('input[name="save-mode"][value="txt"]').checked = true;
+    p.$('input[name="save-mode"][value="txt"]').dispatchEvent(new p.w.Event('change', { bubbles: true }));
+    assert.equal(p.w.localStorage.getItem('plainSight.saveMode'), 'txt');
+    assert.match(p.$('#folder-status').textContent, /plain \.txt file/);
+    p.start();
+    p.type('plain download words');
+    p.$('#btn-save').click();
+    await p.settle();
+    assert.equal(p.$('#pw').hidden, true, 'no password dialog');
+    assert.equal(p.downloads.length, 1);
+    assert.match(p.downloads[0].name, /^\d{4}-\d{2}-\d{2} \d{2}-\d{2}-\d{2}\.txt$/);
+    assert.equal(await p.downloads[0].blob.text(), 'plain download words');
+    assert.equal(p.downloads[0].blob.type, 'text/plain');
+    assert.equal(p.toast(), 'Saved ' + p.downloads[0].name);
+    assert.equal(await p.readReal(), 'plain download words');
+    // The choice survives a new visit.
+    const q = await loadPage({ storage: p.storageDump() });
+    try {
+      assert.equal(q.$('input[name="save-mode"][value="txt"]').checked, true, 'rendered from storage at load');
+      q.type('again');
+      q.$('#btn-save').click();
+      await q.settle();
+      assert.equal(q.downloads.length, 1);
+      assert.equal(await q.downloads[0].blob.text(), 'again');
+      // Back to encrypted.
+      q.$('#btn-help').click();
+      q.$('input[name="save-mode"][value="sight"]').checked = true;
+      q.$('input[name="save-mode"][value="sight"]').dispatchEvent(new q.w.Event('change', { bubbles: true }));
+      assert.equal(q.w.localStorage.getItem('plainSight.saveMode'), null);
+      q.start();
+      q.$('#btn-save').click();
+      assert.equal(q.$('#pw').hidden, false, 'password dialog is back');
+      q.press('Escape');
+      assert.deepEqual(q.errors, []);
+    } finally { q.close(); }
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('folder help text fits the browser: Brave gets its setting, Safari and Firefox their download tip, folder-capable browsers no help', async () => {
+  const cases = [
+    { opts: { brave: true }, expect: /brave:\/\/flags\/#file-system-access-api/ },
+    { opts: { userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15' }, expect: /Ask for each download/ },
+    { opts: { userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14.0; rv:120.0) Gecko/20100101 Firefox/120.0' }, expect: /Always ask you where to save files/ },
+    { opts: { userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' }, expect: /cannot write into a folder, so Save downloads a file\.$/ }
+  ];
+  for (const c of cases) {
+    const p = await loadPage(c.opts);
+    try {
+      assert.equal(p.$('#folder-help').hidden, false, JSON.stringify(c.opts));
+      assert.match(p.$('#folder-help').textContent, c.expect, JSON.stringify(c.opts));
+      assert.equal(p.$('#btn-folder').hidden, true);
+      assert.deepEqual(p.errors, []);
+    } finally { p.close(); }
+  }
+  const f = await loadPage({ folder: fakeFolder('Notes') });
+  try {
+    assert.equal(f.$('#folder-help').hidden, true, 'no help where folders work');
+    assert.equal(f.$('#btn-folder').hidden, false);
+  } finally { f.close(); }
+});
+
+test('vault writes land in the order asked for: a slow older write never overwrites a faster Esc save', async () => {
+  const phrase = 'correct horse battery staple';
+  // First encryption (the vault's first write) takes 700 ms; every later one 30 ms.
+  const p = await loadPage({ slowEncrypt: (n) => (n === 0 ? 700 : 30) });
+  try {
+    p.start();
+    p.type('A');
+    await p.vaultOn(phrase);            // key derived, first write ('A') now encrypting slowly
+    p.type('B');
+    p.press('Escape');                  // the Esc save ('AB') encrypts fast
+    await sleep(1300);                  // both have finished
+    assert.equal(await decryptVault(JSON.parse(p.storageDump()['plainSight.vault']), phrase), 'AB', 'the newer save is what stays');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
