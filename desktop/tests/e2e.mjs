@@ -529,8 +529,17 @@ test('a right click gives no menu on the page, and the usual one in the text fie
 
 // Each quit path, straight after typing with the vault open: the last
 // keystrokes must be in the copy on disk when the app is gone, and the phrase
-// must reopen it after a relaunch.
-for (const [how, request] of [['closing the window', { close: true }], ['the Quit menu item', { quit: 'menu' }], ['the Dock\'s Quit (terminate)', { quit: 'terminate' }]]) {
+// must reopen it after a relaunch. The window is closed as its red button does
+// (performClose:, through the probe, since macOS shows Accessibility no windows
+// while the screen is locked); the Quit item is pressed in the real menu bar
+// through Accessibility; the Dock's quit is the same quit request the Dock
+// sends.
+const QUIT_PATHS = [
+  ['closing the window', () => ask({ close: true })],
+  ['the Quit item in the menu bar', () => drive('menu', app.pid, 'Plain Sight', 'Quit Plain Sight')],
+  ['a quit request as the Dock sends it', () => drive('quit-app', app.pid)]
+];
+for (const [how, quit] of QUIT_PATHS) {
   test(`${how} works like Esc: the vault keeps the last keystrokes, the app ends, and the phrase reopens them`, async () => {
     const words = 'typed just before ' + how;
     await page.press('Escape');
@@ -546,7 +555,7 @@ for (const [how, request] of [['closing the window', { close: true }], ['the Qui
     const before = await page.peekText();
     await page.type(words);               // no pause: the autosave has not run
     const t0 = Date.now();
-    await ask(request);
+    await quit();
     await until(() => !alive(app.pid), 'the app to end after ' + how, 8000);
     note(how + ': the app ended ' + (Date.now() - t0) + ' ms after the request');
     await launch();

@@ -9,21 +9,21 @@
 //! `{"id": 2, "snapshot": "name.png"}`; the app answers in `response-<id>.json`
 //! with `{"ok": true, "value": ...}` or `{"ok": false, "error": "..."}`.
 //!
-//! The quit paths (quit.rs) and the title: `{"id": n, "close": true}` closes the
-//! window as its red button does, `{"id": n, "quit": "menu"}` does what the Quit
-//! item does, `{"id": n, "quit": "terminate"}` sends terminate: as the Dock's
-//! Quit does, `{"id": n, "windowTitle": true}` answers the window's title,
+//! The window: `{"id": n, "close": true}` closes it as its red button does
+//! (macOS shows Accessibility no windows while the screen is locked, so the
+//! runner cannot press the button itself; it answers before it acts, since the
+//! app may be gone after), `{"id": n, "windowTitle": true}` answers its title,
 //! `{"id": n, "writingTools": true}` the web view's Writing Tools setting, and
 //! `{"id": n, "window": "minimize"}` (or "unminimize", "hide", "show")
-//! minimizes the window or hides the app as the yellow button and Cmd+H do.
-//! The first three answer before they act, since the app may be gone after.
+//! minimizes it or hides the app as the yellow button and Cmd+H do. The Quit
+//! item and the Dock's quit need no probe: the runner presses the real item
+//! through Accessibility and sends the Dock's quit request itself.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use objc2::runtime::AnyObject;
-use objc2::MainThreadMarker;
-use objc2_app_kit::{NSApplication, NSBitmapImageFileType, NSBitmapImageRep, NSImage, NSWindow};
+use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSImage, NSWindow};
 use objc2_foundation::{NSDictionary, NSError, NSString};
 use objc2_web_kit::WKWebView;
 use serde_json::{json, Value};
@@ -116,22 +116,6 @@ pub fn watch(app: AppHandle) {
                     ns_window.performClose(None);
                 }
             });
-        } else if let Some(how) = req["quit"].as_str() {
-            match how {
-                "menu" => {
-                    respond(&answer, json!({ "ok": true }));
-                    crate::quit::begin(&app);
-                }
-                "terminate" => {
-                    respond(&answer, json!({ "ok": true }));
-                    on_main_run_loop(|| {
-                        if let Some(mtm) = MainThreadMarker::new() {
-                            NSApplication::sharedApplication(mtm).terminate(None);
-                        }
-                    });
-                }
-                _ => respond(&answer, json!({ "ok": false, "error": "unknown quit" })),
-            }
         }
     });
 }
