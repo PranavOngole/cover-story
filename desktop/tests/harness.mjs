@@ -223,13 +223,20 @@ export async function decryptRecord(record, password) {
 // folders, the Downloads folder and the front window.
 const LOCK = path.join(HOME, 'cover-story-delivery', 'desktop', '.gui-test.lock');
 function takeLock(name) {
-  if (existsSync(LOCK)) {
-    const holder = Number(readFileSync(LOCK, 'utf8').split(' ')[0]);
-    if (holder && alive(holder)) return false;
-  }
   mkdirSync(path.dirname(LOCK), { recursive: true });
-  writeFileSync(LOCK, process.pid + ' ' + name + ' ' + new Date().toISOString());
-  return true;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      // Created only if it does not exist yet, so two runs cannot both take it.
+      writeFileSync(LOCK, process.pid + ' ' + name + ' ' + new Date().toISOString(), { flag: 'wx' });
+      return true;
+    } catch (err) {
+      if (err.code !== 'EEXIST') throw err;
+      const holder = Number(readFileSync(LOCK, 'utf8').split(' ')[0]);
+      if (holder && alive(holder)) return false;
+      rmSync(LOCK, { force: true });   // left by a run that no longer exists
+    }
+  }
+  return false;
 }
 function dropLock() {
   if (existsSync(LOCK) && Number(readFileSync(LOCK, 'utf8').split(' ')[0]) === process.pid) rmSync(LOCK);
@@ -242,6 +249,21 @@ export async function run(tests, { name, needUnlocked = false, before = () => {}
   if (reason) { console.log(`${name}: not started: ${reason}. Errors: 0`); process.exit(4); }
   if (!takeLock(name)) { console.log(`${name}: not started: another GUI test run holds ${LOCK}. Errors: 0`); process.exit(5); }
   requireUnlocked = needUnlocked;
+  // Ctrl+C or a kill still puts everything back: the app stops, its data and
+  // the Downloads folder are restored, the lock is released.
+  let cleaned = false;
+  const cleanup = async () => {
+    if (cleaned) return;
+    cleaned = true;
+    stopGuard();
+    try { await after(); } catch (err) { note('after: ' + err.message); }
+    try { collectDownloads(); } catch (err) { note('downloads: ' + err.message); }
+    try { restoreAppData(); } catch (err) { console.log('Could not restore app data: ' + err.message); }
+    dropLock();
+  };
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+    process.on(signal, () => { note('stopped by ' + signal); cleanup().finally(() => process.exit(130)); });
+  }
   markDownloads();
   runStartedAt = Date.now();
   backupAppData();
@@ -264,11 +286,7 @@ export async function run(tests, { name, needUnlocked = false, before = () => {}
       }
     }
   } finally {
-    stopGuard();
-    await after();
-    collectDownloads();
-    restoreAppData();
-    dropLock();
+    await cleanup();
   }
   console.log(`\nEvidence: ${EVIDENCE}`);
   console.log(`${passed} passed, ${failed} failed, ${notRun} not run, ${passed + failed + notRun} total. Errors: ${failed}`);

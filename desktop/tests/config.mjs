@@ -72,12 +72,55 @@ test('the capability grants only the app\'s own commands to the main window, on 
   assert.deepEqual(granted.map((p) => p.slice('allow-'.length).replace(/-/g, '_')).sort(), declaredCommands(), 'every declared command is granted and nothing else');
 });
 
-test('the shell links no network crate and no Tauri plugin beyond the folder picker (DR-04, DR-06)', () => {
-  const deps = cargo.split('\n').filter((l) => /^[a-z0-9_-]+\s*=/.test(l.trim())).map((l) => l.trim().split(/\s*=/)[0]);
-  for (const d of deps) {
-    assert.ok(!/^(reqwest|hyper|ureq|isahc|curl|rustls|native-tls|openssl|tungstenite|websocket)/.test(d), 'no network crate: ' + d);
-    assert.ok(!d.startsWith('tauri-plugin-') || d === 'tauri-plugin-dialog', 'no Tauri plugin except the folder picker: ' + d);
+// Every dependency name in Cargo.toml, in any of the ways TOML can write one:
+// a "name = ..." line under a dependencies table, or a [*.dependencies.name] table.
+function dependencyNames() {
+  const names = [];
+  let inDeps = false;
+  for (const raw of cargo.split('\n')) {
+    const line = raw.trim();
+    const header = line.match(/^\[(.+)\]$/);
+    if (header) {
+      const table = header[1].replace(/'[^']*'/g, '');
+      const named = table.match(/dependencies\.([A-Za-z0-9_-]+)$/);
+      if (named) { names.push(named[1]); inDeps = false; } else inDeps = /(^|\.)(build-|dev-)?dependencies$/.test(table);
+      continue;
+    }
+    const entry = line.match(/^([A-Za-z0-9_-]+)\s*=/);
+    if (inDeps && entry) names.push(entry[1]);
   }
+  return names;
+}
+
+test('the shell links no network crate and no Tauri plugin beyond the folder picker (DR-04, DR-06)', () => {
+  const deps = dependencyNames();
+  assert.ok(deps.includes('tauri') && deps.includes('rfd'), 'the dependency list was read: ' + deps.join(', '));
+  for (const d of deps) {
+    assert.ok(!/^(reqwest|hyper|ureq|isahc|curl|rustls|native-tls|openssl|tungstenite|websocket|h2|surf|attohttpc)([-_].*)?$/.test(d), 'no network crate: ' + d);
+    assert.ok(!d.startsWith('tauri-plugin-'), 'no Tauri plugin: ' + d);
+  }
+});
+
+test('Tauri is pinned and built without extra features; the test hook is never on by default (DM-205)', () => {
+  const tauri = cargo.match(/^tauri = \{ version = "([^"]+)", features = \[([^\]]*)\] \}$/m);
+  assert.ok(tauri, 'the tauri dependency line has its expected shape');
+  assert.match(tauri[1], /^=\d+\.\d+\.\d+$/, 'tauri is pinned to one version');
+  assert.equal(tauri[2].trim(), '', 'no tauri features (no devtools, no asset protocol)');
+  for (const crate of ['tauri-build', 'rfd']) assert.match(cargo, new RegExp('^' + crate + ' = \\{ version = "=\\d', 'm'), crate + ' is pinned');
+  const features = tomlSection(cargo, 'features') || '';
+  assert.ok(!/^default\s*=/m.test(features), 'no default features: the e2e hook is built only when asked for');
+});
+
+test('no remote access to the app\'s commands, no asset protocol, the app and nothing stranger as targets (DM-205)', () => {
+  assert.equal(conf.app.security.dangerousRemoteDomainIpcAccess, undefined);
+  assert.ok(!conf.app.security.assetProtocol || conf.app.security.assetProtocol.enable !== true, 'no asset protocol');
+  assert.ok(conf.bundle.targets.includes('app') && conf.bundle.targets.every((t) => t === 'app' || t === 'dmg'), 'targets: ' + conf.bundle.targets);
+  assert.equal(conf.bundle.macOS.minimumSystemVersion, '11.0', 'the first macOS of Apple Silicon, which is all the build runs on');
+});
+
+test('the e2e build copies the page first, so it never embeds an old page (DM-205)', () => {
+  const pkg = JSON.parse(read(DESKTOP, 'package.json'));
+  assert.match(pkg.scripts['build:e2e'], /^npm run copy && cargo build --release --features e2e /);
 });
 
 test('the bundle is sealed with an ad-hoc signature until a Developer ID exists (DR-07, DM-201)', () => {
