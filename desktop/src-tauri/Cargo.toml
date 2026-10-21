@@ -28,3 +28,11 @@ objc2-web-kit = { version = "0.3", optional = true, default-features = false, fe
 # pictures of it. Never part of the release app: `npm run app:build` builds
 # without it, and `npm run build:e2e` builds it into its own target folder.
 e2e = ["dep:objc2", "dep:block2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:objc2-web-kit", "dep:serde_json"]
+
+# Smallest binary rather than fastest build (DR-06).
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true
