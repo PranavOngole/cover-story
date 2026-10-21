@@ -34,10 +34,9 @@ let stopped = false;
 // and so do processes that ended before the watch did.
 const nettopLines = [];
 // Under a pseudo-terminal (script), so nettop writes each line at once
-// instead of holding them in a buffer that a stop would lose; every interface
-// type, loopback included.
-const types = ['wifi', 'wired', 'loopback', 'expensive', 'undefined'].flatMap((t) => ['-t', t]);
-const nettop = spawn('script', ['-q', '/dev/null', 'nettop', '-P', '-L', '0', '-s', '1', '-x', ...types, '-J', 'bytes_in,bytes_out'], { stdio: ['ignore', 'pipe', 'ignore'] });
+// instead of holding them in a buffer that a stop would lose. No -t: without
+// it nettop monitors all interfaces, loopback and AWDL included.
+const nettop = spawn('script', ['-q', '/dev/null', 'nettop', '-P', '-L', '0', '-s', '1', '-x', '-J', 'bytes_in,bytes_out'], { stdio: ['ignore', 'pipe', 'ignore'] });
 let partial = '';
 nettop.stdout.on('data', (chunk) => {
   const lines = (partial + chunk).split('\n');

@@ -59,6 +59,10 @@ export function drive(...args) {
 // Someone at the keyboard stops the run.
 // ---------------------------------------------------------------------------
 export class UserActivity extends Error {}
+// A test that cannot run in the Mac's present state (one that needs the app's
+// window to be the key window while the screen is locked, say) throws NotRun:
+// it is counted as not run, with its reason, and the tests after it still run.
+export class NotRun extends Error {}
 let runStart = 0;
 let idleAtStart = 0;
 let requireUnlocked = false;
@@ -280,6 +284,7 @@ export async function run(tests, { name, needUnlocked = false, before = () => {}
         console.log('ok   - ' + t.name);
       } catch (err) {
         if (err instanceof UserActivity) { stopped = err.message; notRun += 1; console.log('stop - ' + t.name + ' (' + err.message + ')'); continue; }
+        if (err instanceof NotRun) { notRun += 1; console.log('skip - ' + t.name + ' (not run: ' + err.message + ')'); continue; }
         failed += 1;
         console.log('FAIL - ' + t.name);
         console.log('       ' + String(err && err.stack ? err.stack : err).split('\n').slice(0, 6).join('\n       '));
@@ -290,5 +295,7 @@ export async function run(tests, { name, needUnlocked = false, before = () => {}
   }
   console.log(`\nEvidence: ${EVIDENCE}`);
   console.log(`${passed} passed, ${failed} failed, ${notRun} not run, ${passed + failed + notRun} total. Errors: ${failed}`);
-  process.exit(stopped ? 3 : failed ? 1 : 0);
+  const code = stopped ? 3 : failed ? 1 : 0;
+  console.log('Exit code: ' + code);
+  process.exit(code);
 }

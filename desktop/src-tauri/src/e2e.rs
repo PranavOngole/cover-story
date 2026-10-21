@@ -12,7 +12,10 @@
 //! The quit paths (quit.rs) and the title: `{"id": n, "close": true}` closes the
 //! window as its red button does, `{"id": n, "quit": "menu"}` does what the Quit
 //! item does, `{"id": n, "quit": "terminate"}` sends terminate: as the Dock's
-//! Quit does, and `{"id": n, "windowTitle": true}` answers the window's title.
+//! Quit does, `{"id": n, "windowTitle": true}` answers the window's title,
+//! `{"id": n, "writingTools": true}` the web view's Writing Tools setting, and
+//! `{"id": n, "window": "minimize"}` (or "unminimize", "hide", "show")
+//! minimizes the window or hides the app as the yellow button and Cmd+H do.
 //! The first three answer before they act, since the app may be gone after.
 
 use std::path::{Path, PathBuf};
@@ -64,6 +67,43 @@ pub fn watch(app: AppHandle) {
                 .with_webview(move |webview| unsafe { snapshot(webview.inner(), target, answer) });
         } else if req["windowTitle"].as_bool() == Some(true) {
             respond(&answer, json!({ "ok": true, "value": window.title().ok() }));
+        } else if req["writingTools"].as_bool() == Some(true) {
+            // The web view's writingToolsBehavior as WebKit holds it (-1 is
+            // none); null where the property does not exist (before macOS 15).
+            let _ = window.with_webview(move |webview| unsafe {
+                use objc2::{msg_send, sel};
+                let webview: &WKWebView = &*webview.inner().cast();
+                let configuration = webview.configuration();
+                let exists: bool =
+                    msg_send![&configuration, respondsToSelector: sel!(writingToolsBehavior)];
+                let value: Option<isize> = if exists {
+                    Some(msg_send![&configuration, writingToolsBehavior])
+                } else {
+                    None
+                };
+                respond(&answer, json!({ "ok": true, "value": value }));
+            });
+        } else if let Some(action) = req["window"].as_str() {
+            let done = match action {
+                "minimize" => window.minimize(),
+                "unminimize" => window.unminimize(),
+                "hide" => app.hide(),
+                "show" => app.show(),
+                _ => {
+                    respond(
+                        &answer,
+                        json!({ "ok": false, "error": "unknown window action" }),
+                    );
+                    continue;
+                }
+            };
+            respond(
+                &answer,
+                match done {
+                    Ok(()) => json!({ "ok": true }),
+                    Err(error) => json!({ "ok": false, "error": error.to_string() }),
+                },
+            );
         } else if req["close"].as_bool() == Some(true) {
             respond(&answer, json!({ "ok": true }));
             // The red button's own path: performClose: asks windowShouldClose:,

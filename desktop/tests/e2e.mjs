@@ -13,7 +13,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import {
-  DESKTOP, DOWNLOADS, EVIDENCE, HOME, ID, alive, decryptRecord, drive, isCoverPrefix, newDownloads, note, novelText,
+  DESKTOP, DOWNLOADS, EVIDENCE, HOME, ID, NotRun, alive, decryptRecord, drive, isCoverPrefix, newDownloads, note, novelText,
   run, sleep, spawnApp, stopApp, until
 } from './harness.mjs';
 
@@ -310,6 +310,19 @@ const FOLDER = path.join(EVIDENCE, 'folders', 'Notes for the test');
 const folderFiles = () => (existsSync(FOLDER) ? readdirSync(FOLDER).sort() : []);
 const stamp = (d) => { const p = (n) => String(n).padStart(2, '0'); return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + '-' + p(d.getMinutes()) + '-' + p(d.getSeconds()); };
 
+test('the folder button opens the real system folder panel, as a window at the normal level (D-27)', async () => {
+  // No picker override in this launch: this is rfd's panel itself. With the
+  // screen locked it cannot be used, so the test only checks that it opens and
+  // where it sits; the next test ends this launch.
+  await page.press('Escape');
+  await page.openIntro();
+  await page.click('btn-folder');
+  const windows = await until(() => { const w = drive('cgwindows', app.pid).windows.filter((x) => x.onscreen); return w.length >= 2 ? w : null; }, 'the folder panel', 8000);
+  note('windows with the folder panel open: ' + JSON.stringify(windows));
+  writeFileSync(path.join(EVIDENCE, 'picker-windows.json'), JSON.stringify(windows, null, 2));
+  assert.ok(windows.every((w) => w.layer === 0), 'the panel does not float above other apps: layers ' + windows.map((w) => w.layer).join(', '));
+});
+
 test('in the app the intro speaks of an app, not a browser, and offers the system folder picker', async () => {
   mkdirSync(FOLDER, { recursive: true });
   await stopApp(app);
@@ -408,11 +421,8 @@ test('the adapter cannot be replaced, gives no path, refuses any other file name
     note('downloadTraversal', N.saveDownload('../../outside.txt', 'x'));
     note('downloadSlash', N.saveDownload('untitled-draft-20261021-0000.sight/../../x', 'x'));
     note('downloadOtherName', N.saveDownload('notes.sh', 'x'));
-    note('dialog', I('plugin:dialog|open', {}));
-    note('window', I('plugin:window|close', {}));
-    note('event', I('plugin:event|listen', { event: 'x', handler: 0 }));
-    note('fs', I('plugin:fs|read_text_file', { path: '/etc/hosts' }));
-    note('unknown', I('quit_ready'));
+    const others = ['plugin:dialog|open', 'plugin:window|close', 'plugin:event|listen', 'plugin:fs|read_text_file', 'plugin:app|version', 'plugin:webview|print', 'plugin:menu|new', 'plugin:path|resolve_directory', 'plugin:image|new', 'plugin:resources|close', 'plugin:tray|new', 'plugin:shell|open', 'plugin:http|fetch', 'plugin:opener|open_url', 'plugin:updater|check', 'plugin:clipboard-manager|read_text', 'plugin:notification|notify', 'quit_ready'];
+    others.forEach((cmd, i) => note('other' + i + ' ' + cmd, I(cmd, { path: '/etc/hosts', event: 'x', handler: 0, url: 'https://example.com' })));
     return true; })()`);
   await sleep(1500);
   const r = await js('window.__r');
@@ -420,7 +430,9 @@ test('the adapter cannot be replaced, gives no path, refuses any other file name
   assert.equal(r.saved, 'ok {"name":"Notes for the test"}', 'only the name');
   for (const k of ['traversal', 'nameWithSlash', 'extension']) assert.match(r[k], /^refused .*moment/, k);
   for (const k of ['downloadTraversal', 'downloadSlash', 'downloadOtherName']) assert.match(r[k], /^refused .*not one Save makes/, k);
-  for (const k of ['dialog', 'window', 'event', 'fs', 'unknown']) assert.match(r[k], /^refused /, k + ' is refused');
+  const others = Object.keys(r).filter((k) => k.startsWith('other'));
+  assert.equal(others.length, 18, 'eighteen other commands were tried');
+  for (const k of others) assert.match(r[k], /^refused /, k + ' is refused');
   assert.equal(existsSync(path.join(FOLDER, '..', '..', 'outside.txt')), false);
 });
 
@@ -471,6 +483,26 @@ test('the window title follows the cover on screen', async () => {
   await page.choose('mode', 'book');
   await page.start();
   await until(async () => (await windowTitle()) === 'Untitled draft', 'back to the novel title', 5000);
+});
+
+test('the web view holds Writing Tools off (none, -1) where macOS has them', async () => {
+  const value = await ask({ writingTools: true });
+  note('writingToolsBehavior: ' + JSON.stringify(value));
+  assert.equal(value, -1);
+});
+
+test('a minimized window and a hidden app give the page a hidden document, which is what starts its ten-minute wipe', async () => {
+  // While the screen is locked macOS already counts the window as not visible,
+  // so the change can only be seen on an unlocked screen.
+  const before = await js(`document.visibilityState`);
+  note('visibility before: ' + before);
+  if (before !== 'visible') throw new NotRun('the page is already hidden, as while the screen is locked');
+  for (const [away, back] of [['minimize', 'unminimize'], ['hide', 'show']]) {
+    await ask({ window: away });
+    await until(async () => (await js(`document.visibilityState`)) === 'hidden', 'a hidden page after ' + away, 5000);
+    await ask({ window: back });
+    await until(async () => (await js(`document.visibilityState`)) === 'visible', 'a visible page after ' + back, 5000);
+  }
 });
 
 test('the menu bar is the app\'s own and holds only standard items', async () => {
