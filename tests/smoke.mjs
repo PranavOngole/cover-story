@@ -4,6 +4,7 @@
 //
 // Run with: npm test   (exit code 0 only when every test passes)
 
+import zlib from 'node:zlib';
 import { JSDOM, VirtualConsole } from 'jsdom';
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -638,7 +639,7 @@ test('Save writes a .sight with a 16-byte salt, 12-byte IV and data; Open restor
     assert.equal(await p.readReal(), 'hello world', 'every refusal left the buffer alone');
     // Nothing on the console object touches the buffer.
     assert.deepEqual(Object.keys(p.w.PlainSight).sort(), ['coverFailed', 'coverId', 'coverIds', 'coverText', 'ready', 'selectedCoverId', 'setCover', 'version']);
-    assert.equal(p.w.PlainSight.version, '1.3.8');
+    assert.equal(p.w.PlainSight.version, '1.4.0');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
@@ -1786,6 +1787,211 @@ test('plain .txt download mode: Save downloads a text file named by the moment w
       q.press('Escape');
       assert.deepEqual(q.errors, []);
     } finally { q.close(); }
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+// Reads the entries of a stored (uncompressed) zip archive, checking each
+// entry's CRC-32 with Node's own zlib, so the page's zip writer is checked by
+// an independent implementation.
+function readStoredZip(bytes) {
+  const b = Buffer.from(bytes);
+  const entries = [];
+  let at = 0;
+  while (b.readUInt32LE(at) === 0x04034B50) {
+    const method = b.readUInt16LE(at + 8);
+    const time = b.readUInt16LE(at + 10);
+    const date = b.readUInt16LE(at + 12);
+    const crc = b.readUInt32LE(at + 14);
+    const size = b.readUInt32LE(at + 18);
+    const nameLen = b.readUInt16LE(at + 26);
+    const extraLen = b.readUInt16LE(at + 28);
+    const name = b.subarray(at + 30, at + 30 + nameLen).toString('utf8');
+    const data = b.subarray(at + 30 + nameLen + extraLen, at + 30 + nameLen + extraLen + size);
+    entries.push({ name, method, time, date, crcOk: zlib.crc32(data) === crc, text: data.toString('utf8') });
+    at += 30 + nameLen + extraLen + size;
+  }
+  assert.equal(b.readUInt32LE(b.length - 22), 0x06054B50, 'the archive ends with its directory');
+  assert.equal(b.readUInt16LE(b.length - 12), entries.length, 'the directory lists every entry');
+  return entries;
+}
+
+test('more download formats: .md and .docx are named by the moment, carry their type, need no password, and the choice persists', async () => {
+  const p = await loadPage();
+  try {
+    const pick = (value) => {
+      const radio = p.$('input[name="save-mode"][value="' + value + '"]');
+      radio.checked = true;
+      radio.dispatchEvent(new p.w.Event('change', { bubbles: true }));
+    };
+    pick('md');
+    assert.equal(p.w.localStorage.getItem('plainSight.saveMode'), 'md');
+    assert.equal(p.$('#folder-status').textContent, 'Save downloads a Markdown .md file named by the moment.');
+    p.start();
+    p.type('first line');
+    p.press('Enter');
+    p.type('second <&> line');
+    p.$('#btn-save').click();
+    await p.settle();
+    assert.equal(p.$('#pw').hidden, true, 'no password dialog');
+    assert.equal(p.downloads.length, 1);
+    assert.match(p.downloads[0].name, /^\d{4}-\d{2}-\d{2} \d{2}-\d{2}-\d{2}\.md$/);
+    assert.equal(p.downloads[0].blob.type, 'text/markdown');
+    assert.equal(await p.downloads[0].blob.text(), 'first line\nsecond <&> line');
+    assert.equal(p.toast(), 'Saved ' + p.downloads[0].name);
+
+    p.$('#btn-help').click();
+    pick('docx');
+    assert.equal(p.$('#folder-status').textContent, 'Save downloads a Word .docx file named by the moment.');
+    p.start();
+    p.$('#btn-save').click();
+    await p.settle();
+    assert.equal(p.downloads.length, 2);
+    const doc = p.downloads[1];
+    assert.match(doc.name, /^\d{4}-\d{2}-\d{2} \d{2}-\d{2}-\d{2}\.docx$/);
+    assert.equal(doc.blob.type, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    const entries = readStoredZip(new Uint8Array(await doc.blob.arrayBuffer()));
+    assert.deepEqual(entries.map((e) => e.name), ['[Content_Types].xml', '_rels/.rels', 'word/document.xml'], 'only the three parts a .docx needs: no metadata part');
+    for (const e of entries) {
+      assert.equal(e.crcOk, true, e.name + ': its CRC-32 matches');
+      assert.equal(e.method, 0, e.name + ': stored');
+      assert.deepEqual([e.time, e.date], [0, 33], e.name + ': dated 1 January 1980, so the file says nothing about when it was made');
+    }
+    const body = entries[2].text;
+    assert.ok(body.includes('<w:p><w:r><w:t xml:space="preserve">first line</w:t></w:r></w:p><w:p><w:r><w:t xml:space="preserve">second &lt;&amp;&gt; line</w:t></w:r></w:p>'), 'one paragraph per line, the text escaped: ' + body);
+    assert.equal(/plain words|vault|Plain Sight/i.test(entries.map((e) => e.text).join('')), false, 'no word of the app or other text in the file');
+    assert.equal(await p.readReal(), 'first line\nsecond <&> line', 'saving keeps the text');
+    // The choice survives a new visit.
+    const q = await loadPage({ storage: p.storageDump() });
+    try {
+      assert.equal(q.$('input[name="save-mode"][value="docx"]').checked, true);
+      assert.deepEqual(q.errors, []);
+    } finally { q.close(); }
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('save folder: the files written there can be .txt, .md or .docx, with the counter before the extension; the status names the format and the choice persists', async () => {
+  const folder = fakeFolder('Notes');
+  const p = await loadPage({ folder });
+  try {
+    const pick = (value) => {
+      const radio = p.$('input[name="folder-format"][value="' + value + '"]');
+      radio.checked = true;
+      radio.dispatchEvent(new p.w.Event('change', { bubbles: true }));
+    };
+    assert.equal(p.$('#folder-format').hidden, false, 'the folder format is offered where folders work');
+    assert.equal(p.$('input[name="folder-format"][value="txt"]').checked, true, '.txt by default');
+    p.$('#btn-folder').click();
+    await p.settle();
+    pick('md');
+    assert.equal(p.w.localStorage.getItem('plainSight.folderFormat'), 'md');
+    assert.equal(p.$('#folder-status').textContent, 'Save writes a Markdown file into the folder "Notes".');
+    p.start();
+    p.type('kept as markdown');
+    p.$('#btn-save').click();
+    await p.settle(200);
+    assert.equal(folder.written.length, 1);
+    assert.match(folder.written[0].name, /^\d{4}-\d{2}-\d{2} \d{2}-\d{2}-\d{2}\.md$/);
+    assert.equal(folder.written[0].text, 'kept as markdown');
+    assert.equal(p.toast(), 'Saved ' + folder.written[0].name + ' in Notes');
+    // A name already in the folder gets the counter before the extension.
+    const base = folder.written[0].name.replace(/\.md$/, '');
+    p.$('#btn-help').click();
+    pick('docx');
+    assert.equal(p.$('#folder-status').textContent, 'Save writes a Word file into the folder "Notes".');
+    p.start();
+    folder.files.add(base + '.docx');
+    const realNow = Date;
+    p.w.Date = class extends realNow { constructor(...a) { super(...(a.length ? a : [new realNow(base.replace(/^(\d{4})-(\d{2})-(\d{2}) (\d{2})-(\d{2})-(\d{2})$/, '$1-$2-$3T$4:$5:$6'))])); } };
+    p.$('#btn-save').click();
+    await p.settle(200);
+    p.w.Date = realNow;
+    assert.equal(folder.written.length, 2);
+    assert.equal(folder.written[1].name, base + ' (2).docx', 'the counter goes before .docx');
+    assert.ok(folder.written[1].text instanceof Uint8Array || ArrayBuffer.isView(folder.written[1].text), 'a .docx is written as bytes');
+    const entries = readStoredZip(folder.written[1].text);
+    assert.ok(entries[2].text.includes('kept as markdown'));
+    const q = await loadPage({ storage: p.storageDump(), folder: fakeFolder('Notes') });
+    try {
+      assert.equal(q.$('input[name="folder-format"][value="docx"]').checked, true, 'the choice survives a new visit');
+    } finally { q.close(); }
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('Open reads a plain .txt or .md note: the text comes back, the cover is rebuilt to its length and writing goes on; with text on the page it asks first, and Cancel keeps the page; a .docx is refused', async () => {
+  const p = await loadPage();
+  try {
+    p.start();
+    chooseFile(p, new p.w.File(['hello\r\nworld'], 'note.txt', { type: 'text/plain' }));
+    await p.settle();
+    assert.equal(p.$('#pw').hidden, true, 'an empty page needs no confirmation');
+    assert.equal(p.toast(), 'Opened');
+    assert.equal(await p.readReal(), 'hello\nworld', 'Windows line ends become plain line breaks');
+    assert.equal(p.coverLength(), 'hello\nworld'.length, 'the cover is rebuilt to the length of the note');
+    p.type(' more');
+    assert.equal(await p.readReal(), 'hello\nworld more', 'writing goes on after the note');
+    assert.equal(p.coverLength(), 'hello\nworld more'.length, 'and the cover with it');
+
+    chooseFile(p, new p.w.File(['from markdown'], 'draft.md', { type: 'text/markdown' }));
+    await p.settle();
+    assert.equal(p.$('#pw').hidden, false, 'text on the page: a confirmation first');
+    assert.equal(p.$('#pw-title').textContent, 'Open draft.md?');
+    assert.equal(p.$('#pw-input').hidden, true, 'no password field for a plain file');
+    p.$('#pw-cancel').click();
+    await p.settle();
+    assert.equal(await p.readReal(), 'hello\nworld more', 'Cancel keeps the page');
+    assert.equal(p.$('#pw-input').hidden, false, 'the password field is back for the next dialog');
+
+    chooseFile(p, new p.w.File(['from markdown'], 'draft.md', { type: 'text/markdown' }));
+    await p.settle();
+    p.$('#pw-ok').click();
+    await p.settle();
+    assert.equal(p.toast(), 'Opened');
+    assert.equal(await p.readReal(), 'from markdown');
+
+    chooseFile(p, new p.w.File(['PK'], 'report.docx', { type: 'application/octet-stream' }));
+    await p.settle();
+    assert.equal(p.toast(), 'Open reads .sight, .txt and .md files');
+    assert.equal(await p.readReal(), 'from markdown', 'nothing changed');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('a .docx keeps a tab as a Word tab and leaves out the characters XML cannot hold', async () => {
+  const p = await loadPage({ storage: { 'plainSight.saveMode': 'docx' } });
+  try {
+    p.start();
+    chooseFile(p, new p.w.File(['a\tb\uFFFFc\u0001d\uFFFEe\n\tindented'], 'n.txt', { type: 'text/plain' }));
+    await p.settle();
+    p.$('#btn-save').click();
+    await p.settle();
+    assert.equal(p.downloads.length, 1);
+    const body = readStoredZip(new Uint8Array(await p.downloads[0].blob.arrayBuffer()))[2].text;
+    assert.ok(body.includes('<w:body><w:p><w:r><w:t xml:space="preserve">a</w:t><w:tab/><w:t xml:space="preserve">bcde</w:t></w:r></w:p><w:p><w:r><w:t xml:space="preserve"></w:t><w:tab/><w:t xml:space="preserve">indented</w:t></w:r></w:p></w:body>'), body);
+    assert.equal(await p.readReal(), 'a\tb\uFFFFc\u0001d\uFFFEe\n\tindented', 'the page keeps the text as it is');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('after a confirmation the password dialog still refuses an empty password', async () => {
+  const p = await loadPage();
+  try {
+    p.start();
+    p.type('words');
+    chooseFile(p, new p.w.File(['other'], 'n.txt', { type: 'text/plain' }));
+    await p.settle();
+    p.$('#pw-cancel').click();
+    await p.settle();
+    p.$('#btn-save').click();   // the encrypted download, the default
+    assert.equal(p.$('#pw').hidden, false);
+    assert.equal(p.$('#pw-input').hidden, false);
+    p.$('#pw-ok').click();       // no password typed
+    await p.settle();
+    assert.equal(p.$('#pw').hidden, false, 'an empty password is refused; the dialog stays');
+    assert.equal(p.downloads.length, 0);
+    p.press('Escape');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
