@@ -71,19 +71,19 @@ test('the adapter and the quit hook can be neither replaced nor deleted, and the
 });
 
 test('each call becomes exactly one app command, with the arguments the app expects', async () => {
-  const a = load({ pick_folder: () => ({ name: 'Notes' }), saved_folder: () => null, forget_folder: () => 'ignored', write_text_file: () => '2026-10-21 10-00-00 (2).txt', save_download: () => 'moment (2).txt' });
+  const a = load({ pick_folder: () => ({ name: 'Notes' }), saved_folder: () => null, forget_folder: () => 'ignored', write_text_file: () => '2026-10-21 10-00-00 (2).docx', save_download: () => 'moment (2).txt' });
   try {
     assert.deepEqual(await a.native.pickFolder(), { name: 'Notes' });
     assert.equal(await a.native.savedFolder(), null);
     assert.equal(await a.native.forgetFolder(), undefined, 'forgetFolder answers nothing');
-    assert.equal(await a.native.writeTextFile('2026-10-21 10-00-00', 'the real text'), '2026-10-21 10-00-00 (2).txt');
+    assert.equal(await a.native.writeTextFile('2026-10-21 10-00-00', '.docx', 'the real text'), '2026-10-21 10-00-00 (2).docx');
     assert.equal(await a.native.saveDownload('moment.txt', 'the real text'), 'moment (2).txt');
     // The arguments were made in the page's realm; copied, they compare by value.
     assert.deepEqual(commandCalls(a.calls).map((c) => [c.cmd, c.args === undefined ? undefined : { ...c.args }]), [
       ['pick_folder', undefined],
       ['saved_folder', undefined],
       ['forget_folder', undefined],
-      ['write_text_file', { base: '2026-10-21 10-00-00', text: 'the real text' }],
+      ['write_text_file', { base: '2026-10-21 10-00-00', ext: '.docx', text: 'the real text' }],
       ['save_download', { name: 'moment.txt', text: 'the real text' }]
     ]);
     assert.deepEqual(Object.keys(a.native).sort(), ['forgetFolder', 'onQuit', 'pickFolder', 'saveDownload', 'savedFolder', 'writeTextFile']);
@@ -93,7 +93,7 @@ test('each call becomes exactly one app command, with the arguments the app expe
 test('a failed command reaches the page as a failure', async () => {
   const a = load({ write_text_file: () => { throw new Error('Could not write the file'); }, save_download: () => { throw new Error('Could not save the file'); } });
   try {
-    await assert.rejects(a.native.writeTextFile('2026-10-21 10-00-00', 'x'), /Could not write the file/);
+    await assert.rejects(a.native.writeTextFile('2026-10-21 10-00-00', '.txt', 'x'), /Could not write the file/);
     await assert.rejects(a.native.saveDownload('moment.txt', 'x'), /Could not save the file/);
   } finally { a.close(); }
 });

@@ -1,11 +1,14 @@
 //! Where Save writes. With a folder chosen (decision D-07), the page asks for it
-//! through the system picker and then writes plain text files named by the
-//! moment into it. The folder's path stays here: the page only ever gets the
-//! folder's name, and it can only write `.txt` files named
-//! "YYYY-MM-DD HH-MM-SS" into the folder the user picked. Without a folder,
-//! Save writes the page's own download into the Downloads folder through
-//! `save_download`, so the page learns whether the file was really written
-//! (DM-202).
+//! through the system picker and then writes plain files named by the moment
+//! into it. The folder's path stays here: the page only ever gets the folder's
+//! name, and it can only write `.txt`, `.md` or `.docx` files named
+//! "YYYY-MM-DD HH-MM-SS" into the folder the user picked. The page sends text
+//! only: the app makes a Word document itself (docx.rs), so no file is ever
+//! written from bytes the page made. Without a folder, Save writes the page's
+//! own download into the Downloads folder through `save_download`, so the
+//! page learns whether the file was really written (DM-202).
+
+use std::borrow::Cow;
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, ErrorKind, Write};
@@ -14,6 +17,8 @@ use std::sync::{Mutex, MutexGuard};
 
 use serde::Serialize;
 use tauri::{Manager, Runtime, State, WebviewWindow};
+
+use crate::docx::docx;
 
 /// The remembered folder, in memory and in a small file in the app's data
 /// directory so that it survives a quit.
@@ -78,17 +83,24 @@ impl Folder {
         Ok(())
     }
 
-    /// Writes the text into the folder as `<base>.txt`, numbered if that name
-    /// is taken, and returns the file name used. The lock is held while
-    /// writing, so two saves in the same second are written one after the other.
-    fn write(&self, base: &str, text: &str) -> Result<String, String> {
+    /// Writes the text into the folder as `<base><ext>`, numbered if that name
+    /// is taken, and returns the file name used: `.txt` and `.md` hold the
+    /// text as it is, `.docx` a Word document made from it. The lock is held
+    /// while writing, so two saves in the same second are written one after
+    /// the other.
+    fn write(&self, base: &str, ext: &str, text: &str) -> Result<String, String> {
         if !is_moment(base) {
             return Err("The file name must be a moment, YYYY-MM-DD HH-MM-SS".to_owned());
         }
+        if !PLAIN_EXTENSIONS.contains(&ext) {
+            return Err("Save writes only .txt, .md and .docx files into the folder".to_owned());
+        }
+        let name = format!("{base}{ext}");
+        let bytes =
+            file_bytes(&name, text).map_err(|e| format!("Could not write the file: {e}"))?;
         let current = self.lock()?;
         let dir = current.as_deref().ok_or("No folder is chosen")?;
-        write_new(dir, &format!("{base}.txt"), text)
-            .map_err(|e| format!("Could not write the file: {e}"))
+        write_new(dir, &name, &bytes).map_err(|e| format!("Could not write the file: {e}"))
     }
 }
 
@@ -138,10 +150,11 @@ pub fn forget_folder(folder: State<'_, Folder>) -> Result<(), String> {
 #[tauri::command(async)]
 pub fn write_text_file(
     base: String,
+    ext: String,
     text: String,
     folder: State<'_, Folder>,
 ) -> Result<String, String> {
-    folder.write(&base, &text)
+    folder.write(&base, &ext, &text)
 }
 
 /// Save without a folder: writes the page's file into the Downloads folder
@@ -156,18 +169,35 @@ pub fn save_download<R: Runtime>(
     if !is_download_name(&name) {
         return Err("The file name is not one Save makes".to_owned());
     }
+    let bytes = file_bytes(&name, &text).map_err(|e| format!("Could not save the file: {e}"))?;
     let downloads = window
         .path()
         .download_dir()
         .map_err(|_| "The Downloads folder is not available".to_owned())?;
-    write_new(&downloads, &name, &text).map_err(|e| format!("Could not save the file: {e}"))
+    write_new(&downloads, &name, &bytes).map_err(|e| format!("Could not save the file: {e}"))
 }
 
-/// A name Save gives a download, and nothing else: "YYYY-MM-DD HH-MM-SS.txt",
-/// or a cover's title in lower case with hyphens followed by
-/// "-YYYYMMDD-HHMM.sight" (index.html, onSave).
+/// The plain files Save writes, by extension (index.html, PLAIN_FORMATS).
+const PLAIN_EXTENSIONS: [&str; 3] = [".txt", ".md", ".docx"];
+
+/// What goes into a file Save writes: for a `.docx`, a Word document made
+/// from the text (docx.rs); for every other name, the text as it is.
+fn file_bytes<'a>(name: &str, text: &'a str) -> Result<Cow<'a, [u8]>, String> {
+    if name.ends_with(".docx") {
+        docx(text).map(Cow::Owned)
+    } else {
+        Ok(Cow::Borrowed(text.as_bytes()))
+    }
+}
+
+/// A name Save gives a download, and nothing else: "YYYY-MM-DD HH-MM-SS"
+/// followed by ".txt", ".md" or ".docx", or a cover's title in lower case with
+/// hyphens followed by "-YYYYMMDD-HHMM.sight" (index.html, onSave).
 fn is_download_name(name: &str) -> bool {
-    if let Some(stem) = name.strip_suffix(".txt") {
+    if let Some(stem) = PLAIN_EXTENSIONS
+        .iter()
+        .find_map(|ext| name.strip_suffix(ext))
+    {
         return is_moment(stem);
     }
     let Some(stem) = name.strip_suffix(".sight") else {
@@ -276,10 +306,11 @@ fn is_moment(base: &str) -> bool {
         })
 }
 
-/// Writes `text` into a new file in `dir` under the first free name and returns
-/// that name. create_new makes the system itself refuse a name that exists,
-/// even one another save created a moment ago, so no file is ever overwritten.
-fn write_new(dir: &Path, name: &str, text: &str) -> io::Result<String> {
+/// Writes `bytes` into a new file in `dir` under the first free name and
+/// returns that name. create_new makes the system itself refuse a name that
+/// exists, even one another save created a moment ago, so no file is ever
+/// overwritten.
+fn write_new(dir: &Path, name: &str, bytes: &[u8]) -> io::Result<String> {
     for candidate in numbered(name) {
         let path = dir.join(&candidate);
         let mut file = match OpenOptions::new().write(true).create_new(true).open(&path) {
@@ -288,10 +319,7 @@ fn write_new(dir: &Path, name: &str, text: &str) -> io::Result<String> {
             Err(e) => return Err(e),
         };
         // One write, then wait for the disk, so a reported save is really on it.
-        if let Err(e) = file
-            .write_all(text.as_bytes())
-            .and_then(|()| file.sync_all())
-        {
+        if let Err(e) = file.write_all(bytes).and_then(|()| file.sync_all()) {
             let _ = fs::remove_file(&path); // a failed save leaves no partial file
             return Err(e);
         }
@@ -322,6 +350,8 @@ mod tests {
     fn only_the_names_save_makes_are_accepted_as_downloads() {
         for good in [
             "2026-10-20 14-55-03.txt",
+            "2026-10-20 14-55-03.md",
+            "2026-10-20 14-55-03.docx",
             "untitled-draft-20261020-1455.sight",
             "q3-planning-notes-20261020-1455.sight",
             "manuscript-draft-20261020-1455.sight",
@@ -345,6 +375,13 @@ mod tests {
             "untitled-draft-20261020-1455 (2).sight",
             "2026-10-20 14-55-03 (2).txt",
             "2026-10-20 14-55-03.TXT",
+            "2026-10-20 14-55-03.MD",
+            "2026-10-20 14-55-03.doc",
+            "2026-10-20 14-55-03.docm",
+            "2026-10-20 14-55-03.docx.exe",
+            "2026-10-20 14-55-03 (2).docx",
+            "untitled-draft-20261020-1455.md",
+            "notes.md",
             "notes.sh",
             "\u{e9}t\u{e9}-20261020-1455.sight",
         ] {
@@ -361,7 +398,7 @@ mod tests {
     fn the_first_free_name_is_the_name_itself() {
         let dir = scratch("first");
         assert_eq!(
-            write_new(&dir, "2026-10-20 14-55-03.txt", "one").unwrap(),
+            write_new(&dir, "2026-10-20 14-55-03.txt", b"one").unwrap(),
             "2026-10-20 14-55-03.txt"
         );
         fs::remove_dir_all(&dir).unwrap();
@@ -378,7 +415,7 @@ mod tests {
             fs::write(dir.join(name), "older").unwrap();
         }
         assert_eq!(
-            write_new(&dir, "2026-10-20 14-55-03.txt", "new").unwrap(),
+            write_new(&dir, "2026-10-20 14-55-03.txt", b"new").unwrap(),
             "2026-10-20 14-55-03 (4).txt"
         );
         fs::remove_dir_all(&dir).unwrap();
@@ -390,7 +427,7 @@ mod tests {
         for name in numbered("2026-10-20 14-55-03.txt") {
             fs::write(dir.join(name), "older").unwrap();
         }
-        let err = write_new(&dir, "2026-10-20 14-55-03.txt", "new").unwrap_err();
+        let err = write_new(&dir, "2026-10-20 14-55-03.txt", b"new").unwrap_err();
         assert_eq!(err.kind(), ErrorKind::AlreadyExists);
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 99, "nothing was added");
         assert_eq!(
@@ -403,8 +440,13 @@ mod tests {
     #[test]
     fn create_new_never_overwrites_and_writes_the_text_exactly() {
         let dir = scratch("twice");
-        let first = write_new(&dir, "2026-10-20 14-55-03.txt", "first text").unwrap();
-        let second = write_new(&dir, "2026-10-20 14-55-03.txt", "second, caf\u{e9}\n").unwrap();
+        let first = write_new(&dir, "2026-10-20 14-55-03.txt", b"first text").unwrap();
+        let second = write_new(
+            &dir,
+            "2026-10-20 14-55-03.txt",
+            "second, caf\u{e9}\n".as_bytes(),
+        )
+        .unwrap();
         assert_eq!(first, "2026-10-20 14-55-03.txt");
         assert_eq!(second, "2026-10-20 14-55-03 (2).txt");
         assert_eq!(fs::read(dir.join(&first)).unwrap(), b"first text");
@@ -514,7 +556,7 @@ mod tests {
         );
         assert!(data.join("folder.txt").exists(), "and on disk");
         assert_eq!(
-            folder.write(BASE, "text").unwrap(),
+            folder.write(BASE, ".txt", "text").unwrap(),
             format!("{BASE}.txt"),
             "Save still writes into the folder the page shows"
         );
@@ -526,22 +568,22 @@ mod tests {
         let dir = scratch("write");
         let folder = Folder::load(Some(dir.join("data")));
         assert_eq!(
-            folder.write(BASE, "text").unwrap_err(),
+            folder.write(BASE, ".txt", "text").unwrap_err(),
             "No folder is chosen"
         );
         folder.remember(dir.clone()).unwrap();
         for base in ["notes", "2026-10-20 14-55-03.txt", "../escape"] {
             assert!(
-                folder.write(base, "text").is_err(),
+                folder.write(base, ".txt", "text").is_err(),
                 "{base:?} must be refused"
             );
         }
         assert_eq!(
-            folder.write(BASE, "the text").unwrap(),
+            folder.write(BASE, ".txt", "the text").unwrap(),
             "2026-10-20 14-55-03.txt"
         );
         assert_eq!(
-            folder.write(BASE, "again").unwrap(),
+            folder.write(BASE, ".txt", "again").unwrap(),
             "2026-10-20 14-55-03 (2).txt"
         );
         assert_eq!(
@@ -549,5 +591,83 @@ mod tests {
             "the text"
         );
         fs::remove_dir_all(&dir).unwrap();
+    }
+    #[test]
+    fn the_folder_takes_only_txt_md_and_docx_files() {
+        let dir = scratch("formats");
+        let folder = Folder::load(Some(dir.join("data")));
+        folder.remember(dir.clone()).unwrap();
+        for ext in [
+            "",
+            "txt",
+            ".TXT",
+            ".Md",
+            ".doc",
+            ".docm",
+            ".exe",
+            ".sight",
+            ".md ",
+            ".txt\0",
+            "/x.txt",
+            ".docx/../x",
+            "/../../outside.txt",
+        ] {
+            assert_eq!(
+                folder.write(BASE, ext, "text").unwrap_err(),
+                "Save writes only .txt, .md and .docx files into the folder",
+                "{ext:?} must be refused"
+            );
+        }
+        assert_eq!(
+            fs::read_dir(&dir).unwrap().count(),
+            1,
+            "nothing written but the data folder"
+        );
+        assert_eq!(
+            folder.write(BASE, ".md", "# the text").unwrap(),
+            format!("{BASE}.md")
+        );
+        assert_eq!(
+            fs::read_to_string(dir.join(format!("{BASE}.md"))).unwrap(),
+            "# the text",
+            "Markdown is the text as it is"
+        );
+        assert_eq!(
+            folder.write(BASE, ".docx", "a\tb").unwrap(),
+            format!("{BASE}.docx")
+        );
+        assert_eq!(
+            folder.write(BASE, ".docx", "again").unwrap(),
+            format!("{BASE} (2).docx"),
+            "the counter goes before .docx"
+        );
+        assert_eq!(
+            fs::read(dir.join(format!("{BASE}.docx"))).unwrap(),
+            docx("a\tb").unwrap(),
+            "a Word document the app made from the text"
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_docx_is_made_from_the_text_and_every_other_file_is_the_text() {
+        let text = "line one\n\tline two";
+        assert_eq!(
+            file_bytes("2026-10-20 14-55-03.docx", text)
+                .unwrap()
+                .as_ref(),
+            docx(text).unwrap().as_slice()
+        );
+        for name in [
+            "2026-10-20 14-55-03.txt",
+            "2026-10-20 14-55-03.md",
+            "untitled-draft-20261020-1455.sight",
+        ] {
+            assert_eq!(
+                file_bytes(name, text).unwrap().as_ref(),
+                text.as_bytes(),
+                "{name}"
+            );
+        }
     }
 }

@@ -20,8 +20,10 @@
     // { name } of the folder remembered from an earlier run, or null.
     savedFolder: () => invoke('saved_folder'),
     forgetFolder: () => invoke('forget_folder').then(() => undefined),
-    // The file name used, such as "2026-10-20 14-55-03 (2).txt".
-    writeTextFile: (base, text) => invoke('write_text_file', { base, text }),
+    // Writes the text into the folder as a ".txt", ".md" or ".docx" file (the
+    // app makes the Word document from the text) and answers with the file
+    // name used, such as "2026-10-20 14-55-03 (2).docx".
+    writeTextFile: (base, ext, text) => invoke('write_text_file', { base, ext, text }),
     // Save without a folder: the app writes the file into Downloads and answers
     // with the name it used, or fails, so the page's toast tells the truth.
     saveDownload: (name, text) => invoke('save_download', { name, text }),

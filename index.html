@@ -1323,7 +1323,7 @@
   // Writes a new file. A name that already exists (two saves in one second,
   // or an older file) gets a counter before the extension.
   async function folderWrite(content, base, ext) {
-    if (native) return native.writeTextFile(base, content);   // the app applies the same names and counter, never overwriting
+    if (native) return native.writeTextFile(base, ext, content);   // the app applies the same names and counter, never overwriting
     let name = base + ext;
     for (let n = 2; n < 100; n++) {
       let exists = true;
@@ -1343,7 +1343,9 @@
   function setFolderFormat(f) { storageSet(STORAGE.folderFormat, f === 'md' || f === 'docx' ? f : ''); }
 
   // What Save writes for a plain format: the text itself, or a Word document.
-  function plainContent(format, text) { return format === 'docx' ? docxBytes(text) : text; }
+  // The app is given the text and makes the Word document itself, so its
+  // commands never write a file from bytes the page made (folder.rs).
+  function plainContent(format, text) { return format === 'docx' && !native ? docxBytes(text) : text; }
 
   // A Word document holding the text, one paragraph per line and a Word tab
   // for each tab, with no metadata (no author, no dates, no application

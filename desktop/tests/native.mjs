@@ -41,11 +41,11 @@ function fakeNative({ saved = null, pick = { name: 'Build_Test_1' }, failPick = 
       savedFolder: async () => { calls.push(['savedFolder']); return folder; },
       // As the app does (folder.rs): a failed forget changes nothing, on disk or in memory (DM-220).
       forgetFolder: async () => { calls.push(['forgetFolder']); if (failForget) throw new Error('Could not forget the folder'); folder = null; },
-      writeTextFile: async (base, text) => {
-        calls.push(['writeTextFile', base, text]);
+      writeTextFile: async (base, ext, text) => {
+        calls.push(['writeTextFile', base, ext, text]);
         if (failWrite) throw new Error('disk full');
-        let name = base + '.txt';
-        for (let n = 2; files.has(name); n++) name = base + ' (' + n + ').txt';
+        let name = base + ext;
+        for (let n = 2; files.has(name); n++) name = base + ' (' + n + ')' + ext;
         files.add(name);
         return name;
       },
@@ -114,6 +114,18 @@ async function loadPage({ native = null, storage = {} } = {}) {
 const tests = [];
 const test = (name, fn) => tests.push({ name, fn });
 
+// The page's Open button, as the file panel would answer it.
+function chooseFile(p, file) {
+  const input = p.$('#file-input');
+  Object.defineProperty(input, 'files', { value: [file], configurable: true });
+  input.dispatchEvent(new p.w.Event('change', { bubbles: true }));
+}
+const pick = (p, group, value) => {
+  const radio = p.$('input[name="' + group + '"][value="' + value + '"]');
+  radio.checked = true;
+  radio.dispatchEvent(new p.w.Event('change', { bubbles: true }));
+};
+
 test('without the adapter the page keeps its browser wording and registers nothing', async () => {
   const p = await loadPage();
   try {
@@ -164,7 +176,8 @@ test('choosing a folder and pressing Save writes the text through the adapter, n
     const writes = native.calls.filter((c) => c[0] === 'writeTextFile');
     assert.equal(writes.length, 1);
     assert.match(writes[0][1], STAMP, 'the base name is the moment of the click, without the extension');
-    assert.equal(writes[0][2], 'first line of the real text');
+    assert.equal(writes[0][2], '.txt', '.txt unless another format is picked');
+    assert.equal(writes[0][3], 'first line of the real text');
     assert.equal(p.toast(), 'Saved ' + writes[0][1] + '.txt in Build_Test_1');
     assert.equal(p.$('#pw').hidden, true, 'no password is asked');
     assert.equal(p.downloads.length, 0, 'nothing is downloaded');
@@ -394,6 +407,75 @@ test('in the app a Save the app could not write says so, in both modes, and neve
       assert.deepEqual(unhandled, [], mode + ': the page handled the failure itself');
     } finally { p.close(); }
   }
+});
+
+test('in the app the folder formats reach the app as text: .md as it is, and .docx for the app to make (folder.rs)', async () => {
+  const native = fakeNative({ saved: { name: 'Notes' } });
+  const p = await loadPage({ native, storage: { 'plainSight.introSeen': '1' } });
+  try {
+    await p.settle();
+    p.$('#btn-help').click();
+    assert.equal(p.$('#folder-format').hidden, false, 'the folder formats are offered in the app');
+    pick(p, 'folder-format', 'md');
+    assert.equal(p.$('#folder-status').textContent, 'Save writes a Markdown file into the folder "Notes".');
+    p.start();
+    p.type('# a heading');
+    p.$('#btn-save').click();
+    await p.settle();
+    p.$('#btn-help').click();
+    pick(p, 'folder-format', 'docx');
+    p.start();
+    p.press('Tab');
+    p.type('tabbed');
+    p.$('#btn-save').click();
+    await p.settle();
+    const writes = native.calls.filter((c) => c[0] === 'writeTextFile');
+    assert.equal(writes.length, 2);
+    assert.deepEqual(writes.map((c) => c.slice(2)), [['.md', '# a heading'], ['.docx', '# a heading\ttabbed']], 'the extension and the text, never a file of bytes');
+    assert.equal(typeof writes[1][3], 'string', 'the app makes the Word document itself');
+    assert.equal(p.toast(), 'Saved ' + writes[1][1] + '.docx in Notes');
+    assert.equal(p.downloads.length, 0, 'nothing is downloaded');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('in the app a .md or .docx download reaches the app as text, named by the moment', async () => {
+  for (const mode of ['md', 'docx']) {
+    const native = fakeNative();
+    const p = await loadPage({ native, storage: { 'plainSight.introSeen': '1', 'plainSight.saveMode': mode } });
+    try {
+      await p.settle();
+      p.type('plain words');
+      p.$('#btn-save').click();
+      await p.settle();
+      const saves = native.calls.filter((c) => c[0] === 'saveDownload');
+      assert.equal(saves.length, 1, mode);
+      assert.match(saves[0][1], new RegExp('^\\d{4}-\\d{2}-\\d{2} \\d{2}-\\d{2}-\\d{2}\\.' + mode + '$'), mode + ': named by the moment');
+      assert.equal(saves[0][2], 'plain words', mode + ': the text, not a file of bytes');
+      assert.equal(p.toast(), 'Saved ' + saves[0][1], mode);
+      assert.equal(p.downloads.length, 0, mode + ': no browser download in the app');
+      assert.deepEqual(p.errors, [], mode);
+    } finally { p.close(); }
+  }
+});
+
+test('the page makes, byte for byte, the Word document the app is held to (tests/fixtures, docx.rs)', async () => {
+  const sample = readFileSync(path.join(ROOT, 'desktop/tests/fixtures/sample.txt'), 'utf8');
+  const expected = readFileSync(path.join(ROOT, 'desktop/tests/fixtures/sample.docx'));
+  const p = await loadPage({ storage: { 'plainSight.introSeen': '1', 'plainSight.saveMode': 'docx' } });
+  try {
+    await p.settle();
+    chooseFile(p, new p.w.File([sample], 'sample.txt', { type: 'text/plain' }));
+    await p.settle();
+    assert.equal(await p.real(), sample, 'the sample opened as it is');
+    p.$('#btn-save').click();
+    await p.settle();
+    assert.equal(p.downloads.length, 1);
+    assert.match(p.downloads[0].name, /^\d{4}-\d{2}-\d{2} \d{2}-\d{2}-\d{2}\.docx$/);
+    const bytes = Buffer.from(await p.downloads[0].blob.arrayBuffer());
+    assert.ok(bytes.equals(expected), 'the same bytes as tests/fixtures/sample.docx (' + bytes.length + ' and ' + expected.length + ' bytes)');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
 });
 
 let passed = 0;

@@ -18,6 +18,7 @@ use tauri::webview::NewWindowResponse;
 use tauri::window::Color;
 use tauri::{Manager, Url, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
+mod docx;
 mod folder;
 mod menu;
 mod quit;

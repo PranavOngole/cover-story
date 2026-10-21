@@ -13,9 +13,22 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import {
-  DESKTOP, DOWNLOADS, EVIDENCE, HOME, ID, NotRun, alive, decryptRecord, drive, isCoverPrefix, newDownloads, note, novelText,
+  DESKTOP, DOWNLOADS, EVIDENCE, HOME, ID, NotRun, ROOT, alive, decryptRecord, drive, isCoverPrefix, newDownloads, note, novelText,
   run, sleep, spawnApp, stopApp, until
 } from './harness.mjs';
+
+// The page's own Word document writer (index.html, docxBytes), run here as it
+// is, so that a .docx the app makes (docx.rs) can be checked byte for byte.
+const pageDocx = (() => {
+  const src = readFileSync(path.join(ROOT, 'index.html'), 'utf8');
+  const start = src.indexOf('  function docxBytes(text) {');
+  const end = src.indexOf('  // Which browser family this is');
+  if (start < 0 || end < start) throw new Error('the page\'s docxBytes was not found in index.html');
+  const make = new Function(src.slice(start, end) + '\nreturn docxBytes;')();
+  return (text) => Buffer.from(make(text));
+})();
+// What macOS's own reader finds in a document.
+const readBack = (file) => execFileSync('textutil', ['-convert', 'txt', '-stdout', file], { encoding: 'utf8' });
 
 const EXE = process.env.PLAIN_SIGHT_E2E_APP || path.join(DESKTOP, 'src-tauri/target/e2e/release/plain-sight');
 const PROBE = path.join(EVIDENCE, 'probe');
@@ -218,6 +231,29 @@ test('a download name that is taken gets " (2)" and the file already there is le
   await page.start();
 });
 
+test('the .md and .docx modes download the text as Markdown and as a Word document the app makes', async () => {
+  for (const mode of ['md', 'docx']) {
+    await page.openIntro();
+    await page.choose('save-mode', mode);
+    await page.start();
+    await page.click('btn-save');
+    // The toast must name this file: the extension keeps an earlier toast from answering.
+    const name = (await page.waitToast('.' + mode)).replace(/^Saved /, '');
+    assert.match(name, new RegExp('^\\d{4}-\\d{2}-\\d{2} \\d{2}-\\d{2}-\\d{2}( \\(\\d+\\))?\\.' + mode + '$'), name);
+    await until(() => newDownloads().includes(name), 'the .' + mode + ' file', 10000);
+    const file = path.join(DOWNLOADS, name);
+    if (mode === 'md') {
+      assert.equal(readFileSync(file, 'utf8'), 'saved through the app');
+    } else {
+      assert.ok(readFileSync(file).equals(pageDocx('saved through the app')), 'the Word document the page itself would make');
+      assert.equal(readBack(file).trim(), 'saved through the app', 'macOS reads the text back');
+    }
+  }
+  await page.openIntro();
+  await page.choose('save-mode', 'sight');
+  await page.start();
+});
+
 test('a Save the app cannot write says "Could not save" in both modes and writes nothing (DM-202)', async () => {
   // A home whose Downloads folder cannot be written, as after "Don't Allow".
   const home = path.join(EVIDENCE, 'home-without-downloads');
@@ -389,6 +425,28 @@ test('a name already in the folder gets the next number and the file there is le
   for (const n of taken) assert.equal(readFileSync(path.join(FOLDER, n), 'utf8'), 'placed by the test', n + ' untouched');
 });
 
+test('the folder takes .md and .docx files too: Markdown as typed, and a Word document the app makes', async () => {
+  for (const format of ['md', 'docx']) {
+    await page.openIntro();
+    await page.choose('folder-format', format);
+    await page.start();
+    await page.click('btn-save');
+    const toast = await page.waitToast('.' + format + ' in Notes for the test');
+    const name = toast.replace(/^Saved /, '').replace(/ in Notes for the test$/, '');
+    assert.match(name, new RegExp('^\\d{4}-\\d{2}-\\d{2} \\d{2}-\\d{2}-\\d{2}( \\(\\d+\\))?\\.' + format + '$'), name);
+    const file = path.join(FOLDER, name);
+    if (format === 'md') {
+      assert.equal(readFileSync(file, 'utf8'), 'first words into the folder');
+    } else {
+      assert.ok(readFileSync(file).equals(pageDocx('first words into the folder')), 'the Word document the page itself would make');
+      assert.equal(readBack(file).trim(), 'first words into the folder', 'macOS reads the text back');
+    }
+  }
+  await page.openIntro();
+  await page.choose('folder-format', 'txt');
+  await page.start();
+});
+
 test('the folder is remembered across a relaunch, in the app\'s own data folder', async () => {
   const file = path.join(HOME, 'Library/Application Support', ID, 'folder.txt');
   assert.equal(readFileSync(file, 'utf8'), FOLDER, 'the path is kept by the app, in its data folder');
@@ -415,9 +473,13 @@ test('the adapter cannot be replaced, gives no path, refuses any other file name
   await js(`(() => { window.__r = {}; const I = window.__TAURI_INTERNALS__.invoke; const N = window.PlainSightNative;
     const note = (k, p) => p.then((v) => { window.__r[k] = 'ok ' + JSON.stringify(v); }, (e) => { window.__r[k] = 'refused ' + String(e); });
     note('saved', N.savedFolder());
-    note('traversal', N.writeTextFile('../../outside', 'x'));
-    note('nameWithSlash', N.writeTextFile('2026-10-21 00-00-00/x', 'x'));
-    note('extension', N.writeTextFile('2026-10-21 00-00-00.txt', 'x'));
+    note('traversal', N.writeTextFile('../../outside', '.txt', 'x'));
+    note('nameWithSlash', N.writeTextFile('2026-10-21 00-00-00/x', '.txt', 'x'));
+    note('extension', N.writeTextFile('2026-10-21 00-00-00.txt', '.txt', 'x'));
+    note('extTraversal', N.writeTextFile('2026-10-21 00-00-00', '/../../../outside.txt', 'x'));
+    note('extOther', N.writeTextFile('2026-10-21 00-00-00', '.sh', 'x'));
+    note('extMissing', N.writeTextFile('2026-10-21 00-00-00', 'x'));
+    note('downloadDocm', N.saveDownload('2026-10-21 00-00-00.docm', 'x'));
     note('downloadTraversal', N.saveDownload('../../outside.txt', 'x'));
     note('downloadSlash', N.saveDownload('untitled-draft-20261021-0000.sight/../../x', 'x'));
     note('downloadOtherName', N.saveDownload('notes.sh', 'x'));
@@ -429,7 +491,9 @@ test('the adapter cannot be replaced, gives no path, refuses any other file name
   note('adapter probes: ' + JSON.stringify(r));
   assert.equal(r.saved, 'ok {"name":"Notes for the test"}', 'only the name');
   for (const k of ['traversal', 'nameWithSlash', 'extension']) assert.match(r[k], /^refused .*moment/, k);
-  for (const k of ['downloadTraversal', 'downloadSlash', 'downloadOtherName']) assert.match(r[k], /^refused .*not one Save makes/, k);
+  for (const k of ['extTraversal', 'extOther']) assert.match(r[k], /^refused .*only \.txt, \.md and \.docx/, k);
+  assert.match(r.extMissing, /^refused /, 'a call without the text is refused');
+  for (const k of ['downloadTraversal', 'downloadSlash', 'downloadOtherName', 'downloadDocm']) assert.match(r[k], /^refused .*not one Save makes/, k);
   const others = Object.keys(r).filter((k) => k.startsWith('other'));
   assert.equal(others.length, 18, 'eighteen other commands were tried');
   for (const k of others) assert.match(r[k], /^refused /, k + ' is refused');
