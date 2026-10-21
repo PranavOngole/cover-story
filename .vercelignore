@@ -1,12 +1,6 @@
-# The site is index.html plus covers/. Everything else stays out of the deployment.
-node_modules
-tests
-docs
-package.json
-package-lock.json
-README.md
-CHANGELOG.md
-LICENSE
-.git
-.gitignore
-.DS_Store
+# Deploy nothing but the page and the covers. Everything else stays out,
+# including any tool or agent folder that appears in this directory.
+*
+!index.html
+!covers
+!covers/**

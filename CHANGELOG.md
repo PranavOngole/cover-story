@@ -57,3 +57,7 @@ The 1.2.1 gate (GO for testing; go-live held until the folder feature is tried i
 ## 1.3.0, 2026-10-20: every major browser
 
 Save now has a plain `.txt` download mode, chosen on the intro screen and kept in localStorage, so Safari, Firefox and any browser without folder access can still save plain text files named by the moment, with no password; Safari and Firefox can be set to ask where each file goes. "Where Save writes" shows a note that fits the browser: Brave gets the setting to turn on (`brave://flags/#file-system-access-api`), Safari and Firefox their download tip, and folder-capable browsers no note. The README gains a browser support table. A new suite test proves vault writes land in the order asked for even when an older write is slower. Suite now 55 tests.
+
+## 1.3.1, 2026-10-21: deployment allowlist
+
+The Delivery Manager's gate on 1.2.2 found that every deployment since the first one had carried local tool folders from the working directory (a `.gstack` folder with a local terminal token and browser logs, and the gate agents' worktree copies), because `.vercelignore` listed what to exclude rather than what to include. `.vercelignore` is now an allowlist of `index.html` and `covers/` only; the deployment was rebuilt and the exposed paths return 404. Nothing typed by any user was involved: those files were local tool state, not page data. The README's deployment sentence is corrected.

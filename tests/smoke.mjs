@@ -601,7 +601,7 @@ test('Save writes a .sight with a 16-byte salt, 12-byte IV and data; Open restor
     assert.equal(await p.readReal(), 'hello world', 'every refusal left the buffer alone');
     // Nothing on the console object touches the buffer.
     assert.deepEqual(Object.keys(p.w.PlainSight).sort(), ['coverFailed', 'coverId', 'coverIds', 'coverText', 'ready', 'selectedCoverId', 'setCover', 'version']);
-    assert.equal(p.w.PlainSight.version, '1.3.0');
+    assert.equal(p.w.PlainSight.version, '1.3.1');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });

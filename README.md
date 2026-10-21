@@ -162,7 +162,7 @@ The suite (`tests/smoke.mjs`) loads the real `index.html` in jsdom and drives it
 
 ## Deployment
 
-The site is deployed with the Vercel CLI (`vercel --prod`) as plain static files with no framework and no build step. `.vercelignore` keeps the deployment to `index.html` and `covers/`.
+The site is deployed with the Vercel CLI (`vercel --prod`) as plain static files with no framework and no build step. `.vercelignore` is an allowlist: everything is excluded except `index.html` and `covers/`, so nothing else in the working folder can reach the deployment. Until 21 October 2026 it was a list of exclusions and the deployment carried local tool files; see the changelog for 1.3.1.
 
 ## Fictional content
 
