@@ -1045,7 +1045,9 @@
   // Browsers give a page no encryption on a plain http address other than localhost.
   function cryptoAvailable() { return Boolean(window.crypto && crypto.subtle); }
   const NO_CRYPTO_NOTICE = 'This address gives the page no encryption (it needs https or localhost), so the vault and encrypted files cannot work here.';
-  // True while a setup or phrase change is still deriving its key and nothing has dropped it.
+  // True while a setup or phrase change is still deriving its key and nothing has
+  // dropped it. A completed setup leaves the vault open, which every reader checks
+  // first; every lock and Esc bumps setupAttempt; a failed derivation resets setupPending.
   function vaultSetupPending() { return setupPending !== 0 && setupPending === setupAttempt; }
 
   // Turns the vault on with a phrase: a fresh salt, the key in memory, the
@@ -1062,7 +1064,6 @@
       return;
     }
     if (attempt !== setupAttempt) return;   // Esc, untick or another setup meanwhile
-    setupPending = 0;
     vaultKey = key;
     vaultSalt = salt;
     body.classList.add('vault-open');
@@ -1093,12 +1094,12 @@
     clearTimeout(vaultSaveTimer);
     vaultSaveTimer = null;
     unlockArmedAt = 0;
+    setupAttempt += 1;      // a setup or phrase change still deriving its key is dropped with the lock
     body.classList.remove('vault-open');
   }
   // Turns the vault off: locks it and deletes the encrypted copy, readable or not.
   function vaultDisable() {
-    vaultGeneration += 1;
-    setupAttempt += 1;
+    vaultGeneration += 1;   // any write still queued is dropped; Esc keeps its save, so this is not in vaultLock
     vaultLock();
     storageSet(STORAGE.vault, '');
   }
@@ -1124,15 +1125,27 @@
   }
   // Another tab deleted or re-keyed the copy: this tab's key is stale, so it
   // locks. Another tab changed the save folder: this tab reloads the handle.
+  // Another tab changed this site's storage. The download choice redraws an
+  // open intro; the vault copy is checked against this tab's own.
   function onStorageChange(e) {
+    const cleared = e.key === null;   // another tab cleared this site's storage
     if (e.key === STORAGE.folderVersion) { onFolderChanged(); return; }
-    if (e.key === STORAGE.saveMode) { if (!introEl.hidden) folderRender(); return; }
-    if (e.key !== STORAGE.vault || !vaultOpen()) return;
-    let stale = true;
-    if (e.newValue) {
-      try { stale = JSON.parse(e.newValue).salt !== bytesToBase64(vaultSalt); } catch (err) { stale = true; }
+    if ((e.key === STORAGE.saveMode || cleared) && !introEl.hidden) folderRender();
+    if (!cleared && e.key !== STORAGE.vault) return;
+    const copyChanged = cleared || recordSalt(e.oldValue) !== recordSalt(e.newValue);   // deleted, re-keyed or new, not an autosave
+    if (vaultOpen()) {
+      const stale = cleared || recordSalt(e.newValue) !== bytesToBase64(vaultSalt);
+      if (stale) {
+        vaultGeneration += 1;   // a write still queued here would bring the deleted or re-keyed copy back
+        vaultLock();
+        toast('The saved copy changed in another tab; this tab is locked');
+      }
     }
-    if (stale) { setupAttempt += 1; vaultLock(); toast('The saved copy changed in another tab; this tab is locked'); }   // a phrase change still deriving here is dropped too
+    if (copyChanged && !introEl.hidden) vaultRender();   // an open intro follows the copy
+  }
+  function recordSalt(json) {
+    if (!json) return null;
+    try { return JSON.parse(json).salt || null; } catch (err) { return null; }
   }
   function vaultSaveNow() {
     if (!vaultKey) return Promise.resolve();
@@ -1382,6 +1395,7 @@
       }
       return;
     }
+    if (!cryptoAvailable()) { toast(NO_CRYPTO_NOTICE); return; }
     const password = await askPassword('Choose a password for this file', 'The file cannot be opened without it. Longer is better.', 'Save');
     if (password === null) return;
     try {
@@ -1457,11 +1471,12 @@
     const pending = vaultSetupPending();   // a setup still deriving its key shows as ticked, so an untick is deliberate
     vaultOnEl.checked = stored || vaultOpen() || pending;
     vaultPhraseEl.disabled = !vaultOnEl.checked;
-    vaultStatusEl.textContent = pending && !stored
+    vaultStatusEl.textContent = vaultOpen()
+      ? 'The vault is open and saving as you type. Untick to delete the saved copy. Enter a new phrase to change it.'
+      : pending
       ? 'Your phrase is being set up. Untick to cancel it.'
       : stored
-      ? (vaultOpen() ? 'The vault is open and saving as you type. Untick to delete the saved copy. Enter a new phrase to change it.'
-                     : 'A saved copy is on this device. Type your phrase on the blank page, then hold ' + modKeyName() + ', press E, then Enter. Untick to delete the copy.')
+      ? 'A saved copy is on this device. Type your phrase on the blank page, then hold ' + modKeyName() + ', press E, then Enter. Untick to delete the copy.'
       : 'To come back to your text later: type your phrase on the blank page, then hold ' + modKeyName() + ', press E, then Enter. Nothing happens for a wrong phrase. There is no recovery for a forgotten one.';
   }
   function openIntro() {
@@ -1479,6 +1494,7 @@
   // of either when a phrase has to be checked against a locked copy. A locked
   // copy is never overwritten.
   function applyVaultChoice() {
+    if (!cryptoAvailable()) return true;   // the box is disabled here: nothing to apply, and a saved copy is left alone
     const want = vaultOnEl.checked;
     const phrase = vaultPhraseEl.value;
     const anyRecord = Boolean(storageGet(STORAGE.vault));   // readable or not
@@ -1605,7 +1621,7 @@
     window.addEventListener('pagehide', () => { if (vaultOpen()) vaultSaveNow(); });
 
     $('#btn-save').addEventListener('click', onSave);
-    $('#btn-open').addEventListener('click', () => { blurActive(); fileInput.click(); });
+    $('#btn-open').addEventListener('click', () => { blurActive(); if (!cryptoAvailable()) { toast(NO_CRYPTO_NOTICE); return; } fileInput.click(); });
     fileInput.addEventListener('change', onFileChosen);
     $('#btn-help').addEventListener('click', () => { blurActive(); openIntro(); });
     $('#btn-start').addEventListener('click', startWriting);
@@ -1626,6 +1642,7 @@
     folderRender();
     folderLoad().then((handle) => { folderHandle = handle; folderRender(); });
     if (!storageGet(STORAGE.intro)) openIntro();
+    else if (!cryptoAvailable()) toast(NO_CRYPTO_NOTICE);   // a return visit sees the notice too
   }
 
   init();
@@ -1634,7 +1651,7 @@
   // reads or returns the hidden buffer in any form, encrypted or not. Save and
   // Open are reachable only through their buttons.
   window.PlainSight = Object.freeze({
-    version: '1.3.5',
+    version: '1.3.6',
     coverIds: COVER_IDS.slice(),
     coverId: () => (cover ? cover.id : null),
     coverText: () => coverText,
