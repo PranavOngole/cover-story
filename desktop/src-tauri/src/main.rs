@@ -5,8 +5,11 @@
 // served from inside the app under the page's own content security policy
 // (tauri.conf.json), the window may show nothing but the app's own page, and
 // the page's downloads are saved into the Downloads folder without ever
-// overwriting a file. The page can call four app commands, all for the folder
-// Save writes into (folder.rs), through the adapter in desktop/adapter.js.
+// overwriting a file. The page can call five app commands through the adapter
+// in desktop/adapter.js: four for the folder Save writes into (folder.rs) and
+// one to say it is ready to quit (quit.rs). Closing the window and quitting
+// both work like Esc first (quit.rs), the window's title follows the page, and
+// the menu bar is the app's own (menu.rs).
 
 // No console window behind the app on Windows release builds (Windows comes later).
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -17,9 +20,11 @@ use std::sync::Mutex;
 
 use tauri::webview::{DownloadEvent, NewWindowResponse};
 use tauri::window::Color;
-use tauri::{Manager, Runtime, Url, Webview, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Manager, Runtime, Url, Webview, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
 mod folder;
+mod menu;
+mod quit;
 
 // Test builds only; see the module.
 #[cfg(feature = "e2e")]
@@ -34,24 +39,50 @@ fn main() {
             folder::pick_folder,
             folder::saved_folder,
             folder::forget_folder,
-            folder::write_text_file
+            folder::write_text_file,
+            quit::quit_ready
         ])
+        .menu(menu::build)
+        .on_menu_event(|app, event| {
+            if event.id() == menu::QUIT {
+                quit::begin(app);
+            }
+        })
+        // Closing the window quits the app (D-21), after the page's quit hook.
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                quit::begin(window.app_handle());
+            }
+        })
         .setup(|app| {
+            quit::install(app.handle());
             app.manage(folder::Folder::load(app.path().app_data_dir().ok()));
             // The window is built here rather than in tauri.conf.json so that
             // the handlers below are in place before the page loads.
             let handed_out = Mutex::new(HashSet::new());
-            WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+            let builder =
+                WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()));
+            #[cfg(target_os = "macos")]
+            let builder = match web_view_configuration() {
+                Some(configuration) => builder.with_webview_configuration(configuration),
+                None => builder,
+            };
+            builder
                 // After Tauri's own scripts, before the page, main frame only.
                 .initialization_script(ADAPTER)
                 .title("Untitled draft")
+                // The title bar names the document on screen, the cover's title (D-20).
+                .on_document_title_changed(|window, title| {
+                    let _ = window.set_title(&title);
+                })
                 .inner_size(1000.0, 760.0)
                 .min_inner_size(520.0, 420.0)
                 .center()
                 .resizable(true)
                 // The page's paper colour, so the window does not flash white
-                // while the page loads. On macOS this colours the window only,
-                // not the web view itself.
+                // while the page loads: on macOS it colours the window, and wry
+                // turns off the web view's own background so it shows through.
                 .background_color(Color(0xfb, 0xfa, 0xf7, 0xff))
                 .on_navigation(|url| {
                     let allowed = is_app_url(url);
@@ -71,6 +102,28 @@ fn main() {
         })
         .run(tauri::generate_context!())
         .expect("Plain Sight could not start");
+}
+
+/// The web view's configuration, made here because Apple's Writing Tools can
+/// only be turned off before the web view exists (macOS 15 and later); they
+/// could otherwise read and rewrite the page's text. writingToolsBehavior is
+/// not in objc2-web-kit 0.3.2, so it is set by name, to
+/// NSWritingToolsBehaviorNone (-1, AppKit's NSTextCheckingClient.h).
+#[cfg(target_os = "macos")]
+fn web_view_configuration() -> Option<objc2::rc::Retained<objc2_web_kit::WKWebViewConfiguration>> {
+    use objc2::{msg_send, sel, MainThreadMarker};
+    let mtm = MainThreadMarker::new()?;
+    // SAFETY: made on the main thread, as WebKit requires.
+    let configuration = unsafe { objc2_web_kit::WKWebViewConfiguration::new(mtm) };
+    // SAFETY: the setter takes an NSInteger and is only called where it exists.
+    unsafe {
+        let has_property: bool =
+            msg_send![&configuration, respondsToSelector: sel!(setWritingToolsBehavior:)];
+        if has_property {
+            let _: () = msg_send![&configuration, setWritingToolsBehavior: -1isize];
+        }
+    }
+    Some(configuration)
 }
 
 /// The app's own origin, where the page and its covers are served from. On

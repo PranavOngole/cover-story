@@ -8,16 +8,25 @@
 //! `request.json`, `{"id": 1, "eval": "<expression>"}` or
 //! `{"id": 2, "snapshot": "name.png"}`; the app answers in `response-<id>.json`
 //! with `{"ok": true, "value": ...}` or `{"ok": false, "error": "..."}`.
+//!
+//! The quit paths (quit.rs) and the title: `{"id": n, "close": true}` closes the
+//! window as its red button does, `{"id": n, "quit": "menu"}` does what the Quit
+//! item does, `{"id": n, "quit": "terminate"}` sends terminate: as the Dock's
+//! Quit does, and `{"id": n, "windowTitle": true}` answers the window's title.
+//! The first three answer before they act, since the app may be gone after.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use objc2::runtime::AnyObject;
-use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSImage};
+use objc2::MainThreadMarker;
+use objc2_app_kit::{NSApplication, NSBitmapImageFileType, NSBitmapImageRep, NSImage, NSWindow};
 use objc2_foundation::{NSDictionary, NSError, NSString};
 use objc2_web_kit::WKWebView;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
+
+use crate::quit::macos::on_main_run_loop;
 
 pub fn watch(app: AppHandle) {
     let Some(dir) = std::env::var_os("PLAIN_SIGHT_E2E_DIR").map(PathBuf::from) else {
@@ -53,6 +62,36 @@ pub fn watch(app: AppHandle) {
             let target = dir.join(name);
             let _ = window
                 .with_webview(move |webview| unsafe { snapshot(webview.inner(), target, answer) });
+        } else if req["windowTitle"].as_bool() == Some(true) {
+            respond(&answer, json!({ "ok": true, "value": window.title().ok() }));
+        } else if req["close"].as_bool() == Some(true) {
+            respond(&answer, json!({ "ok": true }));
+            // The red button's own path: performClose: asks windowShouldClose:,
+            // which becomes the window's close request. From the main run loop,
+            // outside tao's event handler, as AppKit itself would call it.
+            on_main_run_loop(move || {
+                if let Ok(ns_window) = window.ns_window() {
+                    // SAFETY: Tauri's pointer to the window's NSWindow, on the main thread.
+                    let ns_window: &NSWindow = unsafe { &*ns_window.cast() };
+                    ns_window.performClose(None);
+                }
+            });
+        } else if let Some(how) = req["quit"].as_str() {
+            match how {
+                "menu" => {
+                    respond(&answer, json!({ "ok": true }));
+                    crate::quit::begin(&app);
+                }
+                "terminate" => {
+                    respond(&answer, json!({ "ok": true }));
+                    on_main_run_loop(|| {
+                        if let Some(mtm) = MainThreadMarker::new() {
+                            NSApplication::sharedApplication(mtm).terminate(None);
+                        }
+                    });
+                }
+                _ => respond(&answer, json!({ "ok": false, "error": "unknown quit" })),
+            }
         }
     });
 }
