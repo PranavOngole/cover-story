@@ -12,6 +12,12 @@ tauri-build = { version = "=2.7.3", features = [] }
 
 [dependencies]
 tauri = { version = "=2.12.4", features = [] }
+# The system folder picker. Used directly, without tauri-plugin-dialog, which
+# would add three more crates and a script in the page (folder.rs). Its default
+# features are Linux backends only.
+rfd = { version = "=0.17.2", default-features = false }
+# The { name } object the folder commands return. Already used by Tauri.
+serde = { version = "1", features = ["derive"] }
 
 # Test builds only, for the e2e feature below. The versions are the ones
 # Tauri already uses, so nothing new is downloaded.

@@ -5,7 +5,8 @@
 // served from inside the app under the page's own content security policy
 // (tauri.conf.json), the window may show nothing but the app's own page, and
 // the page's downloads are saved into the Downloads folder without ever
-// overwriting a file. The page has no app commands to call.
+// overwriting a file. The page can call four app commands, all for the folder
+// Save writes into (folder.rs), through the adapter in desktop/adapter.js.
 
 // No console window behind the app on Windows release builds (Windows comes later).
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -18,17 +19,31 @@ use tauri::webview::{DownloadEvent, NewWindowResponse};
 use tauri::window::Color;
 use tauri::{Manager, Runtime, Url, Webview, WebviewUrl, WebviewWindowBuilder};
 
+mod folder;
+
 // Test builds only; see the module.
 #[cfg(feature = "e2e")]
 mod e2e;
 
+/// window.PlainSightNative for the page, built into the app.
+const ADAPTER: &str = include_str!("../../adapter.js");
+
 fn main() {
     tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![
+            folder::pick_folder,
+            folder::saved_folder,
+            folder::forget_folder,
+            folder::write_text_file
+        ])
         .setup(|app| {
+            app.manage(folder::Folder::load(app.path().app_data_dir().ok()));
             // The window is built here rather than in tauri.conf.json so that
             // the handlers below are in place before the page loads.
             let handed_out = Mutex::new(HashSet::new());
             WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+                // After Tauri's own scripts, before the page, main frame only.
+                .initialization_script(ADAPTER)
                 .title("Untitled draft")
                 .inner_size(1000.0, 760.0)
                 .min_inner_size(520.0, 420.0)
@@ -88,7 +103,7 @@ fn save_download<R: Runtime>(
         return false;
     }
     // Refuse rather than fall back to some other folder.
-    let Ok(folder) = webview.path().download_dir() else {
+    let Ok(downloads) = webview.path().download_dir() else {
         return false;
     };
     let Some(proposed) = destination.file_name().and_then(|name| name.to_str()) else {
@@ -99,11 +114,13 @@ fn save_download<R: Runtime>(
     };
     // Taken: handed out earlier, or anything at all on disk under that name.
     let taken = |name: &str| {
-        let path = folder.join(name);
+        let path = downloads.join(name);
         handed_out.contains(&path) || path.symlink_metadata().is_ok()
     };
-    let name = free_name(&page_name(proposed, taken), taken);
-    let path = folder.join(name);
+    let Some(name) = download_name(proposed, taken) else {
+        return false;
+    };
+    let path = downloads.join(name);
     if cfg!(debug_assertions) {
         eprintln!("plain-sight: saving a download as {}", path.display());
     }
@@ -112,31 +129,16 @@ fn save_download<R: Runtime>(
     true
 }
 
-/// The page's own rule for a taken name (index.html, folderWrite): " (2)",
-/// " (3)" and so on before the extension. Returns the first name that is not
-/// taken, so an existing file is never overwritten.
-fn free_name(name: &str, taken: impl Fn(&str) -> bool) -> String {
-    if !taken(name) {
-        return name.to_owned();
-    }
-    let (stem, extension) = match name.rfind('.') {
-        Some(dot) if dot > 0 => name.split_at(dot),
-        _ => (name, ""),
-    };
-    let mut n = 2;
-    loop {
-        let candidate = format!("{stem} ({n}){extension}");
-        if !taken(&candidate) {
-            return candidate;
-        }
-        n += 1;
-    }
+/// The name a download gets: the page's own name, numbered by the same rule as
+/// folder files; None when every name up to (99) is taken.
+fn download_name(proposed: &str, taken: impl Fn(&str) -> bool + Copy) -> Option<String> {
+    folder::numbered(&page_name(proposed, taken)).find(|name| !taken(name))
 }
 
 /// The name the page asked for. When that name is taken, wry renames it before
 /// this app sees it, with its own rule: "<name up to the first dot> (k)<rest>",
 /// counting from 1 (wry 0.57.0, src/wkwebview/download.rs lines 62 to 72).
-/// This undoes that rename, so that free_name applies the page's rule instead.
+/// This undoes that rename, so that the page's rule (folder::numbered) applies.
 fn page_name(proposed: &str, taken: impl Fn(&str) -> bool) -> String {
     let (head, rest) = proposed.split_at(proposed.find('.').unwrap_or(proposed.len()));
     if let Some((base, count)) = head.strip_suffix(')').and_then(|h| h.rsplit_once(" (")) {
@@ -157,28 +159,22 @@ mod tests {
     }
 
     #[test]
-    fn a_free_name_is_kept() {
+    fn a_download_keeps_a_free_name_and_numbers_a_taken_one() {
+        let name = "untitled-draft-20261020-1455.sight";
+        assert_eq!(download_name(name, |_| false).as_deref(), Some(name));
+        let taken = [
+            "untitled-draft-20261020-1455.sight",
+            "untitled-draft-20261020-1455 (2).sight",
+        ];
         assert_eq!(
-            free_name("2026-10-20 14-55-03.txt", |_| false),
-            "2026-10-20 14-55-03.txt"
+            download_name(name, |n| taken.contains(&n)).as_deref(),
+            Some("untitled-draft-20261020-1455 (3).sight")
         );
-    }
-
-    #[test]
-    fn a_taken_name_gets_the_page_counter_before_the_extension() {
-        let taken = ["2026-10-20 14-55-03.txt", "2026-10-20 14-55-03 (2).txt"];
-        let free = free_name("2026-10-20 14-55-03.txt", |n| taken.contains(&n));
-        assert_eq!(free, "2026-10-20 14-55-03 (3).txt");
-        let taken = ["untitled-draft-20261020-1455.sight"];
-        let free = free_name("untitled-draft-20261020-1455.sight", |n| taken.contains(&n));
-        assert_eq!(free, "untitled-draft-20261020-1455 (2).sight");
-    }
-
-    #[test]
-    fn the_counter_goes_before_the_last_extension_only() {
-        assert_eq!(free_name("notes", |n| n == "notes"), "notes (2)");
-        assert_eq!(free_name("a.b.txt", |n| n == "a.b.txt"), "a.b (2).txt");
-        assert_eq!(free_name(".sight", |n| n == ".sight"), ".sight (2)");
+        assert_eq!(
+            download_name(name, |_| true),
+            None,
+            "refused when every name up to (99) is taken"
+        );
     }
 
     #[test]
@@ -202,8 +198,8 @@ mod tests {
     fn a_second_save_in_the_same_second_gets_2_not_1() {
         // The first save is on disk; wry proposes " (1)" for the second.
         let taken = |n: &str| n == "2026-10-20 14-55-03.txt";
-        let name = free_name(&page_name("2026-10-20 14-55-03 (1).txt", taken), taken);
-        assert_eq!(name, "2026-10-20 14-55-03 (2).txt");
+        let name = download_name("2026-10-20 14-55-03 (1).txt", taken);
+        assert_eq!(name.as_deref(), Some("2026-10-20 14-55-03 (2).txt"));
     }
 
     #[test]

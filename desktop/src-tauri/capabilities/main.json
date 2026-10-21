@@ -1,8 +1,13 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main",
-  "description": "The main window, for the app's own page only. It may call only the app commands granted here; Wave A has none, so it may call nothing.",
+  "description": "The main window, for the app's own page only. It may call the four folder commands declared in build.rs and nothing else.",
   "windows": ["main"],
   "local": true,
-  "permissions": []
+  "permissions": [
+    "allow-pick-folder",
+    "allow-saved-folder",
+    "allow-forget-folder",
+    "allow-write-text-file"
+  ]
 }
