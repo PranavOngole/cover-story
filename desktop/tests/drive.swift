@@ -333,6 +333,43 @@ case "click":
     }
     emit(["ok": true, "at": [point.x, point.y]])
 
+case "quit-app":
+    // quit-app <pid>: asks the app to quit the way the Dock's Quit does (a
+    // quit request through LaunchServices, not a key press or a signal).
+    let pid = pidArg()
+    guard let running = NSRunningApplication(processIdentifier: pid) else { fail("no app with that pid") }
+    emit(["ok": running.terminate(), "pid": Int(pid)])
+
+case "close-button":
+    // close-button <pid> [click]: the red close button of the app's document
+    // window, pressed through Accessibility (the button sends its window
+    // performClose: itself, so this works when the app is not in front), or
+    // with "click" a real left click at the button's centre, posted to the
+    // app's process while it is in front.
+    needTrust()
+    let pid = pidArg()
+    guard let w = windows(pid).first(where: { (attr($0, kAXSubroleAttribute) as? String) == "AXStandardWindow" }) else { fail("no document window") }
+    guard let found = attr(w, kAXCloseButtonAttribute) else { fail("the window has no close button") }
+    let button = found as! AXUIElement
+    if args.count > 2 && args[2] == "click" {
+        var origin = CGPoint.zero, size = CGSize.zero
+        guard let p = attr(button, kAXPositionAttribute), let s = attr(button, kAXSizeAttribute) else { fail("the close button has no frame") }
+        AXValueGetValue(p as! AXValue, .cgPoint, &origin)
+        AXValueGetValue(s as! AXValue, .cgSize, &size)
+        let point = CGPoint(x: origin.x + size.width / 2, y: origin.y + size.height / 2)
+        if !isFrontmost(pid) { fail("the app is not in front; the click would not reach it") }
+        for type in [CGEventType.leftMouseDown, .leftMouseUp] {
+            guard let event = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: point, mouseButton: .left) else { fail("could not create a mouse event") }
+            event.setIntegerValueField(.mouseEventClickState, value: 1)
+            event.postToPid(pid)
+            usleep(30_000)
+        }
+        emit(["ok": true, "at": [point.x, point.y]])
+    } else {
+        let result = AXUIElementPerformAction(button, kAXPressAction as CFString)
+        emit(["ok": result == .success, "axError": result.rawValue])
+    }
+
 case "clickat":
     // clickat <pid> <x> <y>: a real left click at a screen point (top-left
     // origin), posted to the app's process, for example to put the focus on

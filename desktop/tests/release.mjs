@@ -1,0 +1,147 @@
+// Tests of the release app itself, the sealed bundle `npm run app:build`
+// makes, without key presses, so they also run while the screen is locked:
+// it opens through LaunchServices as a double-click does, its menu bar is the
+// app's own, and each way out (the Quit item, a quit request as the Dock sends
+// it, the window's close button and Close Window) ends it. While the screen is
+// locked macOS shows Accessibility no windows and gives no app a key window,
+// so the close button and Close Window tests run only on an unlocked screen
+// and are reported as not run otherwise. The network watch runs around all of
+// it.
+//
+// Run from desktop/ after `npm run app:build`: npm run test:release
+
+import assert from 'node:assert/strict';
+import { execFileSync, spawn } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
+import path from 'node:path';
+import { DESKTOP, EVIDENCE, HOME, ID, NotRun, alive, drive, note, run, sleep, until } from './harness.mjs';
+
+const APP = process.env.PLAIN_SIGHT_APP || path.join(DESKTOP, 'src-tauri/target/release/bundle/macos/Plain Sight.app');
+const EXE = path.join(APP, 'Contents/MacOS/plain-sight');
+const WEB_DATA = path.join(HOME, 'Library/WebKit', ID);
+let app = null;
+let watch = null;
+const launched = [];
+
+// Every running copy of the release app.
+function instances() {
+  try { return execFileSync('pgrep', ['-f', EXE], { encoding: 'utf8' }).trim().split('\n').map(Number).filter((p) => Number.isInteger(p) && p > 0); } catch { return []; }
+}
+const documentWindows = () => drive('cgwindows', app.pid).windows.filter((w) => w.layer === 0 && w.onscreen);
+
+// Opened the way a double-click opens it: through LaunchServices. A copy that
+// a failed test left running is ended first, so it is never taken for the new
+// one; a copy this run did not open is never touched.
+async function open() {
+  for (const pid of instances()) {
+    assert.ok(launched.includes(pid), 'a copy of the release app that this run did not open is running: ' + pid);
+    note('ending the copy an earlier test left running: ' + pid);
+    drive('quit-app', pid);
+    await until(() => !alive(pid), 'the earlier copy to end', 8000);
+  }
+  execFileSync('open', ['-n', APP]);
+  const pid = await until(() => instances().find((p) => !launched.includes(p)) || 0, 'the app process', 15000);
+  launched.push(pid);
+  app = { pid };
+  note('opened pid ' + pid);
+  await until(() => documentWindows().length === 1, 'the document window', 15000);
+  await sleep(1500);
+}
+// Each way out runs the page's Esc first and ends when the page says it is
+// done (quit_ready). The adapter stops waiting for the page after 2.5 s and the
+// app's own safety timer ends it after 3 s, so an end well inside 2 s shows
+// the page answered.
+async function ended(how) {
+  const t0 = Date.now();
+  await until(() => !alive(app.pid), 'the app to end after ' + how, 8000);
+  const ms = Date.now() - t0;
+  note(how + ': ended after ' + ms + ' ms');
+  app = null;
+  assert.ok(ms < 2000, how + ' ended after ' + ms + ' ms, too late for the page\'s answer');
+}
+
+const tests = [];
+const test = (name, fn) => tests.push({ name, fn });
+
+test('the sealed release app opens through LaunchServices as a double-click does: one window, and its web data in its own folder', async () => {
+  assert.equal(existsSync(WEB_DATA), false, 'no web data before the first launch (moved aside by the harness)');
+  await open();
+  assert.equal(documentWindows().length, 1);
+  await sleep(6000);
+  assert.ok(alive(app.pid), 'still running after several seconds');
+  assert.ok(existsSync(WEB_DATA), 'WebKit keeps the page data in ' + WEB_DATA);
+});
+
+test('its menu bar is the app\'s own and holds only standard items', async () => {
+  const menus = drive('menus', app.pid).menus.filter((m) => m.title !== 'Apple');
+  note('menu bar: ' + JSON.stringify(menus));
+  assert.deepEqual(menus.map((m) => m.title), ['Plain Sight', 'File', 'Edit', 'View', 'Window', 'Help']);
+  const items = Object.fromEntries(menus.map((m) => [m.title, m.items.map((i) => i.title).filter(Boolean)]));
+  for (const want of ['About Plain Sight', 'Services', 'Hide Plain Sight', 'Hide Others', 'Show All', 'Quit Plain Sight']) assert.ok(items['Plain Sight'].includes(want), want);
+  assert.equal(/peek|vault|hidden|reload|inspect|debug|developer|devtools/i.test(Object.values(items).flat().join(' | ')), false);
+});
+
+test('the app\'s own Quit item ends it', async () => {
+  drive('menu', app.pid, 'Plain Sight', 'Quit Plain Sight');
+  await ended('the Quit item');
+});
+
+test('a quit request as the Dock sends it ends it', async () => {
+  await open();
+  drive('quit-app', app.pid);
+  await ended('the Dock-style quit request');
+});
+
+// The document window as Accessibility shows it, or null while the screen is
+// locked (macOS then shows no windows).
+function documentWindow() {
+  const windows = drive('windows', app.pid).windows;
+  note('windows through Accessibility: ' + JSON.stringify(windows.map((w) => ({ subrole: w.subrole, title: w.title, main: w.main, focused: w.focused }))));
+  return windows.find((w) => w.subrole === 'AXStandardWindow') || null;
+}
+async function endAndSkip(reason) {
+  drive('menu', app.pid, 'Plain Sight', 'Quit Plain Sight');
+  await ended('the Quit item');
+  throw new NotRun(reason);
+}
+
+test('the window\'s close button ends it', async () => {
+  await open();
+  if (!documentWindow()) await endAndSkip('macOS shows Accessibility no windows while the screen is locked');
+  drive('close-button', app.pid);
+  await ended('the close button');
+});
+
+test('Close Window in the File menu ends it', async () => {
+  await open();
+  const w = documentWindow();
+  if (!w) await endAndSkip('macOS shows Accessibility no windows while the screen is locked');
+  if (!w.main) await endAndSkip('the window is not the key window, so the item has nothing to close');
+  drive('menu', app.pid, 'File', 'Close Window');
+  await ended('Close Window');
+});
+
+test('no network use was seen from the app or its web view during these launches', async () => {
+  watch.child.kill('SIGTERM');
+  await until(() => existsSync(watch.report), 'the network watch report', 15000);
+  const report = JSON.parse(readFileSync(watch.report, 'utf8'));
+  note('netwatch: ' + JSON.stringify({ appPids: report.appPids, networkPids: report.networkPids, samples: report.samples, sockets: report.sockets.length, nettop: report.nettopLinesForOurPids.length, verdict: report.verdict }));
+  for (const pid of launched) assert.ok(report.appPids.includes(pid), 'the watch saw launch ' + pid);
+  assert.ok(report.networkPids.length >= 1, 'the watch found the web view\'s networking process');
+  assert.equal(report.verdict, 'no network use seen');
+});
+
+await run(tests, {
+  name: 'release',
+  before: () => {
+    const report = path.join(EVIDENCE, 'netwatch.json');
+    const child = spawn(process.execPath, [path.join(DESKTOP, 'tests', 'netwatch.mjs'), '600', report], { stdio: 'ignore' });
+    watch = { child, report };
+  },
+  after: async () => {
+    // No copy of the app outlives the run, however a test ended.
+    for (const pid of instances()) { try { drive('quit-app', pid); } catch (err) { note('quit-app ' + pid + ': ' + err.message); } }
+    await until(() => !instances().length, 'every copy of the app to end', 5000).catch(() => instances().forEach((p) => process.kill(p, 'SIGKILL')));
+    if (watch && watch.child.exitCode === null) watch.child.kill('SIGTERM');
+  }
+});

@@ -9,7 +9,8 @@
     "test:app": "node tests/app.mjs",
     "build:e2e": "npm run copy && cargo build --release --features e2e --target-dir src-tauri/target/e2e --manifest-path src-tauri/Cargo.toml",
     "test:e2e": "node tests/e2e.mjs",
-    "test:bundle": "node tests/bundle.mjs"
+    "test:bundle": "node tests/bundle.mjs",
+    "test:release": "node tests/release.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.12.3"

@@ -19,16 +19,22 @@ const APP = process.env.PLAIN_SIGHT_APP || path.join(DESKTOP, 'src-tauri/target/
 let app = null;   // { pid }
 let frontBefore = -1;
 
-function findPid() {
+const launched = [];
+
+// Every running copy of the release app.
+function instances() {
   try {
-    return Number(execFileSync('pgrep', ['-f', path.join(APP, 'Contents/MacOS/plain-sight')], { encoding: 'utf8' }).trim().split('\n')[0]) || 0;
-  } catch { return 0; }
+    return execFileSync('pgrep', ['-f', path.join(APP, 'Contents/MacOS/plain-sight')], { encoding: 'utf8' }).trim().split('\n').map(Number).filter((p) => Number.isInteger(p) && p > 0);
+  } catch { return []; }
 }
 
-// Opened the way a person opens it, through LaunchServices.
+// Opened the way a person opens it, through LaunchServices. A copy left
+// running would be found in place of the new one, so none may be running.
 async function launch() {
+  assert.deepEqual(instances(), [], 'no copy of the release app is running before it is opened');
   execFileSync('open', ['-n', APP]);
-  const pid = await until(() => findPid(), 'the app process', 15000);
+  const pid = await until(() => instances().find((p) => !launched.includes(p)) || 0, 'the app process', 15000);
+  launched.push(pid);
   app = { pid };
   note('opened pid ' + pid);
   await until(() => drive('cgwindows', pid).windows.some((w) => w.layer === 0 && w.onscreen), 'the app window', 15000);
@@ -227,6 +233,20 @@ test('Cmd+Q quits the app', async () => {
   app = null;
 });
 
+test('Cmd+W closes the window, and closing the window quits the app', async () => {
+  await launch();
+  await keys.press('cmd+w');
+  await until(() => !alive(app.pid), 'the app to quit after Cmd+W', 10000);
+  app = null;
+});
+
+test('a click on the window\'s red close button quits the app', async () => {
+  await launch();
+  drive('close-button', app.pid, 'click');
+  await until(() => !alive(app.pid), 'the app to quit after the close button', 10000);
+  app = null;
+});
+
 await run(tests, {
   name: 'app',
   needUnlocked: true,
@@ -235,7 +255,9 @@ await run(tests, {
     driveRaw('clip-save', path.join(EVIDENCE, 'clipboard.plist'));
   },
   after: async () => {
-    if (app && alive(app.pid)) { process.kill(app.pid, 'SIGTERM'); await sleep(1000); }
+    // No copy of the app outlives the run, however a test ended.
+    for (const pid of instances()) driveRaw('quit-app', pid);
+    await until(() => !instances().length, 'every copy of the app to end', 5000).catch(() => instances().forEach((p) => process.kill(p, 'SIGKILL')));
     driveRaw('clip-restore', path.join(EVIDENCE, 'clipboard.plist'));
     if (frontBefore > 0) driveRaw('front', frontBefore);
   }
