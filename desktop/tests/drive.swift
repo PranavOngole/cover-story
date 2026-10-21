@@ -13,7 +13,6 @@
 
 import Cocoa
 import ApplicationServices
-import IOKit
 
 // MARK: Output
 
@@ -202,11 +201,11 @@ func menuItems(_ menuBarItem: AXUIElement) -> [AXUIElement] {
     return children(menu)
 }
 
+// Seconds since a person last touched the keyboard, mouse or trackpad. The
+// combined session state ignores the events this program posts from its
+// private source; the HID idle time does not (it was reset by every posted key).
 func hidIdleSeconds() -> Double {
-    let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOHIDSystem"))
-    defer { IOObjectRelease(service) }
-    guard let value = IORegistryEntryCreateCFProperty(service, "HIDIdleTime" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? NSNumber else { return -1 }
-    return value.doubleValue / 1_000_000_000
+    CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: ~0)!)
 }
 
 // MARK: Commands

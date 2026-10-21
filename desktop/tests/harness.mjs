@@ -61,11 +61,13 @@ export function drive(...args) {
 export class UserActivity extends Error {}
 let runStart = 0;
 let idleAtStart = 0;
+let requireUnlocked = false;
 export function guard() {
   if (!runStart) return;
   const s = driveRaw('session');
   const expected = idleAtStart + (Date.now() - runStart) / 1000;
   if (s.idle + 2 < expected) throw new UserActivity('keyboard or mouse used during the run (idle ' + Number(s.idle).toFixed(1) + ' s)');
+  if (requireUnlocked && s.locked) throw new UserActivity('the screen locked during the run');
 }
 // Returns null when the run may start, or the reason it may not.
 export function mayStart({ needUnlocked = false } = {}) {
@@ -217,11 +219,29 @@ export async function decryptRecord(record, password) {
 // ---------------------------------------------------------------------------
 // Runner
 // ---------------------------------------------------------------------------
+// One GUI run at a time on this Mac: two would fight over the app's data
+// folders, the Downloads folder and the front window.
+const LOCK = path.join(HOME, 'cover-story-delivery', 'desktop', '.gui-test.lock');
+function takeLock(name) {
+  if (existsSync(LOCK)) {
+    const holder = Number(readFileSync(LOCK, 'utf8').split(' ')[0]);
+    if (holder && alive(holder)) return false;
+  }
+  mkdirSync(path.dirname(LOCK), { recursive: true });
+  writeFileSync(LOCK, process.pid + ' ' + name + ' ' + new Date().toISOString());
+  return true;
+}
+function dropLock() {
+  if (existsSync(LOCK) && Number(readFileSync(LOCK, 'utf8').split(' ')[0]) === process.pid) rmSync(LOCK);
+}
+
 export async function run(tests, { name, needUnlocked = false, before = () => {}, after = async () => {} }) {
   const only = process.env.PLAIN_SIGHT_ONLY ? new RegExp(process.env.PLAIN_SIGHT_ONLY) : null;
   if (!driveRaw('trusted').accessibility) { console.log('Accessibility permission is missing for the program running the tests. Errors: 1'); process.exit(1); }
   const reason = mayStart({ needUnlocked });
   if (reason) { console.log(`${name}: not started: ${reason}. Errors: 0`); process.exit(4); }
+  if (!takeLock(name)) { console.log(`${name}: not started: another GUI test run holds ${LOCK}. Errors: 0`); process.exit(5); }
+  requireUnlocked = needUnlocked;
   markDownloads();
   runStartedAt = Date.now();
   backupAppData();
@@ -248,6 +268,7 @@ export async function run(tests, { name, needUnlocked = false, before = () => {}
     await after();
     collectDownloads();
     restoreAppData();
+    dropLock();
   }
   console.log(`\nEvidence: ${EVIDENCE}`);
   console.log(`${passed} passed, ${failed} failed, ${notRun} not run, ${passed + failed + notRun} total. Errors: ${failed}`);
