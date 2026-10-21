@@ -64,15 +64,18 @@ impl Folder {
         Ok(self.lock()?.as_deref().map(Shown::of))
     }
 
-    /// Forgets the folder, in memory and on disk.
+    /// Forgets the folder, on disk first and then in memory, so a failure
+    /// leaves it remembered in both and the page, which keeps showing it,
+    /// still agrees with the app (DM-220).
     fn forget(&self) -> Result<(), String> {
-        *self.lock()? = None;
-        match self.file.as_deref().map(fs::remove_file) {
-            Some(Err(e)) if e.kind() != ErrorKind::NotFound => {
-                Err(format!("Could not forget the folder: {e}"))
+        let mut current = self.lock()?;
+        if let Some(Err(e)) = self.file.as_deref().map(fs::remove_file) {
+            if e.kind() != ErrorKind::NotFound {
+                return Err(format!("Could not forget the folder: {e}"));
             }
-            _ => Ok(()),
         }
+        *current = None;
+        Ok(())
     }
 
     /// Writes the text into the folder as `<base>.txt`, numbered if that name
@@ -488,6 +491,33 @@ mod tests {
             "nothing after a restart"
         );
         folder.forget().unwrap(); // forgetting twice is fine
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_folder_the_app_cannot_forget_stays_remembered_and_still_takes_saves() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("forget-fails");
+        let data = dir.join("data");
+        let folder = Folder::load(Some(data.clone()));
+        folder.remember(dir.clone()).unwrap();
+        // folder.txt cannot be deleted from a data folder that is read-only.
+        fs::set_permissions(&data, fs::Permissions::from_mode(0o555)).unwrap();
+        let failed = folder.forget();
+        fs::set_permissions(&data, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(failed
+            .unwrap_err()
+            .starts_with("Could not forget the folder"));
+        assert!(
+            folder.shown().unwrap().is_some(),
+            "still remembered in memory"
+        );
+        assert!(data.join("folder.txt").exists(), "and on disk");
+        assert_eq!(
+            folder.write(BASE, "text").unwrap(),
+            format!("{BASE}.txt"),
+            "Save still writes into the folder the page shows"
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 

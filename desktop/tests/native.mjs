@@ -39,6 +39,7 @@ function fakeNative({ saved = null, pick = { name: 'Build_Test_1' }, failPick = 
     api: {
       pickFolder: async () => { calls.push(['pickFolder']); if (failPick) throw new Error('Could not remember the folder'); if (pick) folder = pick; return pick; },
       savedFolder: async () => { calls.push(['savedFolder']); return folder; },
+      // As the app does (folder.rs): a failed forget changes nothing, on disk or in memory (DM-220).
       forgetFolder: async () => { calls.push(['forgetFolder']); if (failForget) throw new Error('Could not forget the folder'); folder = null; },
       writeTextFile: async (base, text) => {
         calls.push(['writeTextFile', base, text]);
