@@ -75,7 +75,7 @@ Two tabs of the page in the same browser share one copy: each tab saves on its o
 
 | Browser | Type, peek, copy, clear, vault | Encrypted `.sight` download | Plain `.txt` download | Write straight into a folder | Checked on this version |
 |---|---|---|---|---|---|
-| Chrome, Edge, Chromium | by design | by design | by design | by design | not yet; the APIs are the same as the tested engines, but no run on this version |
+| Chrome, Edge, Chromium | by design | by design | by design | by design | not yet; nothing has run in these browsers on this version, and the folder column has only ever run against the test suite's simulated folder |
 | Brave | by design | by design | by design | after turning on `brave://flags/#file-system-access-api` and relaunching; the page shows this | the folder button was seen by Pranav on 1.2.x; the save itself and this version not yet |
 | Safari | by design | by design | by design, with a warning: Safari opens downloaded text files in TextEdit by itself unless "Open safe files after downloading" is off (Settings, General), which would show your text on screen; Safari can also ask where each file goes (File download location: Ask for each download) | no, the browser has no folder access | headless WebKit (Safari's engine) on every version; the automatic opening of downloads is a Safari setting that headless runs cannot show |
 | Firefox | by design | by design | by design, and Firefox can ask where each file goes (Settings, General, Downloads) | no, the browser has no folder access | not yet |
@@ -162,7 +162,7 @@ The suite (`tests/smoke.mjs`) loads the real `index.html` in jsdom and drives it
 
 ## Deployment
 
-The site is deployed with the Vercel CLI (`vercel --prod`) as plain static files with no framework and no build step. `.vercelignore` is an allowlist: everything is excluded except `index.html` and `covers/`, so nothing else in the working folder can reach the deployment. Until 21 October 2026 it was a list of exclusions and the deployment carried local tool files; see the changelog for 1.3.1.
+The site is deployed with the Vercel CLI (`vercel --prod`) as plain static files with no framework and no build step. `.vercelignore` is an allowlist: everything is excluded except `index.html` and `covers/`, so nothing else in the working folder can reach the deployment. Until 20 October 2026 it was a list of exclusions and the deployment carried local tool files; see the changelog for 1.3.1.
 
 ## Fictional content
 
