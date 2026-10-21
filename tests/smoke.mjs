@@ -601,7 +601,7 @@ test('Save writes a .sight with a 16-byte salt, 12-byte IV and data; Open restor
     assert.equal(await p.readReal(), 'hello world', 'every refusal left the buffer alone');
     // Nothing on the console object touches the buffer.
     assert.deepEqual(Object.keys(p.w.PlainSight).sort(), ['coverFailed', 'coverId', 'coverIds', 'coverText', 'ready', 'selectedCoverId', 'setCover', 'version']);
-    assert.equal(p.w.PlainSight.version, '1.3.2');
+    assert.equal(p.w.PlainSight.version, '1.3.3');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
@@ -1756,7 +1756,7 @@ test('plain .txt download mode: Save downloads a text file named by the moment w
 test('folder help text fits the browser: Brave gets its setting, Safari and Firefox their download tip, folder-capable browsers no help', async () => {
   const cases = [
     { opts: { brave: true }, expect: /brave:\/\/flags\/#file-system-access-api/ },
-    { opts: { userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15' }, expect: /Ask for each download/ },
+    { opts: { userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15' }, expect: /Ask for each download.*Open safe files after downloading/ },
     { opts: { userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14.0; rv:120.0) Gecko/20100101 Firefox/120.0' }, expect: /Always ask you where to save files/ },
     { opts: { userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' }, expect: /cannot write into a folder, so Save downloads a file\.$/ }
   ];
@@ -1840,6 +1840,47 @@ test('untick while a phrase change is still writing leaves no copy behind', asyn
     await sleep(1200);
     assert.equal(p.storageDump()['plainSight.vault'], undefined, 'the late re-key write did not resurrect the copy');
     assert.ok(!p.d.body.classList.contains('vault-open'));
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('forgetting the folder names the download choice correctly, and a choice change in another tab redraws an open intro', async () => {
+  const folder = fakeFolder('Notes');
+  const p = await loadPage({ folder });
+  try {
+    p.$('input[name="save-mode"][value="txt"]').checked = true;
+    p.$('input[name="save-mode"][value="txt"]').dispatchEvent(new p.w.Event('change', { bubbles: true }));
+    p.$('#btn-folder').click();
+    await p.settle();
+    p.$('#btn-folder-forget').click();
+    await p.settle();
+    assert.equal(p.toast(), 'Save downloads a plain .txt file again');
+    assert.match(p.$('#folder-status').textContent, /plain \.txt/);
+    // Another tab switches the choice back to encrypted: the open intro here redraws.
+    p.w.localStorage.removeItem('plainSight.saveMode');
+    p.w.dispatchEvent(new p.w.StorageEvent('storage', { key: 'plainSight.saveMode', oldValue: 'txt', newValue: null }));
+    assert.match(p.$('#folder-status').textContent, /encrypted/);
+    assert.equal(p.$('input[name="save-mode"][value="sight"]').checked, true);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('untick while a first-time vault setup is still deriving its key leaves no copy and no open vault', async () => {
+  const p = await loadPage();
+  try {
+    p.start();
+    p.type('never stored');
+    p.$('#btn-help').click();
+    p.$('#vault-on').checked = true;
+    p.$('#vault-on').dispatchEvent(new p.w.Event('change', { bubbles: true }));
+    p.$('#vault-phrase').value = 'correct horse battery staple';
+    p.start();                           // key derivation starts (about 200 ms)
+    p.$('#btn-help').click();
+    p.$('#vault-on').checked = false;
+    p.start();                           // untick before the key exists
+    await sleep(900);
+    assert.equal(p.storageDump()['plainSight.vault'], undefined, 'no copy written');
+    assert.ok(!p.d.body.classList.contains('vault-open'), 'not open');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
