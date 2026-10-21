@@ -1042,6 +1042,9 @@
     }
   }
   function vaultOpen() { return vaultKey !== null; }
+  // Browsers give a page no encryption on a plain http address other than localhost.
+  function cryptoAvailable() { return Boolean(window.crypto && crypto.subtle); }
+  const NO_CRYPTO_NOTICE = 'This address gives the page no encryption (it needs https or localhost), so the vault and encrypted files cannot work here.';
   // True while a setup or phrase change is still deriving its key and nothing has dropped it.
   function vaultSetupPending() { return setupPending !== 0 && setupPending === setupAttempt; }
 
@@ -1051,7 +1054,13 @@
     const attempt = ++setupAttempt;
     setupPending = attempt;
     const salt = crypto.getRandomValues(new Uint8Array(16));
-    const key = await deriveKey(phrase, salt, PBKDF2_ITERATIONS);
+    let key;
+    try {
+      key = await deriveKey(phrase, salt, PBKDF2_ITERATIONS);
+    } catch (err) {
+      if (attempt === setupAttempt) { setupPending = 0; toast(cryptoAvailable() ? 'The vault could not be set up' : NO_CRYPTO_NOTICE); }
+      return;
+    }
     if (attempt !== setupAttempt) return;   // Esc, untick or another setup meanwhile
     setupPending = 0;
     vaultKey = key;
@@ -1123,7 +1132,7 @@
     if (e.newValue) {
       try { stale = JSON.parse(e.newValue).salt !== bytesToBase64(vaultSalt); } catch (err) { stale = true; }
     }
-    if (stale) { vaultLock(); toast('The saved copy changed in another tab; this tab is locked'); }
+    if (stale) { setupAttempt += 1; vaultLock(); toast('The saved copy changed in another tab; this tab is locked'); }   // a phrase change still deriving here is dropped too
   }
   function vaultSaveNow() {
     if (!vaultKey) return Promise.resolve();
@@ -1433,23 +1442,35 @@
     if (resolve) resolve(value);
   }
 
-  function openIntro() {
-    endPeek();
-    customTextEl.value = customText;
-    const current = cover ? cover.id : selectedCoverId();
-    for (const radio of document.querySelectorAll('input[name="mode"]')) radio.checked = radio.value === current;
+  // Draws the vault controls from the current state: no encryption on this
+  // address, a saved copy, an open vault, a setup still deriving its key, or none.
+  function vaultRender() {
+    vaultPhraseEl.value = '';
+    if (!cryptoAvailable()) {
+      vaultOnEl.checked = false;
+      vaultOnEl.disabled = true;
+      vaultPhraseEl.disabled = true;
+      vaultStatusEl.textContent = NO_CRYPTO_NOTICE;
+      return;
+    }
     const stored = vaultStored() !== null;
     const pending = vaultSetupPending();   // a setup still deriving its key shows as ticked, so an untick is deliberate
     vaultOnEl.checked = stored || vaultOpen() || pending;
-    vaultPhraseEl.value = '';
     vaultPhraseEl.disabled = !vaultOnEl.checked;
-    folderRender();
     vaultStatusEl.textContent = pending && !stored
       ? 'Your phrase is being set up. Untick to cancel it.'
       : stored
       ? (vaultOpen() ? 'The vault is open and saving as you type. Untick to delete the saved copy. Enter a new phrase to change it.'
                      : 'A saved copy is on this device. Type your phrase on the blank page, then hold ' + modKeyName() + ', press E, then Enter. Untick to delete the copy.')
       : 'To come back to your text later: type your phrase on the blank page, then hold ' + modKeyName() + ', press E, then Enter. Nothing happens for a wrong phrase. There is no recovery for a forgotten one.';
+  }
+  function openIntro() {
+    endPeek();
+    customTextEl.value = customText;
+    const current = cover ? cover.id : selectedCoverId();
+    for (const radio of document.querySelectorAll('input[name="mode"]')) radio.checked = radio.value === current;
+    vaultRender();
+    folderRender();
     introEl.hidden = false;
     $('#btn-start').focus();
   }
@@ -1483,7 +1504,7 @@
       // A locked copy exists: the phrase has to open it. Nothing is overwritten.
       return vaultOpenWith(stored, phrase).then((opened) => {
         if (opened === true) { toast('Saved copy opened'); return true; }
-        if (opened === 'changed') { openIntro(); toast('The saved copy changed in another tab'); return false; }
+        if (opened === 'changed') { vaultRender(); toast('The saved copy changed in another tab'); return false; }
         toast('That phrase does not open the saved copy. Untick the box to delete it and start over.');
         vaultPhraseEl.focus();
         return false;
@@ -1613,7 +1634,7 @@
   // reads or returns the hidden buffer in any form, encrypted or not. Save and
   // Open are reachable only through their buttons.
   window.PlainSight = Object.freeze({
-    version: '1.3.4',
+    version: '1.3.5',
     coverIds: COVER_IDS.slice(),
     coverId: () => (cover ? cover.id : null),
     coverText: () => coverText,

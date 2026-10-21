@@ -149,7 +149,7 @@ cd plain-sight
 npx serve .
 ```
 
-Then open http://localhost:3000. Any static file server works; the page needs http only so the browser will import the cover modules.
+Then open http://localhost:3000. Any static file server works; the page needs http only so the browser will import the cover modules. Use localhost or https: on any other plain http address the browser gives the page no encryption, so the vault and encrypted files cannot work there, and the intro says so.
 
 To run the tests:
 

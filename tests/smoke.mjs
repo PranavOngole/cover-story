@@ -36,22 +36,26 @@ async function importCover(id) {
 // With slowEncrypt set, every AES-GCM encryption in the page takes that many
 // milliseconds (or, given a function, the milliseconds it returns for the nth
 // encryption), so a test can press Esc while a vault write is in flight.
-function cryptoFor(slowEncrypt) {
-  if (!slowEncrypt) return webcrypto;
+// With failDerive set, that many key derivations reject before they work again.
+// With noSubtle, the page sees a crypto object without subtle, as on a plain http address.
+function cryptoFor(slowEncrypt, failDerive = 0, noSubtle = false) {
+  if (noSubtle) return { getRandomValues: (a) => webcrypto.getRandomValues(a) };
+  if (!slowEncrypt && !failDerive) return webcrypto;
   let calls = 0;
+  let derives = 0;
   const delayFor = () => (typeof slowEncrypt === 'function' ? slowEncrypt(calls++) : slowEncrypt);
   return {
     getRandomValues: (a) => webcrypto.getRandomValues(a),
     subtle: {
       importKey: (...a) => webcrypto.subtle.importKey(...a),
-      deriveKey: (...a) => webcrypto.subtle.deriveKey(...a),
+      deriveKey: (...a) => (derives++ < failDerive ? Promise.reject(new Error('deriveKey refused by the test')) : webcrypto.subtle.deriveKey(...a)),
       decrypt: (...a) => webcrypto.subtle.decrypt(...a),
-      encrypt: async (...a) => { await sleep(delayFor()); return webcrypto.subtle.encrypt(...a); }
+      encrypt: async (...a) => { if (slowEncrypt) await sleep(delayFor()); return webcrypto.subtle.encrypt(...a); }
     }
   };
 }
 
-async function loadPage({ random = () => 1, storage = {}, inject = true, folder = null, slowEncrypt = 0, userAgent = undefined, brave = false } = {}) {
+async function loadPage({ random = () => 1, storage = {}, inject = true, folder = null, slowEncrypt = 0, failDerive = 0, noSubtle = false, userAgent = undefined, brave = false } = {}) {
   const errors = [];
   const downloads = [];
   const copied = [];
@@ -70,7 +74,7 @@ async function loadPage({ random = () => 1, storage = {}, inject = true, folder 
       // Deterministic typos: Math.random() === 1 means "never a typo".
       window.Math.random = random;
       // jsdom has no crypto.subtle, URL.createObjectURL or navigator.clipboard.
-      Object.defineProperty(window, 'crypto', { value: cryptoFor(slowEncrypt), configurable: true });
+      Object.defineProperty(window, 'crypto', { value: cryptoFor(slowEncrypt, failDerive, noSubtle), configurable: true });
       window.URL.createObjectURL = (blob) => { downloads.push({ blob, name: null }); return 'blob:http://localhost/' + downloads.length; };
       window.URL.revokeObjectURL = () => {};
       window.HTMLAnchorElement.prototype.click = function () {
@@ -601,7 +605,7 @@ test('Save writes a .sight with a 16-byte salt, 12-byte IV and data; Open restor
     assert.equal(await p.readReal(), 'hello world', 'every refusal left the buffer alone');
     // Nothing on the console object touches the buffer.
     assert.deepEqual(Object.keys(p.w.PlainSight).sort(), ['coverFailed', 'coverId', 'coverIds', 'coverText', 'ready', 'selectedCoverId', 'setCover', 'version']);
-    assert.equal(p.w.PlainSight.version, '1.3.4');
+    assert.equal(p.w.PlainSight.version, '1.3.5');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
@@ -1966,6 +1970,155 @@ test('device vault: a copy deleted by another tab while the intro checks a phras
     assert.equal(q.$('#vault-on').checked, false, 'the intro now shows that no copy exists');
     assert.deepEqual(q.errors, []);
   } finally { q.close(); }
+});
+
+test('device vault: a failed key derivation drops the setup, says so, and leaves nothing shown as pending', async () => {
+  const p = await loadPage({ failDerive: 1 });
+  try {
+    p.start();
+    p.type('not kept');
+    p.$('#btn-help').click();
+    p.$('#vault-on').checked = true;
+    p.$('#vault-on').dispatchEvent(new p.w.Event('change', { bubbles: true }));
+    p.$('#vault-phrase').value = 'correct horse battery staple';
+    p.start();
+    await sleep(300);
+    assert.equal(p.toast(), 'The vault could not be set up');
+    p.$('#btn-help').click();
+    assert.equal(p.$('#vault-on').checked, false, 'nothing shown as pending');
+    assert.match(p.$('#vault-status').textContent, /To come back to your text later/);
+    p.$('#vault-on').checked = true;              // the next try works
+    p.$('#vault-on').dispatchEvent(new p.w.Event('change', { bubbles: true }));
+    p.$('#vault-phrase').value = 'correct horse battery staple';
+    p.start();
+    await sleep(900);
+    assert.ok(p.d.body.classList.contains('vault-open'));
+    assert.equal(await decryptVault(JSON.parse(p.storageDump()['plainSight.vault']), 'correct horse battery staple'), 'not kept');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('device vault: on an address without encryption the intro says so and keeps the vault off', async () => {
+  const p = await loadPage({ noSubtle: true });
+  try {
+    assert.equal(p.$('#intro').hidden, false, 'first visit');
+    assert.equal(p.$('#vault-on').disabled, true);
+    assert.equal(p.$('#vault-on').checked, false);
+    assert.match(p.$('#vault-status').textContent, /no encryption/);
+    p.start();
+    assert.equal(p.$('#intro').hidden, true);
+    p.type('typed anyway');
+    assert.equal(await p.readReal(), 'typed anyway');
+    assert.ok(!p.d.body.classList.contains('vault-open'));
+    assert.equal(p.storageDump()['plainSight.vault'], undefined);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('device vault: when the copy changes during the intro phrase check, the cover and custom text picked on the intro are kept', async () => {
+  const q = await loadPage({ storage: await lockedCopyStorage() });
+  try {
+    q.$('#btn-help').click();
+    q.$('input[name="mode"][value="work"]').checked = true;
+    q.$('#custom-text').value = 'my own cover words';
+    q.$('#vault-phrase').value = 'correct horse battery staple';
+    q.start();                               // phrase check in flight
+    const original = q.storageDump()['plainSight.vault'];
+    q.w.localStorage.removeItem('plainSight.vault');
+    q.w.dispatchEvent(new q.w.StorageEvent('storage', { key: 'plainSight.vault', oldValue: original, newValue: null }));
+    await sleep(900);
+    assert.equal(q.$('#intro').hidden, false);
+    assert.equal(q.toast(), 'The saved copy changed in another tab');
+    assert.equal(q.$('input[name="mode"][value="work"]').checked, true, 'the picked cover stays');
+    assert.equal(q.$('#custom-text').value, 'my own cover words', 'the custom text stays');
+    assert.equal(q.$('#vault-on').checked, false);
+    assert.deepEqual(q.errors, []);
+  } finally { q.close(); }
+});
+
+test('device vault: a phrase change still deriving is dropped when another tab deletes the copy, and this tab stays locked', async () => {
+  const p = await loadPage();
+  try {
+    p.start();
+    p.type('open here');
+    await p.vaultOn('correct horse battery staple');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    const original = p.storageDump()['plainSight.vault'];
+    p.$('#btn-help').click();
+    p.$('#vault-phrase').value = 'a brand new phrase here';
+    p.start();                               // the new key derives in the background
+    p.w.localStorage.removeItem('plainSight.vault');
+    p.w.dispatchEvent(new p.w.StorageEvent('storage', { key: 'plainSight.vault', oldValue: original, newValue: null }));
+    assert.equal(p.toast(), 'The saved copy changed in another tab; this tab is locked');
+    await sleep(900);
+    assert.ok(!p.d.body.classList.contains('vault-open'), 'still locked');
+    assert.equal(p.storageDump()['plainSight.vault'], undefined, 'no new copy written');
+    p.$('#btn-help').click();
+    assert.equal(p.$('#vault-on').checked, false, 'nothing pending, nothing stored');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('device vault: a copy rewritten by another tab under the same salt during an unlock drops the unlock', async () => {
+  const q = await loadPage({ storage: await lockedCopyStorage() });
+  try {
+    q.type('correct horse battery staple');
+    q.unlockChord();
+    const original = q.storageDump()['plainSight.vault'];
+    const other = JSON.parse(original);
+    other.data = other.data.slice(0, -4) + (other.data.endsWith('AAAA') ? 'BBBB' : 'AAAA');   // same salt, other ciphertext
+    const rewritten = JSON.stringify(other);
+    q.w.localStorage.setItem('plainSight.vault', rewritten);
+    q.w.dispatchEvent(new q.w.StorageEvent('storage', { key: 'plainSight.vault', oldValue: original, newValue: rewritten }));
+    await sleep(900);
+    assert.ok(!q.d.body.classList.contains('vault-open'), 'not opened on a copy that changed');
+    assert.equal(q.storageDump()['plainSight.vault'], rewritten, 'the other copy is untouched');
+    assert.equal(await q.readReal(), 'correct horse battery staple');
+    assert.deepEqual(q.errors, []);
+  } finally { q.close(); }
+});
+
+test('device vault: a setup dropped by Esc is not shown as pending', async () => {
+  const p = await loadPage();
+  try {
+    p.start();
+    p.type('short lived');
+    p.$('#btn-help').click();
+    p.$('#vault-on').checked = true;
+    p.$('#vault-on').dispatchEvent(new p.w.Event('change', { bubbles: true }));
+    p.$('#vault-phrase').value = 'correct horse battery staple';
+    p.start();                               // derivation starts
+    p.press('Escape');                       // wipes the page and drops the setup
+    p.$('#btn-help').click();
+    assert.equal(p.$('#vault-on').checked, false, 'nothing pending');
+    assert.match(p.$('#vault-status').textContent, /To come back to your text later/);
+    p.start();
+    await sleep(900);
+    assert.ok(!p.d.body.classList.contains('vault-open'));
+    assert.equal(p.storageDump()['plainSight.vault'], undefined);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('device vault: a phrase change of an open vault shows the open-vault status while it derives, not a setup', async () => {
+  const p = await loadPage();
+  try {
+    p.start();
+    p.type('kept open');
+    await p.vaultOn('correct horse battery staple');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    p.$('#btn-help').click();
+    p.$('#vault-phrase').value = 'a brand new phrase here';
+    p.start();                               // the new key derives in the background
+    p.$('#btn-help').click();
+    assert.equal(p.$('#vault-on').checked, true);
+    assert.match(p.$('#vault-status').textContent, /^The vault is open and saving as you type/);
+    p.start();
+    await sleep(900);
+    assert.ok(p.d.body.classList.contains('vault-open'));
+    assert.equal(await decryptVault(JSON.parse(p.storageDump()['plainSight.vault']), 'a brand new phrase here'), 'kept open');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
 });
 
 test('untick while a first-time vault setup is still deriving its key leaves no copy and no open vault', async () => {
