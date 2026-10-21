@@ -80,6 +80,12 @@ test('the shell links no network crate and no Tauri plugin beyond the folder pic
   }
 });
 
+test('the bundle is sealed with an ad-hoc signature until a Developer ID exists (DR-07, DM-201)', () => {
+  // Without it only the binary carries the linker's signature and a downloaded
+  // copy can be reported as damaged instead of unverified.
+  assert.equal(conf.bundle.macOS && conf.bundle.macOS.signingIdentity, '-');
+});
+
 test('the web deployment allowlist is unchanged (DR-10)', () => {
   const lines = read(ROOT, '.vercelignore').split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
   assert.deepEqual(lines, ['*', '!index.html', '!covers', '!covers/**']);
