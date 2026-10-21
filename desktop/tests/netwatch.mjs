@@ -9,7 +9,7 @@
 // Exit code 0: no socket and no flow seen; 1: something was seen (see the
 // report); 2: the app was never seen running, so nothing was proven.
 
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 
 const [seconds = '600', report = 'netwatch.json'] = process.argv.slice(2);
@@ -28,14 +28,31 @@ const notOurs = new Set();
 const sockets = [];
 let samples = 0;
 let stopped = false;
+
+// nettop logs every process's traffic once a second for the whole watch, so a
+// connection that opens and closes between two socket samples still shows,
+// and so do processes that ended before the watch did.
+const nettopLines = [];
+// Under a pseudo-terminal (script), so nettop writes each line at once
+// instead of holding them in a buffer that a stop would lose; every interface
+// type, loopback included.
+const types = ['wifi', 'wired', 'loopback', 'expensive', 'undefined'].flatMap((t) => ['-t', t]);
+const nettop = spawn('script', ['-q', '/dev/null', 'nettop', '-P', '-L', '0', '-s', '1', '-x', ...types, '-J', 'bytes_in,bytes_out'], { stdio: ['ignore', 'pipe', 'ignore'] });
+let partial = '';
+nettop.stdout.on('data', (chunk) => {
+  const lines = (partial + chunk).split('\n');
+  partial = lines.pop();
+  for (const raw of lines) { const line = raw.replace(/\r$/, ''); if (/^[^,]*\.\d+,/.test(line)) nettopLines.push(line); }
+});
 process.on('SIGTERM', () => { stopped = true; });
 process.on('SIGINT', () => { stopped = true; });
 
 function refresh() {
   for (const line of run('pgrep', ['-fl', FIND]).split('\n')) {
-    const [pid, ...cmd] = line.trim().split(' ');
+    const [first, ...cmd] = line.trim().split(' ');
+    const pid = Number(first);
     // The app itself: the release bundle's executable or a test build's.
-    if (pid && APP.test(cmd.join(' '))) appPids.add(Number(pid));
+    if (Number.isInteger(pid) && pid > 0 && pid !== process.pid && APP.test(cmd.join(' '))) appPids.add(pid);
   }
   for (const line of run('pgrep', ['-f', 'com.apple.WebKit.Networking']).split('\n')) {
     const pid = Number(line.trim());
@@ -58,14 +75,15 @@ while (!stopped && Date.now() < deadline) {
   await sleep(500);
 }
 
-// nettop keeps per-process totals; a process that never had a flow is not
-// listed, and a listed one shows its bytes.
-const flows = run('nettop', ['-P', '-L', '1', '-x', '-J', 'bytes_in,bytes_out']).split('\n')
-  .filter((line) => [...appPids, ...networkPids].some((pid) => line.includes('.' + pid + ',')));
+nettop.kill('SIGTERM');
+// The logged lines of our processes (name.pid,bytes_in,bytes_out,): a process
+// that never had a flow is not listed, and a listed one shows its bytes.
+const flows = nettopLines.filter((line) => [...appPids, ...networkPids].some((pid) => line.includes('.' + pid + ',')));
 
 const result = {
   appPids: [...appPids], networkPids: [...networkPids], samples, sockets, nettopLinesForOurPids: flows,
-  verdict: !appPids.size ? 'the app was never seen running' : sockets.length || flows.some((l) => !/,0,0,$/.test(l)) ? 'network use seen' : 'no network use seen'
+  // Any listed line counts: even with no bytes yet, it means a socket existed.
+  verdict: !appPids.size ? 'the app was never seen running' : sockets.length || flows.length ? 'network use seen' : 'no network use seen'
 };
 writeFileSync(report, JSON.stringify(result, null, 2));
 console.log(`netwatch: ${result.verdict}; app pids ${result.appPids.join(' ') || 'none'}, WebKit networking pids ${result.networkPids.join(' ') || 'none'}, ${samples} samples, ${sockets.length} with sockets, ${flows.length} nettop lines for these pids`);
