@@ -1027,6 +1027,7 @@
   let vaultGeneration = 0;   // bumps when the vault is turned off; a write started before that is dropped
   let setupAttempt = 0;      // bumps on every vault setup, on Esc and on untick; a setup still deriving its key is dropped
   let setupPending = 0;      // the attempt number of a setup still deriving its key, 0 when none
+  let drawnSalt = null;      // the salt of the copy the intro's vault box last showed, null for none
   let unlockAttempt = 0;     // bumps on every chord and on Esc; an unlock started before that is dropped
   let wipeCount = 0;         // bumps on Esc; an Open still deriving its key is cancelled
   let writeChain = Promise.resolve();   // vault writes run one after another, in the order they were asked for
@@ -1116,7 +1117,10 @@
       if (gen !== vaultGeneration) return;
       if (!fresh) {
         const current = vaultStored();
-        if (!current || current.salt !== record.salt) { vaultLock(); return; }
+        if (!current || current.salt !== record.salt) {
+          if (vaultOpen() && record.salt === bytesToBase64(vaultSalt)) vaultLock();   // the open vault's copy is gone or re-keyed; an older key's save is just dropped
+          return;
+        }
       }
       storageSet(STORAGE.vault, JSON.stringify(record));
     };
@@ -1128,20 +1132,22 @@
   // Another tab changed this site's storage. The download choice redraws an
   // open intro; the vault copy is checked against this tab's own.
   function onStorageChange(e) {
-    const cleared = e.key === null;   // another tab cleared this site's storage
+    const cleared = e.key === null;   // another document on this origin cleared the storage
     if (e.key === STORAGE.folderVersion) { onFolderChanged(); return; }
     if ((e.key === STORAGE.saveMode || cleared) && !introEl.hidden) folderRender();
     if (!cleared && e.key !== STORAGE.vault) return;
-    const copyChanged = cleared || recordSalt(e.oldValue) !== recordSalt(e.newValue);   // deleted, re-keyed or new, not an autosave
+    const copyChanged = cleared || !e.newValue || recordSalt(e.oldValue) !== recordSalt(e.newValue);   // deleted, re-keyed or new; not an autosave
     if (vaultOpen()) {
-      const stale = cleared || recordSalt(e.newValue) !== bytesToBase64(vaultSalt);
-      if (stale) {
-        vaultGeneration += 1;   // a write still queued here would bring the deleted or re-keyed copy back
+      if (cleared || recordSalt(e.newValue) !== bytesToBase64(vaultSalt)) {   // this tab's key no longer fits the copy
+        vaultGeneration += 1;   // a save still queued here would bring the deleted or re-keyed copy back
         vaultLock();
         toast('The saved copy changed in another tab; this tab is locked');
       }
+    } else if (copyChanged) {
+      vaultGeneration += 1;   // a save still queued here, even one asked for by Esc, would undo the other tab's change
     }
-    if (copyChanged && !introEl.hidden) vaultRender();   // an open intro follows the copy
+    const shownStale = cleared ? drawnSalt !== null : recordSalt(e.newValue) !== drawnSalt;
+    if (shownStale && !introEl.hidden) vaultRender();   // an open intro follows the copy; a phrase being typed is left alone otherwise
   }
   function recordSalt(json) {
     if (!json) return null;
@@ -1461,13 +1467,16 @@
   function vaultRender() {
     vaultPhraseEl.value = '';
     if (!cryptoAvailable()) {
+      drawnSalt = null;
       vaultOnEl.checked = false;
       vaultOnEl.disabled = true;
       vaultPhraseEl.disabled = true;
       vaultStatusEl.textContent = NO_CRYPTO_NOTICE;
       return;
     }
-    const stored = vaultStored() !== null;
+    const record = vaultStored();
+    const stored = record !== null;
+    drawnSalt = record ? record.salt : null;
     const pending = vaultSetupPending();   // a setup still deriving its key shows as ticked, so an untick is deliberate
     vaultOnEl.checked = stored || vaultOpen() || pending;
     vaultPhraseEl.disabled = !vaultOnEl.checked;
@@ -1651,7 +1660,7 @@
   // reads or returns the hidden buffer in any form, encrypted or not. Save and
   // Open are reachable only through their buttons.
   window.PlainSight = Object.freeze({
-    version: '1.3.6',
+    version: '1.3.7',
     coverIds: COVER_IDS.slice(),
     coverId: () => (cover ? cover.id : null),
     coverText: () => coverText,

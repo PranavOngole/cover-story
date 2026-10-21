@@ -605,7 +605,7 @@ test('Save writes a .sight with a 16-byte salt, 12-byte IV and data; Open restor
     assert.equal(await p.readReal(), 'hello world', 'every refusal left the buffer alone');
     // Nothing on the console object touches the buffer.
     assert.deepEqual(Object.keys(p.w.PlainSight).sort(), ['coverFailed', 'coverId', 'coverIds', 'coverText', 'ready', 'selectedCoverId', 'setCover', 'version']);
-    assert.equal(p.w.PlainSight.version, '1.3.6');
+    assert.equal(p.w.PlainSight.version, '1.3.7');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
@@ -2032,6 +2032,7 @@ test('device vault: when the copy changes during the intro phrase check, the cov
     assert.equal(q.$('input[name="mode"][value="work"]').checked, true, 'the picked cover stays');
     assert.equal(q.$('#custom-text').value, 'my own cover words', 'the custom text stays');
     assert.equal(q.$('#vault-on').checked, false);
+    assert.equal(q.$('#vault-phrase').value, '', 'the phrase field is emptied by the redraw');
     assert.deepEqual(q.errors, []);
   } finally { q.close(); }
 });
@@ -2244,6 +2245,141 @@ test('device vault: an open intro on a locked tab follows the copy: a same-salt 
     assert.match(q.$('#vault-status').textContent, /To come back to your text later/);
     assert.deepEqual(q.errors, []);
   } finally { q.close(); }
+});
+
+test('device vault: Esc during a phrase change\'s first save, then a delete in another tab: nothing comes back', async () => {
+  const p = await loadPage({ slowEncrypt: (n) => (n === 1 ? 1500 : 0) });   // the first save under the new phrase takes 1500 ms
+  try {
+    p.start();
+    p.type('open here');
+    await p.vaultOn('correct horse battery staple');
+    const original = p.storageDump()['plainSight.vault'];
+    p.$('#btn-help').click();
+    p.$('#vault-phrase').value = 'a brand new phrase here';
+    p.start();
+    await sleep(900);                        // the new key is derived, its first save is in flight
+    assert.ok(p.d.body.classList.contains('vault-open'));
+    p.press('Escape');                       // locks; the Esc save queues behind the slow first save
+    p.w.localStorage.removeItem('plainSight.vault');
+    p.w.dispatchEvent(new p.w.StorageEvent('storage', { key: 'plainSight.vault', oldValue: original, newValue: null }));
+    await sleep(2500);
+    assert.equal(p.storageDump()['plainSight.vault'], undefined, 'neither the first save nor the Esc save brought the copy back');
+    assert.ok(!p.d.body.classList.contains('vault-open'));
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('device vault: a delete event with an unreadable old value still drops the queued saves of a locked tab', async () => {
+  const p = await loadPage({ slowEncrypt: (n) => (n === 1 ? 1500 : 0) });
+  try {
+    p.start();
+    p.type('open here');
+    await p.vaultOn('correct horse battery staple');
+    p.$('#btn-help').click();
+    p.$('#vault-phrase').value = 'a brand new phrase here';
+    p.start();
+    await sleep(900);                        // the new key is derived, its first save is in flight
+    p.press('Escape');                       // locks; the Esc save queues behind it
+    p.w.localStorage.removeItem('plainSight.vault');
+    p.w.dispatchEvent(new p.w.StorageEvent('storage', { key: 'plainSight.vault', oldValue: 'not json', newValue: null }));
+    await sleep(2500);
+    assert.equal(p.storageDump()['plainSight.vault'], undefined, 'nothing came back');
+    assert.ok(!p.d.body.classList.contains('vault-open'));
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('device vault: an Esc save that finds the copy gone does not disturb a new vault set up meanwhile', async () => {
+  const p = await loadPage({ slowEncrypt: (n) => (n === 1 ? 1500 : 0) });   // the Esc save is the second encryption
+  try {
+    p.start();
+    p.type('old words');
+    await p.vaultOn('correct horse battery staple');
+    p.press('Escape');                       // the Esc save starts, slowly
+    p.w.localStorage.removeItem('plainSight.vault');   // deleted elsewhere meanwhile; no storage event reaches this tab
+    p.type('new words');
+    p.$('#btn-help').click();
+    p.$('#vault-on').checked = true;
+    p.$('#vault-on').dispatchEvent(new p.w.Event('change', { bubbles: true }));
+    p.$('#vault-phrase').value = 'a brand new phrase here';
+    p.start();                               // a new vault; its first save is immediate
+    await sleep(900);
+    assert.ok(p.d.body.classList.contains('vault-open'), 'the new vault is open');
+    await sleep(1500);                       // the old Esc save lands on a copy that is not its own and is dropped
+    assert.ok(p.d.body.classList.contains('vault-open'), 'still open');
+    assert.equal(await decryptVault(JSON.parse(p.storageDump()['plainSight.vault']), 'a brand new phrase here'), 'new words');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('device vault: a save that finds the copy gone while a phrase change derives locks the tab and drops the change', async () => {
+  const p = await loadPage();
+  let hidden = false;
+  try {
+    p.start();
+    p.type('fallback path');
+    await p.vaultOn('correct horse battery staple');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    p.w.localStorage.removeItem('plainSight.vault');   // deleted elsewhere; no storage event reaches this tab
+    p.$('#btn-help').click();
+    p.$('#vault-phrase').value = 'a brand new phrase here';
+    p.start();                               // the new key derives
+    Object.defineProperty(p.d, 'hidden', { get: () => hidden, configurable: true });
+    hidden = true;
+    p.d.dispatchEvent(new p.w.Event('visibilitychange'));   // the save on hide runs under the old key and finds no copy
+    await sleep(900);
+    assert.ok(!p.d.body.classList.contains('vault-open'), 'locked by the failed save');
+    assert.equal(p.storageDump()['plainSight.vault'], undefined, 'the phrase change wrote nothing');
+    hidden = false;
+    p.d.dispatchEvent(new p.w.Event('visibilitychange'));
+    p.$('#btn-help').click();
+    assert.equal(p.$('#vault-on').checked, false, 'nothing pending');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('device vault: a clear by another document when no copy exists leaves a phrase being typed alone', async () => {
+  const p = await loadPage();
+  try {
+    p.start();
+    p.type('fresh start');
+    p.$('#btn-help').click();
+    p.$('#vault-on').checked = true;
+    p.$('#vault-on').dispatchEvent(new p.w.Event('change', { bubbles: true }));
+    p.$('#vault-phrase').value = 'half a phr';
+    p.w.localStorage.clear();
+    p.w.dispatchEvent(new p.w.StorageEvent('storage', { key: null, oldValue: null, newValue: null }));
+    assert.equal(p.$('#vault-phrase').value, 'half a phr');
+    assert.equal(p.$('#vault-on').checked, true);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('device vault: an open intro showing a saved copy unticks at once when another document clears the storage', async () => {
+  const q = await loadPage({ storage: await lockedCopyStorage() });
+  try {
+    q.$('#btn-help').click();
+    assert.equal(q.$('#vault-on').checked, true);
+    q.w.localStorage.clear();
+    q.w.dispatchEvent(new q.w.StorageEvent('storage', { key: null, oldValue: null, newValue: null }));
+    assert.equal(q.$('#vault-on').checked, false);
+    assert.match(q.$('#vault-status').textContent, /To come back to your text later/);
+    assert.deepEqual(q.errors, []);
+  } finally { q.close(); }
+});
+
+test('a clear by another document redraws the download choice on an open intro', async () => {
+  const p = await loadPage();
+  try {
+    p.$('input[name="save-mode"][value="txt"]').checked = true;
+    p.$('input[name="save-mode"][value="txt"]').dispatchEvent(new p.w.Event('change', { bubbles: true }));
+    assert.match(p.$('#folder-status').textContent, /plain \.txt/);
+    p.w.localStorage.clear();
+    p.w.dispatchEvent(new p.w.StorageEvent('storage', { key: null, oldValue: null, newValue: null }));
+    assert.equal(p.$('input[name="save-mode"][value="sight"]').checked, true);
+    assert.match(p.$('#folder-status').textContent, /encrypted/);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
 });
 
 test('untick while a first-time vault setup is still deriving its key leaves no copy and no open vault', async () => {
