@@ -286,20 +286,20 @@
 <div id="intro" class="overlay" role="dialog" aria-modal="true" aria-labelledby="intro-title" hidden>
   <div class="card">
     <h1 id="intro-title">Plain Sight</h1>
-    <p>Whatever you type on this page goes into a hidden buffer. The screen shows a document being written instead. Nothing you type leaves this page: there is no server, no account and no analytics, and the page never sends what you type anywhere.</p>
+    <p data-app="Whatever you type goes into a hidden buffer. The screen shows a document being written instead. Nothing you type leaves this app: there is no server, no account and no analytics, and the app never sends what you type anywhere.">Whatever you type on this page goes into a hidden buffer. The screen shows a document being written instead. Nothing you type leaves this page: there is no server, no account and no analytics, and the page never sends what you type anywhere.</p>
     <ol>
       <li><strong>Peek.</strong> Press <kbd data-mod>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>G</kbd> to see what you actually wrote. Press it again, or type anything, to hide it. You can read and copy your text, not edit earlier parts of it.</li>
       <li><strong>Copy.</strong> While peeking, press <kbd data-mod>Ctrl</kbd> + <kbd>C</kbd> to copy your real text to the clipboard.</li>
-      <li><strong>Clear.</strong> Press <kbd>Esc</kbd> to erase the hidden text and the screen. The page also clears itself after 10 minutes in a background tab. A saved copy on this device, if you turned that on below, stays and is locked.</li>
+      <li><strong>Clear.</strong> Press <kbd>Esc</kbd> to erase the hidden text and the screen. <span data-app="The app also clears itself after 10 minutes with its window minimized or hidden.">The page also clears itself after 10 minutes in a background tab.</span> A saved copy on this device, if you turned that on below, stays and is locked.</li>
       <li><strong>Save and open.</strong> Save downloads your text as a <code>.sight</code> file encrypted with AES-256-GCM, the key derived from your password with PBKDF2 (SHA-256, 310,000 rounds). Open restores it and replaces what is on the page. There is no way to recover a forgotten password.</li>
     </ol>
-    <p class="note">Reloading or closing the tab erases the hidden text unless you keep a copy on this device. The header belongs to the cover: its word count counts the text on screen, not your words.</p>
+    <p class="note"><span data-app="Closing the window or quitting erases the hidden text unless you keep a copy on this device.">Reloading or closing the tab erases the hidden text unless you keep a copy on this device.</span> The header belongs to the cover: its word count counts the text on screen, not your words.</p>
     <!-- Device vault: optional, off by default. The hidden text is saved in
          localStorage as AES-256-GCM ciphertext under a phrase; the key exists
          only in memory while the vault is open. -->
     <fieldset class="vault">
       <legend><strong>Keep my text on this device</strong> (optional)</legend>
-      <label class="check"><input type="checkbox" id="vault-on"> <span>Save my text in this browser, encrypted, so I can come back to it later.</span></label>
+      <label class="check"><input type="checkbox" id="vault-on"> <span data-app="Save my text on this computer, encrypted, so I can come back to it later.">Save my text in this browser, encrypted, so I can come back to it later.</span></label>
       <label for="vault-phrase">Phrase, 12 characters or more</label>
       <input id="vault-phrase" type="password" autocomplete="new-password" spellcheck="false" disabled>
       <p class="note" id="vault-status">To come back to your text later: type your phrase on the blank page, then hold <kbd data-mod>Ctrl</kbd>, press <kbd>E</kbd>, then <kbd>Enter</kbd>. Nothing happens for a wrong phrase. There is no recovery for a forgotten one.</p>
@@ -323,7 +323,7 @@
         <label class="check"><input type="radio" name="save-mode" value="sight" checked> <span>Download an encrypted <code>.sight</code> file (asks for a password)</span></label>
         <label class="check"><input type="radio" name="save-mode" value="txt"> <span>Download a plain <code>.txt</code> file named by the moment, no password</span></label>
       </div>
-      <p class="note" id="folder-note">With a folder chosen, Save writes a plain text file named by the moment you press it, such as <code>2026-10-20 14-55-03.txt</code>, straight into that folder. Plain text means anyone who can open the file can read it. Folder access exists in Chrome, Edge and other Chromium browsers; Brave needs a setting turned on; Safari and Firefox download instead.</p>
+      <p class="note" id="folder-note">With a folder chosen, Save writes a plain text file named by the moment you press it, such as <code>2026-10-20 14-55-03.txt</code>, straight into that folder. Plain text means anyone who can open the file can read it. <span data-app="">Folder access exists in Chrome, Edge and other Chromium browsers; Brave needs a setting turned on; Safari and Firefox download instead.</span></p>
     </fieldset>
     <!-- Mode selector. The choice is kept in localStorage under plainSight.cover
          and the matching covers/<id>.js is imported. -->
@@ -335,7 +335,7 @@
     </fieldset>
     <label for="custom-text"><strong>Your own cover text</strong> (optional)</label>
     <textarea id="custom-text" spellcheck="false" placeholder="Paste text here to replace the built-in text. Blank lines separate paragraphs. A line that starts with ## becomes a heading."></textarea>
-    <p class="note">Stored only in this browser (localStorage). Leave it blank to use the built-in text of the look you picked.</p>
+    <p class="note" data-app="Stored only on this computer. Leave it blank to use the built-in text of the look you picked.">Stored only in this browser (localStorage). Leave it blank to use the built-in text of the look you picked.</p>
     <div class="row">
       <button id="btn-start" class="btn primary" type="button">Start writing</button>
     </div>
@@ -1154,8 +1154,13 @@
   let folderHandle = null;
   const FOLDER_DB = 'plainSight';
   const FOLDER_STORE = 'handles';
+  // The desktop app (desktop/ in this repository) injects this adapter before
+  // the page runs: the system folder picker, file writes into the chosen
+  // folder and a quit hook. No browser has it. The app keeps the folder's
+  // path; the page only sees a { name } object in place of a handle.
+  const native = window.PlainSightNative || null;
 
-  function folderSupported() { return typeof window.showDirectoryPicker === 'function'; }
+  function folderSupported() { return Boolean(native) || typeof window.showDirectoryPicker === 'function'; }
 
   function openFolderDb() {
     return new Promise((resolve) => {
@@ -1169,6 +1174,7 @@
     });
   }
   async function folderLoad() {
+    if (native) return native.savedFolder();
     const db = await openFolderDb();
     if (!db) return null;
     return new Promise((resolve) => {
@@ -1180,6 +1186,7 @@
     });
   }
   async function folderStore(handle) {
+    if (native) { if (!handle) await native.forgetFolder(); return; }   // the app remembers a folder when it is picked
     const db = await openFolderDb();
     if (!db) return;
     await new Promise((resolve) => {
@@ -1196,7 +1203,8 @@
   async function folderChoose() {
     blurActive();
     try {
-      const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
+      const handle = native ? await native.pickFolder() : await window.showDirectoryPicker({ mode: 'readwrite' });
+      if (!handle) return;   // the app's picker returns null when cancelled
       folderHandle = handle;
       await folderStore(handle);
       folderAnnounce();
@@ -1246,6 +1254,7 @@
   // or an older file) gets a counter before the extension.
   async function folderWrite(text, stamp) {
     const base = (stamp || folderFileName()).replace(/\.txt$/, '');
+    if (native) return native.writeTextFile(base, text);   // the app applies the same names and counter, never overwriting
     let name = base + '.txt';
     for (let n = 2; n < 100; n++) {
       let exists = true;
@@ -1587,6 +1596,13 @@
     folderForgetBtn.addEventListener('click', folderForget);
     folderRender();
     folderLoad().then((handle) => { folderHandle = handle; folderRender(); });
+    if (native) {
+      // In the app: the intro's wording for an app, and quitting or closing
+      // the window works like Esc. The promise settles once an open vault's
+      // last copy is written.
+      for (const el of document.querySelectorAll('[data-app]')) el.textContent = el.dataset.app;
+      native.onQuit(() => { wipe(); return writeChain; });
+    }
     if (!storageGet(STORAGE.intro)) openIntro();
   }
 
