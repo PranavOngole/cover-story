@@ -473,6 +473,20 @@ test('the window title follows the cover on screen', async () => {
   await until(async () => (await windowTitle()) === 'Untitled draft', 'back to the novel title', 5000);
 });
 
+test('the menu bar is the app\'s own and holds only standard items', async () => {
+  const menus = drive('menus', app.pid).menus.filter((m) => m.title !== 'Apple');
+  note('menu bar: ' + JSON.stringify(menus));
+  assert.deepEqual(menus.map((m) => m.title), ['Plain Sight', 'File', 'Edit', 'View', 'Window', 'Help']);
+  const items = Object.fromEntries(menus.map((m) => [m.title, m.items.map((i) => i.title).filter(Boolean)]));
+  for (const want of ['About Plain Sight', 'Services', 'Hide Plain Sight', 'Hide Others', 'Show All', 'Quit Plain Sight']) {
+    assert.ok(items['Plain Sight'].includes(want), 'the app menu has ' + want);
+  }
+  assert.ok(items.File.includes('Close Window'));
+  for (const want of ['Undo', 'Redo', 'Cut', 'Copy', 'Paste', 'Select All']) assert.ok(items.Edit.includes(want), 'Edit has ' + want);
+  const all = Object.values(items).flat().join(' | ');
+  assert.equal(/peek|vault|hidden|reload|inspect|debug|developer|devtools/i.test(all), false, 'nothing names the trick or a browser tool: ' + all);
+});
+
 test('a right click gives no menu on the page, and the usual one in the text fields', async () => {
   const r = await js(`(() => {
     const fire = (el) => { const e = new MouseEvent('contextmenu', { bubbles: true, cancelable: true }); el.dispatchEvent(e); return e.defaultPrevented; };

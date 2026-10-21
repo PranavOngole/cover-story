@@ -141,6 +141,34 @@ Corporate IT may treat a page like this as an exfiltration or monitoring-evasion
 - With the vault on, the page saves 1.5 seconds after the last keystroke and again when the tab is hidden, on Esc and on the way out of the page. Closing or reloading the tab within about a second of typing can still lose those last keystrokes from the copy, because the browser may not wait for the encryption to finish.
 - Tested headless in WebKit (Safari's engine): no console errors, all three covers, the chords, the vault, save and open, and no horizontal overflow at 390px. Current Chrome, Edge and Firefox use the same standard APIs (WebCrypto, ES modules, the Clipboard API with a fallback) and are expected to work, but they have not been checked on this version.
 
+## Desktop app (Mac)
+
+The same page also runs as a Mac app, built from the `desktop/` folder. The app is a small native shell ([Tauri](https://tauri.app) 2) around the unchanged `index.html` and covers, shown in the system's own web view, the engine Safari uses. It is about 3 MB, is built for Apple silicon Macs and declares macOS 11 as its minimum (it was tested on macOS 26), and its changes are listed in `desktop/CHANGELOG.md`.
+
+What the app adds to the page:
+
+- **Save into a folder on every Mac.** "Choose a folder on this computer" opens the system folder picker. From then on Save writes your real text as a plain text file named by the moment you pressed it, `YYYY-MM-DD HH-MM-SS.txt`, into that folder; a name that is already taken gets ` (2)`, ` (3)` and so on, and an existing file is never overwritten. The app remembers the folder across a quit, in its own data folder (`~/Library/Application Support/com.pranavongole.plainsight/folder.txt` holds the folder's path; the page itself only ever learns the folder's name). "Stop using the folder" forgets it.
+- **Save without a folder** writes into your Downloads folder under the same names the web page uses, with ` (2)` for a taken name instead of overwriting, and the page says "Saved" only once the app has written the file ("Could not save" otherwise, for example if macOS was told not to let the app use the Downloads folder).
+- **Quitting and closing work like Esc.** The window's close button, Cmd+W, Cmd+Q and a quit from the Dock all erase the screen and the hidden text first; an open device vault is saved and locked, and its encrypted copy stays for the next launch.
+- **A document window.** The title bar names the cover on screen, the menu bar has only standard items, a right click on the page shows no menu (the text fields keep theirs), and the intro's wording speaks of the app instead of a browser.
+- **The device vault** works as on the web; in the app its encrypted copy lives in the app's own web data (`~/Library/WebKit/com.pranavongole.plainsight`).
+
+How it is kept honest: the app serves the page's own Content Security Policy a second time as a header, so a blocked request is refused by two copies of the same policy; it shows nothing but its own page (navigation away and new windows are refused); the page can call exactly six app commands (five for Save, one to say it is ready to quit), and the app accepts only the file names Save makes. A network watch around a full session of the end-to-end tests (nine launches, saves, folder writes, the vault, every way to quit, and attempts to load a web address) saw no socket and no network traffic from the app or its web view. The engine change for the app is one guarded branch in `index.html` (search for `native`); in a browser it does nothing.
+
+What changes in the threat model inside the app: no browser extension can reach the page. macOS features that a person starts by hand (Services, Look Up, Dictation, AutoFill) can still pass selected text to other apps or to Apple, as in any app; the app asks WebKit to keep Apple's Writing Tools away from the page. If the app is ended abruptly (Force Quit, a crash, power loss) within about four seconds of typing, the last keystrokes can be missing from the vault copy; quitting, closing the window or pressing Esc saves them first. The app does not use macOS's App Sandbox yet; with a Developer ID signature it could, and macOS itself would then refuse any network connection.
+
+To build and run it (needs Node 24, Rust through rustup and the Xcode command line tools):
+
+```
+npm --prefix desktop ci
+npm run app:dev       # opens the app; the first build takes a few minutes
+npm run app:build     # desktop/src-tauri/target/release/bundle/macos/Plain Sight.app
+```
+
+A copy built on your own Mac opens with a double-click. The app is signed ad hoc, not with an Apple Developer ID, so a copy that arrives from elsewhere (a download, AirDrop, email) is refused the first time; `desktop/SIGNING.md` explains the way past that and the steps to sign and notarize the app.
+
+Tests: `npm test` runs the web suite, the jsdom tests of the app's branch of the engine, static checks of the app's configuration and tests of the copy step. `npm --prefix desktop run test:bundle` checks the built app itself: its files, its signature and the four page files embedded in its binary. `npm --prefix desktop run test:e2e` (after `npm --prefix desktop run build:e2e`) runs the real app and drives it from inside the page; `npm --prefix desktop run test:app` drives the release app with real key presses through macOS. Both need the Accessibility permission for the program that runs them, start only when the Mac has been left alone (real key presses also need the screen unlocked), stop at the first touch of the keyboard or mouse, and put the app's data, the clipboard and the Downloads folder back as they were.
+
 ## Run locally
 
 ```

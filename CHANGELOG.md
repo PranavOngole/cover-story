@@ -1,6 +1,6 @@
 # Changelog
 
-One entry per wave. Dates are the day the wave was committed.
+One entry per wave. Dates are the day the wave was committed. The Mac app's changes are in `desktop/CHANGELOG.md`.
 
 ## Wave 0, 2026-10-19 (cdb23ab)
 

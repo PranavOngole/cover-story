@@ -23,11 +23,13 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         &name,
         true,
         &[
-            &PredefinedMenuItem::about(app, None, Some(about))?,
+            // Labels from the product name, not the process name, so a test
+            // build run outside the bundle reads the same.
+            &PredefinedMenuItem::about(app, Some(&format!("About {name}")), Some(about))?,
             &PredefinedMenuItem::separator(app)?,
             &PredefinedMenuItem::services(app, None)?,
             &PredefinedMenuItem::separator(app)?,
-            &PredefinedMenuItem::hide(app, None)?,
+            &PredefinedMenuItem::hide(app, Some(&format!("Hide {name}")))?,
             &PredefinedMenuItem::hide_others(app, None)?,
             &PredefinedMenuItem::show_all(app, None)?,
             &PredefinedMenuItem::separator(app)?,
