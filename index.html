@@ -820,7 +820,7 @@
       vaultWrite(key, salt, iterations, text);
     }
     real = '';
-    lockedTextSalt = null;
+    lockedTextSalts = null;
     resetCover();
     if (peeking) realEl.textContent = '';
     updateHeader();
@@ -843,6 +843,8 @@
   function onKeyDown(e) {
     if (e.isComposing) return;
     const key = e.key;
+    if (e.repeat) { if (repeatsAfterClose) return; }   // the held key that closed a dialog: its repeats are not keystrokes (DM-231)
+    else repeatsAfterClose = false;                     // a fresh press, of any key, ends that
     if (key === 'Control' || key === 'Meta' || key === 'Shift' || key === 'Alt') return;   // a modifier on its own
 
     // Chords with Ctrl or Cmd (either works on every platform): peek, copy
@@ -1039,13 +1041,13 @@
     if (salt.length !== 16 || iv.length !== 12) throw new Error('Damaged file');
     const key = await deriveKey(password, salt, iterations);
     const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, data);
-    return { text: new TextDecoder().decode(plain), key, salt, iterations };
+    return { text: new TextDecoder('utf-8', { ignoreBOM: true }).decode(plain), key, salt, iterations };   // the text comes back whole: a leading U+FEFF is text here, not an encoding mark (DM-232)
   }
 
   // Replaces the hidden buffer with text and rebuilds the screen to match.
   function replaceReal(text) {
     real = text;
-    lockedTextSalt = null;   // Open, or the chord, replaced the page: it no longer holds the copy plus more (QA-G-02)
+    lockedTextSalts = null;   // Open, or the chord, replaced the page: it no longer holds the copy plus more (QA-G-02)
     rebuildCoverForLength(real.length);
     if (peeking) realEl.textContent = real;
     vaultScheduleSave();
@@ -1077,7 +1079,7 @@
   let drawnSalt = null;      // the salt of the copy the intro's vault box last showed, null for none; this tab's own saves update it
   let unlockAttempt = 0;     // bumps on every chord and on Esc; an unlock started before that is dropped
   let wipeCount = 0;         // bumps on Esc; an Open still deriving its key is cancelled
-  let lockedTextSalt = null; // the salt of the copy whose refused write locked the vault while the text stayed on the page: that text is newer than the copy, so the intro's phrase reopens the vault around it (QA-G-02); null otherwise
+  let lockedTextSalts = null; // the salts of the copies this tab's vault had when a refused write locked it while the text stayed on the page: the refused record's, and the one still on the device (a new phrase's first write refused leaves the earlier phrase's copy there, DM-230); that text is newer than both, so the intro's phrase reopens the vault around it (QA-G-02); null otherwise
   let writeChain = Promise.resolve();   // vault writes run one after another, in the order they were asked for
 
   function vaultStored() {
@@ -1116,7 +1118,7 @@
     vaultKey = key;
     vaultSalt = salt;
     vaultIterations = PBKDF2_ITERATIONS;
-    lockedTextSalt = null;   // the text is saved afresh under this key
+    lockedTextSalts = null;   // the text is saved afresh under this key
     body.classList.add('vault-open');
     if (!introEl.hidden) vaultStatusRefresh();   // an intro reopened during the setup says the vault is open once the key exists; the box stays as the person left it
     await vaultWrite(key, salt, PBKDF2_ITERATIONS, real, true);
@@ -1134,8 +1136,8 @@
       vaultSalt = r.salt;
       vaultIterations = r.iterations;   // the copy keeps the count it was made with (the intro's phrase check)
       body.classList.add('vault-open');
-      const kept = lockedTextSalt !== null && lockedTextSalt === bytesToBase64(r.salt) && real !== '';   // a lock the device caused left the page text in place, newer than this copy (QA-G-02)
-      lockedTextSalt = null;
+      const kept = lockedTextSalts !== null && lockedTextSalts.has(bytesToBase64(r.salt)) && real !== '';   // a lock the device caused left the page text in place, newer than this copy (QA-G-02, DM-230)
+      lockedTextSalts = null;
       if (kept) { vaultSaveNow(); return 'kept'; }   // the page text stays as it is and becomes the copy, if the device now accepts it
       replaceReal(r.text + real);   // anything typed before the intro opened follows the saved text
       return true;
@@ -1157,7 +1159,7 @@
   function vaultDisable() {
     vaultGeneration += 1;   // any write still queued is dropped; Esc keeps its save, so this is not in vaultLock
     vaultLock();
-    lockedTextSalt = null;
+    lockedTextSalts = null;
     storageSet(STORAGE.vault, '');
   }
   // Encrypts text under a key and stores it. Writes are queued so they land in
@@ -1185,7 +1187,11 @@
         }
       }
       if (!storageSet(STORAGE.vault, JSON.stringify(record))) {   // storage full or blocked: say so, and do not pretend to be saving
-        if (vaultOpen() && record.salt === bytesToBase64(vaultSalt)) { vaultLock(); lockedTextSalt = record.salt; }   // the text stays on the page, newer than the copy (QA-G-02)
+        if (vaultOpen() && record.salt === bytesToBase64(vaultSalt)) {   // the text stays on the page, newer than the copy (QA-G-02)
+          vaultLock();
+          const current = vaultStored();   // a new phrase's first write refused: the copy on the device is the earlier phrase's (DM-230)
+          lockedTextSalts = new Set(current ? [record.salt, current.salt] : [record.salt]);
+        }
         toast(STORAGE_FAILED_NOTICE);
         if (!introEl.hidden) vaultStatusRefresh();
         return;
@@ -1630,6 +1636,7 @@
   // ------------------------------------------------------------------
   let pwResolve = null;
   let pwConfirmOnly = false;   // the dialog asks only for OK or Cancel, with no password field
+  let repeatsAfterClose = false;   // a dialog or the intro was closed by a key press still held: its auto-repeats must not type into the page (DM-231)
 
   function askPassword(title, hint, okLabel, withInput = true) {
     endPeek();   // a dialog never opens over the real text, and a pending hold is cancelled
@@ -1648,6 +1655,7 @@
   function finishPassword(value) {
     blurActive();   // before hiding: a hidden element cannot be blurred
     pwEl.hidden = true;
+    repeatsAfterClose = true;   // closed by a key still held, perhaps (DM-231)
     pwInput.value = '';
     pwInput.hidden = false;
     pwConfirmOnly = false;
@@ -1773,6 +1781,7 @@
     if (picked && COVER_IDS.includes(picked.value)) requestCover(picked.value);
     blurActive();   // before hiding: a hidden element cannot be blurred
     introEl.hidden = true;
+    repeatsAfterClose = true;   // Start pressed by a key still held, perhaps (DM-231)
     storageSet(STORAGE.intro, '1');
   }
   // Esc on the intro applies every choice on it, exactly like Start.
