@@ -138,6 +138,8 @@ test('without the adapter the page keeps its browser wording and registers nothi
     assert.match(p.$('#vault-on').parentElement.textContent, /in this browser/);
     assert.match(p.$('#folder-note').textContent, /Folder access exists in Chrome/);
     assert.ok(p.d.querySelectorAll('[data-app]').length >= 6, 'the app wording is carried in data-app attributes');
+    assert.match(p.$('#intro').textContent, /download/i, 'on the web the intro speaks of downloads');
+    assert.equal(p.$('#folder-status').textContent, 'Save downloads an encrypted .sight file.');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
@@ -158,6 +160,12 @@ test('with the adapter the folder box offers the system picker, no browser help,
     assert.match(p.$('#intro').textContent, /Stored only on this computer\./);
     assert.equal(p.$('#intro').textContent.includes('browser'), false, 'no sentence of the intro mentions a browser');
     assert.equal(p.$('#intro').textContent.includes('tab'), false, 'no sentence of the intro mentions a tab');
+    // In the app Save opens a save panel with no folder chosen, or writes straight into the chosen folder: nothing is downloaded (QA-G-23).
+    assert.equal(/download/i.test(p.$('#intro').textContent), false, 'no sentence of the intro, its labels included, mentions a download');
+    assert.match(p.$('#intro').textContent, /Save opens a save panel and writes your text where you put it, as a \.sight file encrypted with AES-256-GCM/);
+    assert.match(p.$('#intro').textContent, /With a folder chosen below, Save writes a plain file straight into it\. Open restores it/);
+    assert.equal(p.$('#folder-status').textContent, 'Save opens a save panel for an encrypted .sight file.');
+    assert.deepEqual([...p.d.querySelectorAll('input[name="save-mode"]')].map((r) => r.parentElement.textContent.trim()), ['An encrypted .sight file (asks for a password)', 'A plain .txt file named by the moment, no password', 'A Markdown .md file named by the moment, no password', 'A Word .docx file named by the moment, no password']);
     assert.deepEqual(native.calls.filter((c) => c[0] === 'onQuit').length, 1, 'the quit hook is registered once');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
@@ -276,7 +284,7 @@ test('when the app cannot forget the folder, the page says so and keeps using it
   } finally { p.close(); }
 });
 
-test('"Stop using the folder" forgets it in the app and Save downloads again', async () => {
+test('"Stop using the folder" forgets it in the app and Save goes through the save panel again', async () => {
   const native = fakeNative({ saved: { name: 'Build_Test_1' } });
   const p = await loadPage({ native });
   try {
@@ -287,11 +295,12 @@ test('"Stop using the folder" forgets it in the app and Save downloads again', a
     p.$('#btn-folder-forget').click();
     await p.settle();
     assert.equal(native.calls.filter((c) => c[0] === 'forgetFolder').length, 1);
-    assert.equal(p.$('#folder-status').textContent, 'Save downloads an encrypted .sight file.');
+    assert.equal(p.toast(), 'Save opens a save panel for an encrypted file again');
+    assert.equal(p.$('#folder-status').textContent, 'Save opens a save panel for an encrypted .sight file.');
     p.start();
     p.$('#btn-save').click();
     await p.settle();
-    assert.equal(p.$('#pw').hidden, false, 'Save asks for a password for the download again');
+    assert.equal(p.$('#pw').hidden, false, 'Save asks for a password for the panel\'s file again');
     assert.equal(native.calls.filter((c) => c[0] === 'writeTextFile').length, 0);
   } finally { p.close(); }
 });

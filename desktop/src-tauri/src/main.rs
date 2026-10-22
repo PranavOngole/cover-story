@@ -4,8 +4,9 @@
 // The shell adds as little as it can. The page and its cover modules are
 // served from inside the app under the page's own content security policy
 // (tauri.conf.json), the window may show nothing but the app's own page, and
-// Save writes its files through the app, into the chosen folder or the
-// Downloads folder, without ever overwriting a file. The page can call six app
+// Save writes its files through the app: into the chosen folder, never over a
+// file, or to the path the save panel returned, the one write that may replace
+// a file, since the panel asked. The page can call six app
 // commands through the adapter in desktop/adapter.js: five for Save
 // (folder.rs) and one to say it is ready to quit (quit.rs). Closing the window and quitting
 // both work like Esc first (quit.rs), the window's title follows the page, and

@@ -6,7 +6,9 @@
 //! awaits the callback the page registered with onQuit, which is Esc's wipe
 //! plus the vault's last write, and then calls quit_ready. The app ends after
 //! that, or after a 4-second safety timer, and always through AppKit's normal
-//! termination, so that WebKit sees the app end.
+//! termination, so that WebKit sees the app end. A page that never answers
+//! the question is quit after the 1.5-second answer timer and then the
+//! 4-second safety timer, about 5.5 seconds in all.
 //!
 //! The ways out:
 //! - closing the window (the red button, Close Window, Cmd+W): main.rs keeps

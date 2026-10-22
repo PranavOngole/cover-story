@@ -300,7 +300,7 @@
       <li><strong>Peek.</strong> Press <kbd data-mod>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>G</kbd> to see what you actually wrote. Press it again, or type anything, to hide it. You can read and copy your text, not edit earlier parts of it.</li>
       <li><strong>Copy.</strong> While peeking, press <kbd data-mod>Ctrl</kbd> + <kbd>C</kbd> to copy your real text to the clipboard.</li>
       <li><strong>Clear.</strong> Press <kbd>Esc</kbd> to erase the hidden text and the screen. <span data-app="The app also clears itself after 10 minutes with its window minimized or hidden.">The page also clears itself after 10 minutes in a background tab.</span> A saved copy on this device, if you turned that on below, stays and is locked.</li>
-      <li><strong>Save and open.</strong> Save downloads your text as a <code>.sight</code> file encrypted with AES-256-GCM, the key derived from your password with PBKDF2 (SHA-256, 310,000 rounds). Open restores it and replaces what is on the page. There is no way to recover a forgotten password.</li>
+      <li><strong>Save and open.</strong> <span data-app="Save opens a save panel and writes your text where you put it, as">Save downloads your text as</span> a <code>.sight</code> file encrypted with AES-256-GCM, the key derived from your password with PBKDF2 (SHA-256, 310,000 rounds).<span data-app=" With a folder chosen below, Save writes a plain file straight into it."></span> Open restores it and replaces what is on the page. There is no way to recover a forgotten password.</li>
     </ol>
     <p class="note"><span data-app="Closing the window or quitting erases the hidden text unless you keep a copy on this device.">Reloading or closing the tab erases the hidden text unless you keep a copy on this device.</span> The header belongs to the cover: its word count counts the text on screen, not your words.</p>
     <!-- Device vault: optional, off by default. The hidden text is saved in
@@ -331,10 +331,10 @@
       <p class="note" id="folder-help" hidden></p>
       <!-- What Save downloads when no folder is in use. Kept in localStorage. -->
       <div id="save-mode">
-        <label class="check"><input type="radio" name="save-mode" value="sight" checked> <span>Download an encrypted <code>.sight</code> file (asks for a password)</span></label>
-        <label class="check"><input type="radio" name="save-mode" value="txt"> <span>Download a plain <code>.txt</code> file named by the moment, no password</span></label>
-        <label class="check"><input type="radio" name="save-mode" value="md"> <span>Download a Markdown <code>.md</code> file named by the moment, no password</span></label>
-        <label class="check"><input type="radio" name="save-mode" value="docx"> <span>Download a Word <code>.docx</code> file named by the moment, no password</span></label>
+        <label class="check"><input type="radio" name="save-mode" value="sight" checked> <span><span data-app="An">Download an</span> encrypted <code>.sight</code> file (asks for a password)</span></label>
+        <label class="check"><input type="radio" name="save-mode" value="txt"> <span><span data-app="A">Download a</span> plain <code>.txt</code> file named by the moment, no password</span></label>
+        <label class="check"><input type="radio" name="save-mode" value="md"> <span><span data-app="A">Download a</span> Markdown <code>.md</code> file named by the moment, no password</span></label>
+        <label class="check"><input type="radio" name="save-mode" value="docx"> <span><span data-app="A">Download a</span> Word <code>.docx</code> file named by the moment, no password</span></label>
       </div>
       <!-- What Save writes into a chosen folder. Kept in localStorage. -->
       <div id="folder-format" class="row" role="group" aria-labelledby="folder-format-label">
@@ -1336,7 +1336,9 @@
     folderHandle = null;
     folderAnnounce();
     folderRender();
-    toast(saveMode() === 'sight' ? 'Save downloads an encrypted file again' : 'Save downloads a ' + PLAIN_FORMATS[saveMode()].label + ' again');
+    const kind = saveMode() === 'sight' ? 'an encrypted file' : 'a ' + PLAIN_FORMATS[saveMode()].label;
+    // In the app, Save without a folder opens the save panel (folder.rs).
+    toast((native ? 'Save opens a save panel for ' : 'Save downloads ') + kind + ' again');
   }
   // Tells other open tabs that the folder choice changed; they reload the
   // handle from IndexedDB (or drop it) on the storage event.
@@ -1489,9 +1491,9 @@
     for (const radio of document.querySelectorAll('input[name="save-mode"]')) radio.checked = radio.value === saveMode();
     for (const radio of document.querySelectorAll('input[name="folder-format"]')) radio.checked = radio.value === folderFormat();
     folderFormatEl.hidden = !folderSupported();
-    const downloads = saveMode() === 'sight'
-      ? 'Save downloads an encrypted .sight file.'
-      : 'Save downloads a ' + PLAIN_FORMATS[saveMode()].label + ' named by the moment.';
+    const kind = saveMode() === 'sight' ? 'an encrypted .sight file' : 'a ' + PLAIN_FORMATS[saveMode()].label + ' named by the moment';
+    // In the app, Save without a folder opens the save panel (folder.rs).
+    const downloads = (native ? 'Save opens a save panel for ' : 'Save downloads ') + kind + '.';
     if (!folderSupported()) {
       folderStatusEl.textContent = downloads;
       folderChooseBtn.hidden = true;
