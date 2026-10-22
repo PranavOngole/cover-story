@@ -352,12 +352,15 @@ async fn save_as<R: Runtime>(
 /// Writes `bytes` to the path the save panel returned, replacing what is
 /// there: the panel already asked the user about a replacement. The new
 /// content is written whole into a file of its own first, and only then takes
-/// the chosen file's place in one step, so a write that fails halfway (a full
-/// disk, an I/O error, a volume pulled) leaves the file as it was (QA-G-21).
-/// The step is Foundation's replacement of a file, the one NSDocument makes
-/// when it saves a document (Apple, "File System Programming Guide", Moving,
-/// Copying, and Deleting Files), and the staged file sits in the directory
-/// Foundation names for it on the chosen file's own volume (`replacing`).
+/// the chosen file's place in one step, so a write that fails while the new
+/// content is being written (a full disk, tested on a disk image) leaves the
+/// file as it was (QA-G-21); if Foundation's replacement itself fails, Apple
+/// says the original may be at another location, which the error then names.
+/// The step is Foundation's replacement of a file, the same operation
+/// NSDocument performs when it saves (Apple, Low-Level File Management
+/// Programming Topics, File Management, Moving, Copying, and Deleting Files,
+/// a retired document), and the staged file sits in the directory Foundation
+/// names for it on the chosen file's own volume (`replacing`).
 /// Where nothing is at the path yet, the same step puts the new file there.
 fn write_replacing(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let staged = Staged::write(path, bytes)?;
