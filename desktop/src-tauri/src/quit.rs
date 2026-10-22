@@ -22,7 +22,7 @@ use tauri::{AppHandle, Manager};
 /// path (1.8 s for the page's callback, 0.4 s for the storage answer, 0.7 s
 /// for WebKit's commit) and a full second of margin for a loaded Mac, where
 /// WebKit's timers run late while this one is a precise sleep (D-42,
-/// Mac_PS_008). tests/adapter.mjs holds the two files to that sum.
+/// `Mac_PS_008`). `tests/adapter.mjs` holds the two files to that sum.
 const SAFETY: Duration = Duration::from_secs(4);
 
 /// Runs the page's hook; does nothing if the adapter is missing.
@@ -116,9 +116,9 @@ pub fn install(app: &AppHandle) {
     }
 }
 
-/// The line on stderr when applicationShouldTerminate: could not be added to
-/// the app's delegate (Mac_PS_007): it names the consequence, so that a log
-/// reader knows what the Dock's Quit would then do.
+/// The line on stderr when `applicationShouldTerminate:` could not be added
+/// to the app's delegate (`Mac_PS_007`): it names the consequence, so that a
+/// log reader knows what the Dock's Quit would then do.
 fn not_installed(reason: &str) -> String {
     format!(
         "plain-sight: applicationShouldTerminate: is not installed ({reason}): a terminate \
@@ -202,7 +202,7 @@ pub(crate) mod macos {
     /// app at once. This adds the method to tao's delegate class. The error
     /// names what stopped it: a tao that renamed the class, or one that gained
     /// the method itself, would otherwise bring the instant end back in
-    /// silence (Mac_PS_007).
+    /// silence (`Mac_PS_007`).
     pub fn install() -> Result<(), String> {
         let mtm = MainThreadMarker::new().ok_or("not called on the main thread")?;
         add_should_terminate(c"TaoAppDelegateParent")?;
@@ -213,8 +213,8 @@ pub(crate) mod macos {
         Ok(())
     }
 
-    /// Adds applicationShouldTerminate: to the class, and reads the runtime's
-    /// answer: it refuses when the class has the method already.
+    /// Adds `applicationShouldTerminate:` to the class, and reads the
+    /// runtime's answer: it refuses when the class has the method already.
     pub(super) fn add_should_terminate(name: &CStr) -> Result<(), String> {
         let shown = name.to_string_lossy();
         let class = AnyClass::get(name)
@@ -225,7 +225,7 @@ pub(crate) mod macos {
         // takes self, the selector and the sending NSApplication.
         let added = unsafe {
             let imp = std::mem::transmute::<ShouldTerminate, Imp>(method);
-            let class = (class as *const AnyClass).cast_mut();
+            let class = std::ptr::from_ref(class).cast_mut();
             ffi::class_addMethod(
                 class,
                 sel!(applicationShouldTerminate:),

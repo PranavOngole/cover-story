@@ -305,6 +305,9 @@ fn file_bytes<'a>(name: &str, text: &'a str) -> Result<Cow<'a, [u8]>, String> {
 /// followed by ".txt", ".md" or ".docx", or a cover's title in lower case with
 /// hyphens followed by "-YYYYMMDD-HHMM.sight" (index.html, onSave).
 fn is_download_name(name: &str) -> bool {
+    // "-YYYYMMDD-HHMM" is the last 14 characters of a .sight name; the title
+    // comes before it.
+    const STAMP: &[u8] = b"-00000000-0000";
     if let Some(stem) = PLAIN_EXTENSIONS
         .iter()
         .find_map(|ext| name.strip_suffix(ext))
@@ -314,8 +317,6 @@ fn is_download_name(name: &str) -> bool {
     let Some(stem) = name.strip_suffix(".sight") else {
         return false;
     };
-    // "-YYYYMMDD-HHMM" is the last 14 characters; the title comes before it.
-    const STAMP: &[u8] = b"-00000000-0000";
     if !stem.is_ascii() || stem.len() <= STAMP.len() {
         return false;
     }

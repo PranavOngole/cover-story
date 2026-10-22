@@ -465,7 +465,7 @@ test('in the app a .md or .docx download reaches the app as text, named by the m
 // one the app holds.
 const PRESS = (() => {
   const rs = readFileSync(path.join(ROOT, 'desktop/src-tauri/src/menu.rs'), 'utf8');
-  const m = rs.match(/^const PRESS: &str = r#"(.*)"#;$/m);
+  const m = rs.match(/^const PRESS: &str = r"(.*)";$/m);
   if (!m) throw new Error('menu.rs holds no PRESS script');
   return (button) => m[1].replace('BUTTON', button);
 })();

@@ -34,15 +34,16 @@ pub fn button_for(item: &str) -> Option<&'static str> {
 /// id: nothing while a dialog is open (the intro or the password dialog), so
 /// a shortcut pressed over a dialog changes nothing; otherwise a click on the
 /// button, as the mouse would. The click counts as the user's: WebKit runs a
-/// script given to evaluateJavaScript:completionHandler: with a user gesture
-/// (WebKit, Source/WebKit/UIProcess/API/Cocoa/WKWebView.mm, that method's
-/// call with forceUserGesture:YES), and the file panel behind Open needs one
-/// (WebCore, Source/WebCore/html/FileInputType.cpp, handleDOMActivateEvent).
-/// Tauri's WebviewWindow::eval reaches that method through wry (wry 0.57.0,
-/// src/wkwebview/mod.rs, evaluateJavaScript_completionHandler). The text is
-/// one line of plain script, which tests/native.mjs reads from this file and
-/// runs in the page; the test below holds it to the page's ids.
-const PRESS: &str = r#"(() => { const open = (id) => { const el = document.getElementById(id); return Boolean(el) && !el.hidden; }; if (open('intro') || open('pw')) return false; const button = document.getElementById('BUTTON'); if (!button || button.hidden) return false; button.click(); return true; })()"#;
+/// script given to `evaluateJavaScript:completionHandler:` with a user
+/// gesture (WebKit, `Source/WebKit/UIProcess/API/Cocoa/WKWebView.mm`, that
+/// method's call with `forceUserGesture:YES`), and the file panel behind Open
+/// needs one (WebCore, `Source/WebCore/html/FileInputType.cpp`,
+/// `handleDOMActivateEvent`). Tauri's `WebviewWindow::eval` reaches that
+/// method through wry (wry 0.57.0, `src/wkwebview/mod.rs`,
+/// `evaluateJavaScript_completionHandler`). The text is one line of plain
+/// script, which `tests/native.mjs` reads from this file and runs in the
+/// page; the test below holds it to the page's ids.
+const PRESS: &str = r"(() => { const open = (id) => { const el = document.getElementById(id); return Boolean(el) && !el.hidden; }; if (open('intro') || open('pw')) return false; const button = document.getElementById('BUTTON'); if (!button || button.hidden) return false; button.click(); return true; })()";
 
 /// The script that presses the page's button with that id.
 pub fn press_script(button: &str) -> String {
