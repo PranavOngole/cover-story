@@ -65,6 +65,8 @@ Not yet seen in a running app: whether the page shows at all without a network e
 
 macOS ties the app's container to the app's signature. A build with a different signature, such as the store build after ad-hoc builds, makes macOS ask "would like to access data from other apps" on its first launch; if that is refused at launch, the app does not start ([Accessing files from the macOS App Sandbox](https://developer.apple.com/documentation/security/accessing-files-from-the-macos-app-sandbox)). Each new ad-hoc build gets a new signature, so it can ask again. Allow it once for the store build; the store builds that follow share one signature and do not ask.
 
+The folder choice is dropped at the switch. The app before the sandbox kept the chosen folder as a plain path in `folder.txt`, and inside the sandbox a path opens nothing: the app may only enter a folder the user picked in the panel, or one a security-scoped bookmark lets it back into. So every build of this branch removes `folder.txt` at launch, sandboxed or not (`Folder::with` in `src-tauri/src/folder.rs`), and the page asks for the folder again; the vault and the rest of the app's data move into the container as described above. Choose the folder once more under the ? button after the switch (the README's folder bullet says the same).
+
 ## What App Review may ask, and what to write in the review notes
 
 The app's purpose is to show a plausible document while the real text stays hidden. The review notes should say so plainly, because:
