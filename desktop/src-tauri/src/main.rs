@@ -11,7 +11,7 @@
 // both work like Esc first (quit.rs), the window's title follows the page, and
 // the menu bar is the app's own (menu.rs), whose File and Help items press the
 // page's own buttons. The app runs in the macOS App
-// Sandbox with four entitlements (Entitlements.plist), so the chosen folder is
+// Sandbox with three entitlements (Entitlements.plist), so the chosen folder is
 // remembered as a security-scoped bookmark (bookmark.rs).
 
 // No console window behind the app on Windows release builds (Windows comes later).
@@ -114,12 +114,14 @@ fn main() {
         .expect("Plain Sight could not start");
 }
 
-/// macOS keeps a restorable window's state, and a picture of it, under
-/// Saved Application State to put the window back after a relaunch; this
-/// window shows the real text while peeking, so it is marked not restorable
-/// and macOS keeps nothing of it (Apple, `NSWindow` `isRestorable`: "Set this
-/// property to true if you want the window to be preserved or false if you do
-/// not want it preserved"). D-45, `Mac_PS_015`. The test build answers a
+/// macOS keeps a restorable window's state under Saved Application State to
+/// put the window back after a relaunch, and may keep a picture of it (a
+/// third-party reverse-engineering of the format, mothersruin.com, describes
+/// window snapshot files; Apple's pages do not say); this window shows the
+/// real text while peeking, so it is marked not restorable and macOS should
+/// keep nothing of it (Apple, `NSWindow` `isRestorable`: "Set this property
+/// to true if you want the window to be preserved or false if you do not
+/// want it preserved"). D-45, `Mac_PS_015`. The test build answers a
 /// `windowRestorable` probe with the value AppKit holds.
 #[cfg(target_os = "macos")]
 fn not_restorable(window: &tauri::WebviewWindow) {
