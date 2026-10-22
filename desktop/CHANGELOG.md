@@ -50,6 +50,10 @@ Fixes from the code review of the Mac app and the App Store review sheet, on the
 
 The end-to-end tests written for these changes (the menu items, the window's restoration setting, the delegate probe) are written and not yet run.
 
+## Wave G, round 4, 22 October 2026: the QA-01 findings on the candidate (appstore-candidate, after the merge of the web head in 346d7e1)
+
+- A failed replacing write no longer destroys the file the person agreed to replace in the save panel (QA-G-21): the new content is written whole into a file of its own, in the temporary directory Foundation provides on the chosen file's volume, and then takes the file's place in one step through Foundation's file replacement, the one NSDocument makes when it saves. A full disk, an I/O error or a pulled volume now leaves the file as it was, and a new file is not left half written. A Rust test proves it on a 4 MB disk image that runs out of room (it skips, saying so, where hdiutil cannot mount one). Before, the write opened the file with `File::create`, and a failure halfway left it at 0 bytes.
+
 ## Wave G, round 2, 21 October 2026: the quit sheet and the save panel (appstore-candidate, after the merge of the fixed web page in 6f8fa70)
 
 - The golden sample lives once, at the repository root (`tests/fixtures`, ledger D-43): the Rust writer reproduces `sample.docx` byte for byte, carriage returns, a U+000B and a U+FFFE included; `desktop/tests/fixtures` is gone.

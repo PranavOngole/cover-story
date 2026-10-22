@@ -29,7 +29,7 @@ objc2 = "0.6"
 block2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "block2", "NSAlert", "NSApplication", "NSButton", "NSControl", "NSResponder", "NSView", "NSWindow", "NSWindowRestoration"] }
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFRunLoop", "block2"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSData", "NSDictionary", "NSError", "NSString", "NSURL"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSData", "NSDictionary", "NSError", "NSFileManager", "NSPathUtilities", "NSString", "NSURL"] }
 objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "WKWebViewConfiguration"] }
 # Test builds only, for the e2e feature below.
 serde_json = { version = "1", optional = true }

@@ -226,7 +226,7 @@ impl Shown {
 
 // The folder commands the page may call (build.rs, capabilities/main.json).
 // Each one only hands over to the Folder above, where the rules are and are
-// tested; save_download, below, writes into the Downloads folder.
+// tested; save_download, below, writes where the save panel says.
 
 /// Shows the system folder picker. On a choice the folder is remembered and
 /// its name returned; Cancel returns None and changes nothing.
@@ -333,12 +333,149 @@ async fn save_as<R: Runtime>(
 }
 
 /// Writes `bytes` to the path the save panel returned, replacing what is
-/// there: the panel already asked the user about a replacement. One write,
-/// then wait for the disk, so a reported save is really on it.
+/// there: the panel already asked the user about a replacement. The new
+/// content is written whole into a file of its own first, and only then takes
+/// the chosen file's place in one step, so a write that fails halfway (a full
+/// disk, an I/O error, a volume pulled) leaves the file as it was (QA-G-21).
+/// The step is Foundation's replacement of a file, the one NSDocument makes
+/// when it saves a document (Apple, "File System Programming Guide", Moving,
+/// Copying, and Deleting Files), and the staged file sits in the directory
+/// Foundation names for it on the chosen file's own volume (`replacing`).
+/// Where nothing is at the path yet, the same step puts the new file there.
 fn write_replacing(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let mut file = fs::File::create(path)?;
-    file.write_all(bytes)?;
-    file.sync_all()
+    let staged = Staged::write(path, bytes)?;
+    replacing::replace(path, &staged.file)
+}
+
+/// The new content of a replacing write, in a file of its own in a staging
+/// directory made for it on the chosen file's volume, written whole and
+/// synced before it takes the chosen file's place. Dropping the value removes
+/// the file, if it is still there, and the directory, so a failed write leaves
+/// nothing behind and a finished one only the replaced file.
+struct Staged {
+    dir: PathBuf,
+    file: PathBuf,
+}
+
+impl Staged {
+    fn write(target: &Path, bytes: &[u8]) -> io::Result<Staged> {
+        let dir = replacing::staging_dir(target)?;
+        let name = target
+            .file_name()
+            .unwrap_or_else(|| std::ffi::OsStr::new("file"));
+        let staged = Staged {
+            file: dir.join(name),
+            dir,
+        };
+        let mut out = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&staged.file)?;
+        out.write_all(bytes)?;
+        out.sync_all()?;
+        Ok(staged)
+    }
+}
+
+impl Drop for Staged {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.file);
+        let _ = fs::remove_dir(&self.dir);
+    }
+}
+
+/// Foundation's replacement of a file, for `write_replacing`:
+/// `replaceItemAtURL:withItemAtURL:backupItemName:options:resultingItemURL:error:`
+/// "replaces the contents of the item at the specified URL in a manner that
+/// ensures no data loss occurs", and works only with both items on one volume,
+/// for which `URLForDirectory:inDomain:appropriateForURL:create:error:` with
+/// `NSItemReplacementDirectory` makes a temporary directory on the chosen
+/// file's volume (Apple, `FileManager`, the pages of those two methods, and
+/// Foundation's `NSFileManager.h`: the new item "should be placed in a
+/// temporary directory as provided by the OS"). The directory is a new one
+/// for every call, and the caller removes it.
+#[cfg(target_os = "macos")]
+mod replacing {
+    use std::io;
+    use std::path::{Path, PathBuf};
+
+    use objc2::rc::Retained;
+    use objc2_foundation::{
+        NSError, NSFileManager, NSFileManagerItemReplacementOptions, NSSearchPathDirectory,
+        NSSearchPathDomainMask, NSString, NSURL,
+    };
+
+    fn url(path: &Path) -> io::Result<Retained<NSURL>> {
+        let text = path
+            .to_str()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "the path is not UTF-8"))?;
+        Ok(NSURL::fileURLWithPath(&NSString::from_str(text)))
+    }
+
+    fn failed(error: &NSError) -> io::Error {
+        io::Error::other(error.localizedDescription().to_string())
+    }
+
+    /// A new, empty directory for the file that will replace `target`, on
+    /// the same volume.
+    pub fn staging_dir(target: &Path) -> io::Result<PathBuf> {
+        let target = url(target)?;
+        let dir = NSFileManager::defaultManager()
+            .URLForDirectory_inDomain_appropriateForURL_create_error(
+                NSSearchPathDirectory::ItemReplacementDirectory,
+                NSSearchPathDomainMask::UserDomainMask,
+                Some(&*target),
+                true,
+            )
+            .map_err(|e| failed(&e))?;
+        let path = dir
+            .path()
+            .ok_or_else(|| io::Error::other("the staging directory has no path"))?;
+        Ok(PathBuf::from(path.to_string()))
+    }
+
+    /// Puts `staged` in `target`'s place in one step, whether or not a file
+    /// is at `target` yet; on a failure the file at `target` is as it was.
+    pub fn replace(target: &Path, staged: &Path) -> io::Result<()> {
+        let target = url(target)?;
+        let staged = url(staged)?;
+        NSFileManager::defaultManager()
+            .replaceItemAtURL_withItemAtURL_backupItemName_options_resultingItemURL_error(
+                &target,
+                &staged,
+                None,
+                NSFileManagerItemReplacementOptions::empty(),
+                None,
+            )
+            .map_err(|e| failed(&e))
+    }
+}
+
+/// Elsewhere (Windows comes later) there is no sandbox: the staged file goes
+/// into a directory of its own next to the chosen file and is renamed over it.
+#[cfg(not(target_os = "macos"))]
+mod replacing {
+    use std::io;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    pub fn staging_dir(target: &Path) -> io::Result<PathBuf> {
+        static COUNT: AtomicU64 = AtomicU64::new(0);
+        let parent = target
+            .parent()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "the path has no folder"))?;
+        let dir = parent.join(format!(
+            ".plain-sight-save-{}-{}",
+            std::process::id(),
+            COUNT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&dir)?;
+        Ok(dir)
+    }
+
+    pub fn replace(target: &Path, staged: &Path) -> io::Result<()> {
+        std::fs::rename(staged, target)
+    }
 }
 
 /// The folder the save panel starts in: the user's Downloads folder.
@@ -1177,5 +1314,140 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    /// A small HFS+ disk image, mounted out of the Finder's sight, as a
+    /// volume a write can fill (QA-G-21 was found on one). None when hdiutil
+    /// is not there or cannot make or mount the image: the test then says so
+    /// and checks nothing. Dropping it ejects the volume and removes the image.
+    struct FullVolume {
+        dir: PathBuf,
+        mount: PathBuf,
+    }
+
+    impl FullVolume {
+        fn mount(tag: &str) -> Option<FullVolume> {
+            let dir = scratch(tag);
+            let image = dir.join("full.dmg");
+            let mount = dir.join("mnt");
+            fs::create_dir(&mount).unwrap();
+            let hdiutil = |args: &[&str]| {
+                std::process::Command::new("hdiutil")
+                    .args(args)
+                    .status()
+                    .is_ok_and(|status| status.success())
+            };
+            let image = image.to_str().unwrap();
+            let point = mount.to_str().unwrap();
+            let mounted = hdiutil(&["create", "-size", "4m", "-fs", "HFS+", "-quiet", image])
+                && hdiutil(&[
+                    "attach",
+                    "-nobrowse",
+                    "-noverify",
+                    "-noautoopen",
+                    "-quiet",
+                    "-mountpoint",
+                    point,
+                    image,
+                ]);
+            if !mounted {
+                println!("hdiutil could not make or mount a disk image here: nothing checked");
+                let _ = fs::remove_dir_all(&dir);
+                return None;
+            }
+            Some(FullVolume { dir, mount })
+        }
+
+        /// The names on the volume, the hidden ones (.fseventsd, Foundation's
+        /// .TemporaryItems) left out.
+        fn names(&self) -> Vec<String> {
+            let mut names: Vec<String> = fs::read_dir(&self.mount)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .filter(|name| !name.starts_with('.'))
+                .collect();
+            names.sort();
+            names
+        }
+
+        /// Every staging folder Foundation made on the volume for a
+        /// replacement (NSIRD_...), anywhere under its hidden folder.
+        fn staging_folders(&self) -> Vec<PathBuf> {
+            fn walk(dir: &Path, found: &mut Vec<PathBuf>) {
+                let Ok(entries) = fs::read_dir(dir) else {
+                    return;
+                };
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path
+                        .file_name()
+                        .is_some_and(|n| n.to_string_lossy().starts_with("NSIRD_"))
+                    {
+                        found.push(path);
+                    } else if path.is_dir() {
+                        walk(&path, found);
+                    }
+                }
+            }
+            let mut found = Vec::new();
+            walk(&self.mount.join(".TemporaryItems"), &mut found);
+            found
+        }
+    }
+
+    impl Drop for FullVolume {
+        fn drop(&mut self) {
+            let _ = std::process::Command::new("hdiutil")
+                .args(["detach", "-quiet"])
+                .arg(&self.mount)
+                .status();
+            let _ = fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    /// The one write that may replace a file must not lose that file when
+    /// the write fails (QA-G-21): on a volume with no room left, as a full
+    /// disk, an I/O error or a pulled volume would do halfway through, the
+    /// file the person agreed to replace stays as it was, a new file is not
+    /// left half written, and nothing of the write is left behind.
+    #[test]
+    fn a_failed_replacing_write_leaves_the_chosen_file_as_it_was() {
+        let Some(volume) = FullVolume::mount("full-volume") else {
+            return;
+        };
+        let chosen = volume.mount.join("chosen in the panel.txt");
+        let old = vec![b'O'; 200_000];
+        fs::write(&chosen, &old).unwrap();
+        write_replacing(&chosen, b"a replacement that fits").unwrap();
+        assert_eq!(
+            fs::read(&chosen).unwrap(),
+            b"a replacement that fits",
+            "a file on another volume than the app's own temporary folder is replaced"
+        );
+        fs::write(&chosen, &old).unwrap();
+        let err = write_replacing(&chosen, &vec![b'N'; 20_000_000]).unwrap_err();
+        let now = fs::read(&chosen).unwrap();
+        assert!(
+            now == old,
+            "the file the person agreed to replace is as it was after the failed write: {} bytes now, {} before ({err})",
+            now.len(),
+            old.len()
+        );
+        let fresh = volume.mount.join("new in the panel.txt");
+        let err = write_replacing(&fresh, &vec![b'N'; 20_000_000]).unwrap_err();
+        assert!(
+            !fresh.exists(),
+            "a new file that could not be written is not left half written ({err})"
+        );
+        assert_eq!(
+            volume.names(),
+            ["chosen in the panel.txt"],
+            "nothing else is left on the volume"
+        );
+        assert_eq!(
+            volume.staging_folders(),
+            Vec::<PathBuf>::new(),
+            "no staging folder is left behind"
+        );
     }
 }
