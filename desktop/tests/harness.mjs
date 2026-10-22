@@ -160,16 +160,22 @@ export const DATA_DIRS = [
   `Library/Containers/${ID}`
 ].map((p) => path.join(HOME, p));
 let backupDir = null;
+// The data folders that were there before the run. The run moves each of them
+// aside; a restore clears only a folder the run moved aside or one that was
+// not there before, so what was there before can never be cleared in place
+// (Mac_PS_011). Kept here and, for the record, as before.json in the backup.
+let existedBefore = [];
 const asideOf = (dir) => path.join(backupDir, Buffer.from(dir).toString('base64url'));
 export function backupAppData() {
   if (existsSync(BACKUP_ROOT) && readdirSync(BACKUP_ROOT).length) {
     throw new Error('an earlier run left app data in ' + BACKUP_ROOT + '; put it back by hand before running again');
   }
   backupDir = path.join(BACKUP_ROOT, String(Date.now()));
+  existedBefore = DATA_DIRS.filter((dir) => existsSync(dir));
   const moved = [];
-  for (const dir of DATA_DIRS) {
-    if (!existsSync(dir)) continue;
+  for (const dir of existedBefore) {
     mkdirSync(backupDir, { recursive: true });
+    writeFileSync(path.join(backupDir, 'before.json'), JSON.stringify(existedBefore, null, 2));
     try {
       renameSync(dir, asideOf(dir));
     } catch (err) {
@@ -178,9 +184,11 @@ export function backupAppData() {
       // empty backup folder is then removed, never anything with data in it.
       for (const done of moved.reverse()) renameSync(asideOf(done), done);
       rmSync(path.join(backupDir, 'moved.json'), { force: true });
+      rmSync(path.join(backupDir, 'before.json'), { force: true });
       rmdirSync(backupDir);
       if (!readdirSync(BACKUP_ROOT).length) rmdirSync(BACKUP_ROOT);
       backupDir = null;
+      existedBefore = [];
       throw new Error('could not move ' + dir + ' aside (' + (err.code || err.message) + '); everything was put back');
     }
     moved.push(dir);
@@ -190,20 +198,28 @@ export function backupAppData() {
   if (!moved.length) backupDir = null;
   note('app data moved aside: ' + JSON.stringify(moved));
 }
+const movedAside = () => (backupDir ? JSON.parse(readFileSync(path.join(backupDir, 'moved.json'), 'utf8')) : []);
+// A folder that holds the run's own data: one the run moved aside (what is
+// there now came after), or one that was not there before the run.
+const clearable = (dir, moved) => moved.includes(dir) || !existedBefore.includes(dir);
 export function clearTestData() {
-  for (const dir of DATA_DIRS) rmSync(dir, { recursive: true, force: true });
+  const moved = movedAside();
+  for (const dir of DATA_DIRS) if (clearable(dir, moved)) rmSync(dir, { recursive: true, force: true });
 }
 // Puts the app's data back folder by folder: the test data in each place is
 // cleared, then what was there before the run comes back. A folder that
 // cannot be cleared (a container that macOS keeps closed, say) never keeps
 // the others from coming back. What could not come back stays in the backup,
 // which then lists only that, and the error says where it is. The backup is
-// never deleted recursively.
+// never deleted recursively, and a folder that was there before the run and
+// is not in the backup (one an earlier restore put back, say) is in its place
+// already: it is never cleared.
 export function restoreAppData() {
-  const moved = backupDir ? JSON.parse(readFileSync(path.join(backupDir, 'moved.json'), 'utf8')) : [];
+  const moved = movedAside();
   const problems = [];
   const left = [];
   for (const dir of DATA_DIRS) {
+    if (!clearable(dir, moved)) continue;
     let step = 'clear the test data in';
     try {
       rmSync(dir, { recursive: true, force: true });
@@ -219,6 +235,7 @@ export function restoreAppData() {
     problems.push('what was in ' + left.join(', ') + ' before the run is still in ' + backupDir);
   } else if (backupDir) {
     rmSync(path.join(backupDir, 'moved.json'), { force: true });
+    rmSync(path.join(backupDir, 'before.json'), { force: true });
     try {
       rmdirSync(backupDir);
       if (!readdirSync(BACKUP_ROOT).length) rmdirSync(BACKUP_ROOT);
@@ -228,7 +245,21 @@ export function restoreAppData() {
   }
   if (problems.length) throw new Error(problems.join('; '));
   backupDir = null;
+  existedBefore = [];
   note('app data restored');
+}
+
+// The run's own safety, in this order: the app's data is moved aside first,
+// and only then do Ctrl+C and a kill run the cleanup. A signal during the
+// move itself ends the run at once with every folder where it is (in place,
+// or in the backup, which the next run refuses to start over), so the cleanup
+// can never clear a folder the run did not move (Mac_PS_011). Exported for
+// the harness checks, which run it against a fake home.
+export function backupThenWatchSignals(cleanup) {
+  backupAppData();
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+    process.on(signal, () => { note('stopped by ' + signal); cleanup().finally(() => process.exit(130)); });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -315,8 +346,8 @@ export async function run(tests, { name, needUnlocked = false, before = () => {}
   if (reason) { console.log(`${name}: not started: ${reason}. Errors: 0`); process.exit(4); }
   if (!takeLock(name)) { console.log(`${name}: not started: another GUI test run holds ${LOCK}. Errors: 0`); process.exit(5); }
   requireUnlocked = needUnlocked;
-  // Ctrl+C or a kill still puts everything back: the app stops, its data and
-  // the Downloads folder are restored, the lock is released.
+  // Ctrl+C or a kill after the backup still puts everything back: the app
+  // stops, its data and the Downloads folder are restored, the lock is released.
   let cleaned = false;
   let restored = true;
   const cleanup = async () => {
@@ -328,12 +359,9 @@ export async function run(tests, { name, needUnlocked = false, before = () => {}
     try { restoreAppData(); } catch (err) { restored = false; console.log('Could not restore app data: ' + err.message); }
     dropLock();
   };
-  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
-    process.on(signal, () => { note('stopped by ' + signal); cleanup().finally(() => process.exit(130)); });
-  }
   markDownloads();
   runStartedAt = Date.now();
-  backupAppData();
+  backupThenWatchSignals(cleanup);
   startGuard();
   let passed = 0, failed = 0, notRun = 0, stopped = null;
   try {
