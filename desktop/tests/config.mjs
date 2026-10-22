@@ -25,10 +25,10 @@ function tomlSection(text, name) {
   return end < 0 ? rest : rest.slice(0, end);
 }
 
-// A strict reader for the two small property lists the shell ships,
-// Entitlements.plist and container-migration.plist: a dict, arrays, strings,
-// true and false only. Anything else, a comment or a key given twice
-// included, is refused, so nothing in them can go unread.
+// A strict reader for the three small property lists the shell ships,
+// Entitlements.plist, container-migration.plist and Info.plist: a dict,
+// arrays, strings, true and false only. Anything else, a comment or a key
+// given twice included, is refused, so nothing in them can go unread.
 function readPlist(text) {
   const header = /^<\?xml version="1\.0" encoding="UTF-8"\?>\s*<!DOCTYPE plist PUBLIC "-\/\/Apple\/\/DTD PLIST 1\.0\/\/EN" "http:\/\/www\.apple\.com\/DTDs\/PropertyList-1\.0\.dtd">\s*<plist version="1\.0">/;
   assert.match(text, header, 'a property list');
@@ -185,12 +185,23 @@ test('no remote access to the app\'s commands, no asset protocol, the app and no
   assert.equal(conf.app.security.dangerousRemoteDomainIpcAccess, undefined);
   assert.ok(!conf.app.security.assetProtocol || conf.app.security.assetProtocol.enable !== true, 'no asset protocol');
   assert.ok(conf.bundle.targets.includes('app') && conf.bundle.targets.every((t) => t === 'app' || t === 'dmg'), 'targets: ' + conf.bundle.targets);
-  assert.equal(conf.bundle.macOS.minimumSystemVersion, '11.0', 'the first macOS of Apple Silicon, which is all the build runs on');
+  // Tauri's rule for a build that is Apple Silicon only (Tauri, App Store
+  // guide, Build): 12.0, not 11.0 (D-47).
+  assert.equal(conf.bundle.macOS.minimumSystemVersion, '12.0', 'the minimum macOS of an Apple Silicon only store build');
   for (const key of ['resources', 'externalBin', 'fileAssociations']) assert.equal(conf.bundle[key], undefined, 'nothing else bundled: bundle.' + key);
   assert.equal(conf.bundle.macOS.frameworks, undefined, 'no extra frameworks');
-  // Tauri merges src-tauri/Info.plist, or the one named here, into the app's.
-  assert.equal(conf.bundle.macOS.infoPlist, undefined, 'no Info.plist merged in');
-  assert.ok(!readdirSync(TAURI).includes('Info.plist'), 'no src-tauri/Info.plist merged in');
+});
+
+test('src-tauri/Info.plist, which Tauri merges into the app\'s, holds exactly the export compliance answer and the copyright line (D-46)', () => {
+  // The CLI finds the file by its place next to tauri.conf.json (tauri-cli
+  // 2.12.3, src/interface/rust.rs, "Info.plist"); nothing names it here.
+  assert.equal(conf.bundle.macOS.infoPlist, undefined, 'the file is found by its place, not named in the config');
+  assert.ok(readdirSync(TAURI).includes('Info.plist'), 'src-tauri/Info.plist exists');
+  assert.deepEqual(readPlist(read(TAURI, 'Info.plist')), {
+    // The app encrypts only through the system's WebCrypto; approved by Pranav on 21 October 2026 (D-46).
+    ITSAppUsesNonExemptEncryption: false,
+    NSHumanReadableCopyright: 'Copyright 2026 Pranav Ongole. MIT License.'
+  });
 });
 
 test('the app runs in the App Sandbox with exactly its four entitlements, none for the network (D-37, D-14)', () => {

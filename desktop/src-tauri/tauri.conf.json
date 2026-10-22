@@ -24,7 +24,7 @@
     "icon": ["icons/32x32.png", "icons/icon.icns"],
     "macOS": {
       "signingIdentity": "-",
-      "minimumSystemVersion": "11.0",
+      "minimumSystemVersion": "12.0",
       "entitlements": "./Entitlements.plist",
       "files": {
         "Resources/container-migration.plist": "./container-migration.plist"
