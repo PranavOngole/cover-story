@@ -77,7 +77,7 @@ process.on('unhandledRejection', (reason) => {
   for (const errors of openErrors) errors.push(text);
 });
 
-async function loadPage({ random = () => 1, storage = {}, inject = true, folder = null, slowEncrypt = 0, failDerive = 0, slowDerive = 0, noSubtle = false, userAgent = undefined, brave = false } = {}) {
+async function loadPage({ random = () => 1, storage = {}, inject = true, folder = null, slowEncrypt = 0, failDerive = 0, slowDerive = 0, noSubtle = false, userAgent = undefined, brave = false, cssSupports = false } = {}) {
   const errors = [];
   openErrors.add(errors);
   const downloads = [];
@@ -94,6 +94,8 @@ async function loadPage({ random = () => 1, storage = {}, inject = true, folder 
     beforeParse(window) {
       if (userAgent) Object.defineProperty(window.navigator, 'userAgent', { value: userAgent, configurable: true });
       if (brave) Object.defineProperty(window.navigator, 'brave', { value: { isBrave: async () => true }, configurable: true });
+      // jsdom has no CSS.supports; with cssSupports the page sees a browser that can mask a text field.
+      if (cssSupports) Object.defineProperty(window, 'CSS', { value: { supports: () => true }, configurable: true });
       // Deterministic typos: Math.random() === 1 means "never a typo".
       window.Math.random = random;
       // jsdom has no crypto.subtle, URL.createObjectURL or navigator.clipboard.
@@ -243,14 +245,14 @@ function countWords(blocks) {
   return blocks.reduce((n, b) => n + (b.text.match(/\S+/g) || []).length, 0);
 }
 // Makes a vault record outside the page, in the page's own format, as another tab would store it.
-async function encryptVaultRecord(text, phrase) {
+async function encryptVaultRecord(text, phrase, iterations = 310000) {
   const salt = webcrypto.getRandomValues(new Uint8Array(16));
   const iv = webcrypto.getRandomValues(new Uint8Array(12));
   const base = await webcrypto.subtle.importKey('raw', new TextEncoder().encode(phrase), 'PBKDF2', false, ['deriveKey']);
-  const key = await webcrypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations: 310000, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, false, ['encrypt']);
+  const key = await webcrypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, false, ['encrypt']);
   const data = new Uint8Array(await webcrypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(text)));
   const b64 = (u) => Buffer.from(u).toString('base64');
-  return JSON.stringify({ format: 'plain-sight', version: 1, cipher: 'AES-256-GCM', kdf: 'PBKDF2-SHA-256', iterations: 310000, salt: b64(salt), iv: b64(iv), data: b64(data) });
+  return JSON.stringify({ format: 'plain-sight', version: 1, cipher: 'AES-256-GCM', kdf: 'PBKDF2-SHA-256', iterations, salt: b64(salt), iv: b64(iv), data: b64(data) });
 }
 // Decrypts a stored vault record outside the page, to prove what the page saved.
 async function decryptVault(record, phrase) {
@@ -638,7 +640,7 @@ test('Save writes a .sight with a 16-byte salt, 12-byte IV and data; Open restor
     assert.equal(await p.readReal(), 'hello world', 'every refusal left the buffer alone');
     // Nothing on the console object touches the buffer.
     assert.deepEqual(Object.keys(p.w.PlainSight).sort(), ['coverFailed', 'coverId', 'coverIds', 'coverText', 'ready', 'selectedCoverId', 'setCover', 'version']);
-    assert.equal(p.w.PlainSight.version, '1.3.9');
+    assert.equal(p.w.PlainSight.version, '1.3.10');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
@@ -2812,6 +2814,211 @@ test('device vault: another tab\'s re-key empties a phrase half typed on this ta
     assert.equal(p.$('#vault-phrase').value, '', 'the phrase meant for the old copy is gone');
     assert.equal(p.$('#vault-on').checked, true, 'the box shows the other tab\'s locked copy');
     assert.match(p.$('#vault-status').textContent, /^A saved copy is on this device/);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('device vault: a copy made with another iteration count keeps that count through this tab\'s saves, so it still opens on the next visit', async () => {
+  const record = await encryptVaultRecord('old words', 'correct horse battery staple', 1000);   // made elsewhere, at the lowest count the page accepts
+  const p = await loadPage({ storage: { 'plainSight.vault': record, 'plainSight.introSeen': '1' } });
+  try {
+    p.type('correct horse battery staple');
+    p.unlockChord();
+    await sleep(900);
+    assert.ok(p.d.body.classList.contains('vault-open'), 'opened at the record\'s own count');
+    p.type(' and new');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    const saved = JSON.parse(p.storageDump()['plainSight.vault']);
+    assert.equal(saved.iterations, 1000, 'the saved record states the count the key was made with');
+    assert.equal(await decryptVault(saved, 'correct horse battery staple'), 'old words and new');
+    const q = await loadPage({ storage: p.storageDump() });   // the next visit
+    try {
+      q.type('correct horse battery staple');
+      q.unlockChord();
+      await sleep(900);
+      assert.ok(q.d.body.classList.contains('vault-open'), 'the next visit opens the copy');
+      assert.equal(await q.readReal(), 'old words and new');
+      assert.deepEqual(q.errors, []);
+    } finally { q.close(); }
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('device vault: when the browser refuses to store the copy, the vault says so and does not pretend to be open', async () => {
+  const p = await loadPage();
+  const proto = Object.getPrototypeOf(p.w.localStorage);
+  const original = proto.setItem;
+  try {
+    p.start();
+    p.type('nowhere to keep this');
+    proto.setItem = function (key, value) {
+      if (key === 'plainSight.vault') { const e = new p.w.Error('quota'); e.name = 'QuotaExceededError'; throw e; }
+      return original.call(this, key, value);
+    };
+    await p.vaultOn('correct horse battery staple');
+    await sleep(600);
+    assert.ok(!p.d.body.classList.contains('vault-open'), 'not shown as open');
+    assert.equal(p.toast(), 'The copy could not be kept on this device: storage is full or blocked');
+    assert.equal(p.storageDump()['plainSight.vault'], undefined, 'nothing stored');
+    p.$('#btn-help').click();
+    assert.equal(p.$('#vault-on').checked, false, 'nothing shown as pending or open');
+    assert.deepEqual(p.errors, []);
+  } finally { proto.setItem = original; p.close(); }
+});
+
+test('the phrase and password fields keep the browser\'s password manager out: no generated-password hint, manager ignore marks, a masked text field where the browser can mask one, a password field elsewhere', async () => {
+  const p = await loadPage({ cssSupports: true });
+  const q = await loadPage();
+  try {
+    for (const id of ['#vault-phrase', '#pw-input']) {
+      const el = p.$(id);
+      assert.equal(el.getAttribute('autocomplete'), 'off', id + ' does not ask for a generated password');
+      assert.equal(el.getAttribute('data-1p-ignore'), '', id + ' tells 1Password to stay out');
+      assert.equal(el.getAttribute('data-lpignore'), 'true', id + ' tells LastPass to stay out');
+      assert.equal(el.getAttribute('data-bwignore'), '', id + ' tells Bitwarden to stay out');
+      assert.equal(el.getAttribute('autocorrect'), 'off');
+      assert.equal(el.getAttribute('autocapitalize'), 'off');
+      assert.equal(el.type, 'text', id + ' is a masked text field, which no password manager treats as a password');
+      assert.match(el.getAttribute('style') || '', /-webkit-text-security:\s*disc/, id + ' masks what is typed');
+      assert.equal(q.$(id).type, 'password', id + ' stays a password field where the browser cannot mask a text field');
+    }
+    assert.deepEqual(p.errors, []);
+    assert.deepEqual(q.errors, []);
+  } finally { p.close(); q.close(); }
+});
+
+test('the Save and Open buttons and the word count carry no tooltip that names encryption or the file format', async () => {
+  const p = await loadPage();
+  try {
+    p.start();
+    for (const sel of ['#btn-save', '#btn-open', '#word-count']) assert.equal(p.$(sel).title, '', sel + ' has no tooltip');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('device vault: a copy made with another iteration count opened through the intro keeps that count in its saves', async () => {
+  const record = await encryptVaultRecord('old words', 'correct horse battery staple', 1000);
+  const p = await loadPage({ storage: { 'plainSight.vault': record, 'plainSight.introSeen': '1' } });
+  try {
+    p.$('#btn-help').click();
+    assert.equal(p.$('#vault-on').checked, true, 'the locked copy shows');
+    p.$('#vault-phrase').value = 'correct horse battery staple';
+    p.start();                               // the phrase check opens the copy
+    await sleep(900);
+    assert.ok(p.d.body.classList.contains('vault-open'));
+    p.type(' and new');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    const saved = JSON.parse(p.storageDump()['plainSight.vault']);
+    assert.equal(saved.iterations, 1000, 'the saved record states the count the key was made with');
+    assert.equal(await decryptVault(saved, 'correct horse battery staple'), 'old words and new');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('device vault: with nothing typed on the page, a phrase typed on the intro over a locked copy still goes with the 10-minute wipe (DM-132)', async () => {
+  const q = await loadPage({ storage: await lockedCopyStorage() });
+  try {
+    q.$('#btn-help').click();
+    q.$('#vault-phrase').value = 'correct horse battery staple';   // typed, not submitted; the buffer is empty
+    const realNow = q.w.Date.now();
+    let fakeNow = realNow;
+    q.w.Date.now = () => fakeNow;
+    const setHidden = (hidden) => {
+      Object.defineProperty(q.d, 'hidden', { get: () => hidden, configurable: true });
+      q.d.dispatchEvent(new q.w.Event('visibilitychange'));
+    };
+    setHidden(true);
+    fakeNow += TEN_MINUTES + 1000;
+    setHidden(false);
+    assert.equal(q.toast(), 'Cleared after 10 minutes in the background');
+    assert.equal(q.$('#vault-phrase').value, '', 'the phrase typed before the absence is gone');
+    q.press('Escape');                       // someone at the machine
+    await sleep(900);
+    assert.ok(!q.d.body.classList.contains('vault-open'), 'nothing opened');
+    assert.deepEqual(q.errors, []);
+  } finally { q.close(); }
+});
+
+test('with nothing typed on the page, a password typed into the Open dialog still goes with the 10-minute wipe (DM-132)', async () => {
+  const p = await loadPage();
+  try {
+    p.start();
+    p.type('file contents');
+    p.$('#btn-save').click();
+    await p.submitPassword('file password');
+    await p.settle(400);
+    const json = await p.downloads[0].blob.text();
+    p.press('Escape');                       // the buffer is empty from here on
+    chooseFile(p, makeCoverFile(p.w, json));
+    await p.settle();
+    assert.equal(p.$('#pw').hidden, false);
+    p.$('#pw-input').value = 'file password';   // typed, not submitted
+    const realNow = p.w.Date.now();
+    let fakeNow = realNow;
+    p.w.Date.now = () => fakeNow;
+    const setHidden = (hidden) => {
+      Object.defineProperty(p.d, 'hidden', { get: () => hidden, configurable: true });
+      p.d.dispatchEvent(new p.w.Event('visibilitychange'));
+    };
+    setHidden(true);
+    fakeNow += TEN_MINUTES + 1000;
+    setHidden(false);
+    assert.equal(p.$('#pw').hidden, true, 'the wipe ended the waiting dialog');
+    p.$('#pw-ok').click();                   // someone at the machine
+    await sleep(600);
+    assert.equal(await p.readReal(), '', 'nothing opened');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('device vault: a dropped write inside the cross-tab sync window leaves the intro following the copy it drew, so the other tab\'s event still redraws it', async () => {
+  const p = await loadPage();
+  let hidden = false;
+  try {
+    const rekeyed = await encryptVaultRecord('the other tab\'s text', 'phrase of the other tab');
+    p.start();
+    p.type('open here');
+    await p.vaultOn('correct horse battery staple');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    const original = p.storageDump()['plainSight.vault'];
+    p.$('#btn-help').click();
+    p.$('#vault-phrase').value = 'half a phr';
+    p.w.localStorage.setItem('plainSight.vault', rekeyed);   // the other tab's re-key is in storage, its event not yet delivered
+    Object.defineProperty(p.d, 'hidden', { get: () => hidden, configurable: true });
+    hidden = true;
+    p.d.dispatchEvent(new p.w.Event('visibilitychange'));   // this tab's save on hide finds another salt and is dropped
+    await sleep(600);
+    hidden = false;
+    p.d.dispatchEvent(new p.w.Event('visibilitychange'));
+    assert.equal(p.$('#vault-phrase').value, 'half a phr', 'the dropped write disturbs nothing on the intro');
+    p.w.dispatchEvent(new p.w.StorageEvent('storage', { key: 'plainSight.vault', oldValue: original, newValue: rekeyed }));   // the event arrives
+    assert.equal(p.$('#vault-phrase').value, '', 'the other tab\'s change redraws the intro and empties the phrase meant for the old copy');
+    assert.equal(p.$('#vault-on').checked, true, 'the box shows the other tab\'s locked copy');
+    assert.ok(!p.d.body.classList.contains('vault-open'));
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('without encryption, the 10-minute wipe leaves the intro\'s no-encryption notice in place', async () => {
+  const p = await loadPage({ noSubtle: true });
+  try {
+    p.start();
+    p.type('typed without encryption');
+    p.$('#btn-help').click();
+    assert.match(p.$('#vault-status').textContent, /no encryption/);
+    const realNow = p.w.Date.now();
+    let fakeNow = realNow;
+    p.w.Date.now = () => fakeNow;
+    const setHidden = (h) => {
+      Object.defineProperty(p.d, 'hidden', { get: () => h, configurable: true });
+      p.d.dispatchEvent(new p.w.Event('visibilitychange'));
+    };
+    setHidden(true);
+    fakeNow += TEN_MINUTES + 1000;
+    setHidden(false);
+    assert.equal(p.toast(), 'Cleared after 10 minutes in the background');
+    assert.match(p.$('#vault-status').textContent, /no encryption/, 'the notice stays');
+    assert.equal(p.$('#vault-on').disabled, true);
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });

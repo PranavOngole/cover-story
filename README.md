@@ -2,7 +2,7 @@
 
 Write in private where everyone can see your screen.
 
-Type anything and the screen shows a believable document being written: a novel, a work document or a research paper. Your real words go into a hidden buffer that never touches the network. A chord shows them to you, a key erases them, and when you save, you save ciphertext.
+Type anything and the screen shows a believable document being written: a novel, a work document or a research paper. Your real words go into a hidden buffer that never touches the network. A chord shows them to you, a key erases them, and when you save a `.sight` file or keep a copy on this device, what is written is ciphertext; a folder save or a plain `.txt` download is plain text, and the page says so where you choose it.
 
 ## The promise, and how it is kept
 
@@ -10,25 +10,25 @@ Most privacy claims ask for trust. These ask for a terminal.
 
 | Claim | How it is kept | Check it yourself |
 |---|---|---|
-| Nothing you type leaves the page. Not a byte. | The page makes no request after it loads: no fetch, no XHR, no beacon, no WebSocket, no form submission, no analytics, no account. The browser enforces it: the page's Content Security Policy is `default-src 'none'`, so even a bug could not phone home. | `grep -c -E "fetch\(\|XMLHttpRequest\|sendBeacon\|WebSocket" index.html` prints `0`. Open the browser's network panel and type for a minute: no requests. |
+| Nothing you type leaves the page. Not a byte. | After it loads, the page requests nothing but its own cover modules from the same origin, and those carry nothing you type: no fetch, no XHR, no beacon, no WebSocket, no form submission, no analytics, no account. The browser enforces it: the page's Content Security Policy is `default-src 'none'`, so a bug could not send a request; the one thing no policy refuses is the page navigating away, and no line of this page does that. | `grep -c -E "fetch\(\|XMLHttpRequest\|sendBeacon\|WebSocket" index.html` prints `0`. Open the browser's network panel and type for a minute: no requests. |
 | Nobody else is in the room. | No server-side code, no cookies, no third-party script, no font or image from anywhere else. The deployment is exactly four files, this page and the three covers, by allowlist. | `curl -sI https://cover-story-taupe.vercel.app/` shows no `set-cookie`; `cat .vercelignore` is the allowlist. |
 | Your text is one variable in memory. | It lives in a closure. It is written into the page only while you peek and removed when the peek ends. Nothing on `window` returns it. | `grep -n "let real" index.html`; `npm test` includes a check that local storage never holds it. |
-| Saving means encrypting. | AES-256-GCM with a key from your password by PBKDF2-SHA-256 at 310,000 rounds and a random 16-byte salt, a random 12-byte IV, all through the browser's WebCrypto with a non-extractable key. The file is a short JSON record you can read. | Save, open the `.sight` file in a text editor, and compare it with the format below. |
+| Saving a `.sight` file means encrypting. | AES-256-GCM with a key from your password by PBKDF2-SHA-256 at 310,000 rounds and a random 16-byte salt, a random 12-byte IV, all through the browser's WebCrypto with a non-extractable key. The file is a short JSON record you can read. | Save, open the `.sight` file in a text editor, and compare it with the format below. |
 | The device vault stores ciphertext only. | The optional copy in your browser's storage is the same record under a phrase of 12 characters or more; the key exists only in memory while the vault is open. | `npm test` runs the vault round trips with right and wrong phrases. |
-| A hostile network sees one page load and nothing more. | One load over TLS 1.3 behind HSTS, then silence: there is no keystroke timing to watch because nothing is sent. The observer learns the hostname and the size of the load, never a word. | `curl -sI https://cover-story-taupe.vercel.app/ \| grep -i strict`. |
+| A hostile network sees the page load and nothing of yours. | One load over TLS behind HSTS, then at most the page's own cover files from the same host: there is no keystroke timing to watch because nothing you type is sent. The observer learns the hostname and the size of the loads, never a word. | `curl -sI https://cover-story-taupe.vercel.app/ \| grep -i strict`. |
 | You can read every line. | One HTML file and three cover files, no framework, no build step, no runtime dependency, MIT. | `wc -l index.html covers/*.js`. |
 
 What it does not do is listed just as plainly in the threat model below: it cannot stop a keylogger, a compromised machine, a browser extension or someone reading your fingers.
 
 ## Who it is for
 
-People who write where someone can see the screen: a newsroom, an open office, a train, a shared flat, a classroom. A journalist drafting a note that is not ready to be seen, a person keeping a journal they do not want to explain, anyone who wants a scratchpad that is nobody's business. The watcher sees a document being written, and that is all.
+People who write where someone can see the screen: a newsroom, an open office, a train, a shared flat, a classroom. A journalist drafting a note that is not ready to be seen, a person keeping a journal they do not want to explain, anyone who wants a scratchpad that is nobody's business. The watcher sees a document being written, the page's own short notices and, only if you press the peek chord, your text; never your words otherwise.
 
 Live: https://cover-story-taupe.vercel.app
 
 Demo GIF: not recorded yet. (Pranav: record a 10 to 15 second screen capture of typing, pressing Cmd+Shift+G to peek, and pressing Esc, convert it to a GIF, save it as `docs/demo.gif`, add the image here, and delete this paragraph.)
 
-Plain Sight was called Cover Story until 20 October 2026. Files saved under the old name still open. A Mac app built around the same page is in progress on the `desktop` branch; it makes no network connection at all.
+Plain Sight was called Cover Story until 20 October 2026. Files saved under the old name still open. A Mac app built around the same page is in progress on the `desktop` branch; its gate saw no network use, which macOS does not yet enforce, and it is not yet cleared for handing to others.
 
 ## The three versions
 
@@ -61,7 +61,7 @@ Ctrl is Cmd on a Mac. Either key works on every platform.
 | Write | Type. Each printable key, Enter and Tab is recorded in the hidden buffer and reveals one more character of the cover. Backspace removes one from both. The buffer is append-only: you cannot move the cursor back and edit earlier text. |
 | Peek | Press Ctrl+Shift+G. The cover disappears and your real text is shown. Press it again, type anything, switch windows, or open any dialog, and it is hidden again. |
 | Copy | While peeking, press Ctrl+C. Your real text goes to the clipboard. |
-| Clear | Press Esc. The hidden buffer and the screen are erased. If the device vault is open it is saved first and then locked; its encrypted copy stays. The page also clears itself if its tab has been hidden for more than 10 minutes while the buffer is non-empty. |
+| Clear | Press Esc. The hidden buffer and the screen are erased. If the device vault is open it is saved first and then locked; its encrypted copy stays. The page also clears itself if its tab has been hidden for more than 10 minutes while the buffer holds text, a dialog waits for a password, or a phrase is typed on the intro; a typed phrase or password goes with it. |
 | Save | The Save button asks for a password and downloads a `.sight` file. If you have chosen a folder on the intro screen, it writes a plain text file into that folder instead. If you picked the plain `.txt` download on the intro screen, it downloads a plain text file named by the moment, with no password. |
 | Open | The Open button reads a `.sight` file, asks for its password and replaces the hidden buffer with its contents. The screen is rebuilt to the same length. |
 | Keep on this device | On the intro screen, tick "Keep my text on this device" and choose a phrase of 12 characters or more. From then on the page keeps an encrypted copy of your text in this browser. See the device vault below. |
@@ -104,7 +104,7 @@ The page detects whether folder access exists and shows the matching note in "Wh
 
 ### Saving into a folder
 
-In browsers with the File System Access API (Chrome, Edge and other Chromium browsers, and Brave once its setting is on) the intro screen offers "Choose a folder on this computer". The page keeps the folder handle in IndexedDB and asks the browser for write permission when it needs it. With a folder chosen, Save writes your real text as plain text into a new file named by the moment of the click, `YYYY-MM-DD HH-MM-SS.txt` (with a counter before the extension if that name is already taken), and shows the name in a toast; nothing is encrypted and no password is asked. The text written is the text on the page when you pressed Save, even if you press Esc while the browser asks for permission. Choosing or forgetting a folder in one tab reaches your other open tabs. Anyone who can open that folder can read those files. In other browsers the button is hidden and Save downloads instead: an encrypted `.sight` file by default, or, if you pick it on the intro screen, a plain `.txt` file named by the moment with no password. That choice is kept in `localStorage` and works in every browser.
+In browsers with the File System Access API (Chrome, Edge and other Chromium browsers, and Brave once its setting is on) the intro screen offers "Choose a folder on this computer". The page keeps the folder handle in IndexedDB and asks the browser for write permission when it needs it. With a folder chosen, Save writes your real text as plain text into a new file named by the moment of the click, `YYYY-MM-DD HH-MM-SS.txt` (with a counter before the extension if that name is already taken), and shows the name in a toast; nothing is encrypted and no password is asked. The text written is the text on the page when you pressed Save, even if you press Esc while the browser asks for permission. Choosing or forgetting a folder in one tab reaches your other open tabs. Anyone who can open that folder can read those files, and the computer treats them like any document: on a Mac, Spotlight indexes their contents, Quick Look previews them, Time Machine backs them up, and a Desktop or Documents folder synced by iCloud Drive uploads them to Apple. Pick a folder outside Desktop and Documents if that matters to you. In other browsers the button is hidden and Save downloads instead: an encrypted `.sight` file by default, or, if you pick it on the intro screen, a plain `.txt` file named by the moment with no password. That choice is kept in `localStorage` and works in every browser.
 
 ### Save file format
 
@@ -130,7 +130,7 @@ Open checks the shape of the file, refuses a format, version, cipher or kdf fiel
 What it helps with:
 
 - A casual onlooker who can see your screen sees a document being written, not your text. The tab title, the header and the typing rhythm all fit the cover, and the unlock phrase shows as cover text while you type it.
-- Walking away from the machine with the tab in the background: the page clears itself after 10 minutes hidden. (If the tab stays in the foreground, nothing clears on its own. Press Esc.)
+- Walking away from the machine with the tab in the background: the page clears itself after 10 minutes hidden, including a phrase or password typed but not submitted. (If the tab stays in the foreground, nothing clears on its own. Press Esc.)
 - Someone who finds a saved `.sight` file, or the vault copy in the browser's storage, without the password or phrase gets the ciphertext and a rough idea of its length, nothing else.
 - Network observers: nothing is sent anywhere, and the page's Content Security Policy makes the browser enforce that.
 
@@ -145,7 +145,7 @@ What it does not protect against:
 - A weak phrase. Anyone who can read the browser's storage on your device can try phrases offline; the slow key derivation helps, a long phrase helps more.
 - The browser's own memory. While the page is open, the plain text is in the browser's memory, and a crash dump or swap file could hold it.
 - Shared computers. The vault copy stays on the device after Esc; on a machine other people use, leave the vault off or delete the copy before you leave.
-- Plain text files. Saving into a folder, or choosing the plain `.txt` download, writes your words unencrypted to disk, where any program, backup or person with access to that folder can read them, and a browser set to open downloads may display them at once. Use the encrypted download or the vault when that matters.
+- Plain text files. Saving into a folder, or choosing the plain `.txt` download, writes your words unencrypted to disk, where any program, backup or person with access to that folder can read them; on a Mac, Spotlight indexes the contents, Quick Look previews the files, and a synced Desktop or Documents folder uploads them to iCloud Drive, and a browser set to open downloads may display them at once. Use the encrypted download or the vault when that matters.
 
 Corporate IT may treat a page like this as an exfiltration or monitoring-evasion tool. Using it on a managed machine may break policy regardless of what you type. It exists to demonstrate a client-side technique and an honest threat model, not to defeat an employer's monitoring.
 
@@ -163,7 +163,7 @@ Corporate IT may treat a page like this as an exfiltration or monitoring-evasion
 
 ## Being safest
 
-- Prefer the Mac app (the `desktop` branch) on shared machines and untrusted networks: it makes no network connection, and no browser extension can reach it.
+- The Mac app (the `desktop` branch) will be the better choice on shared machines and untrusted networks once it is cleared for others: its gate saw no network use, and no browser extension can reach it. Until then, use the page in a browser profile with no extensions.
 - Use the encrypted save or the vault. A plain `.txt` is readable by anyone with the folder, and macOS indexes it for Spotlight and may sync it to iCloud.
 - Press Esc when you step away. The peek chord is public, so anyone at your keyboard can use it.
 - On a shared network, open the page from an https link or bookmark, never click through a certificate warning, and clear your clipboard after a copy.
@@ -193,6 +193,8 @@ npm test
 The suite (`tests/smoke.mjs`) loads the real `index.html` in jsdom and drives it through keyboard events, the dialogs, the download path and the console object: cover rendering, the hidden buffer, the peek chord, copy, Backspace, Esc, the 10-minute wipe, the three covers, bullets, headings, references, save and open with right and wrong passwords, and the device vault with right and wrong phrases. It exits non-zero on any failure. jsdom does not run module scripts, so the suite imports the cover files itself and hands them to the page the same way the module loader does.
 
 ## Deployment
+
+The site is served with security headers from `vercel.json`: a script policy that allows only the page's own two inline scripts by hash, no framing, no content sniffing, no referrer and no browser features. `node tools/vercel-headers.mjs` regenerates the file from `index.html`, and `npm test` fails when the two disagree, so a changed page cannot ship with a stale policy.
 
 The site is deployed with the Vercel CLI (`vercel --prod`) as plain static files with no framework and no build step. `.vercelignore` is an allowlist: everything is excluded except `index.html` and `covers/`, so nothing else in the working folder can reach the deployment. Until 20 October 2026 it was a list of exclusions and the deployment carried local tool files; see the changelog for 1.3.1.
 

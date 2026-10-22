@@ -240,8 +240,8 @@
            text shown on screen, never the hidden real text. "Last edited just
            now" on the work document is static decoration. -->
       <span id="header-meta"></span>
-      <button id="btn-save" type="button" title="Download your text as an encrypted .sight file">Save</button>
-      <button id="btn-open" type="button" title="Open a .sight file">Open</button>
+      <button id="btn-save" type="button">Save</button>
+      <button id="btn-open" type="button">Open</button>
     </div>
   </div>
   <!-- Fake toolbar, shown with the work-document cover only. Pure decoration:
@@ -301,7 +301,7 @@
       <legend><strong>Keep my text on this device</strong> (optional)</legend>
       <label class="check"><input type="checkbox" id="vault-on"> <span>Save my text in this browser, encrypted, so I can come back to it later.</span></label>
       <label for="vault-phrase">Phrase, 12 characters or more</label>
-      <input id="vault-phrase" type="password" autocomplete="new-password" spellcheck="false" disabled>
+      <input id="vault-phrase" type="password" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-1p-ignore data-lpignore="true" data-bwignore disabled>
       <p class="note" id="vault-status">To come back to your text later: type your phrase on the blank page, then hold <kbd data-mod>Ctrl</kbd>, press <kbd>E</kbd>, then <kbd>Enter</kbd>. Nothing happens for a wrong phrase. There is no recovery for a forgotten one.</p>
     </fieldset>
     <!-- Save location. Where the browser offers folder access (Chrome, Edge:
@@ -324,7 +324,7 @@
         <label class="check"><input type="radio" name="save-mode" value="sight" checked> <span>Download an encrypted <code>.sight</code> file (asks for a password)</span></label>
         <label class="check"><input type="radio" name="save-mode" value="txt"> <span>Download a plain <code>.txt</code> file named by the moment, no password</span></label>
       </div>
-      <p class="note" id="folder-note">With a folder chosen, Save writes a plain text file named by the moment you press it, such as <code>2026-10-20 14-55-03.txt</code>, straight into that folder. Plain text means anyone who can open the file can read it. Folder access exists in Chrome, Edge and other Chromium browsers; Brave needs a setting turned on; Safari and Firefox download instead.</p>
+      <p class="note" id="folder-note">With a folder chosen, Save writes a plain text file named by the moment you press it, such as <code>2026-10-20 14-55-03.txt</code>, straight into that folder. Plain text means anyone who can open the file can read it, and the computer indexes, previews and backs it up like any document; a synced folder uploads it. Folder access exists in Chrome, Edge and other Chromium browsers; Brave needs a setting turned on; Safari and Firefox download instead.</p>
     </fieldset>
     <!-- Mode selector. The choice is kept in localStorage under plainSight.cover
          and the matching covers/<id>.js is imported. -->
@@ -348,7 +348,7 @@
   <form id="pw-form" class="card" autocomplete="off">
     <h1 id="pw-title">Password</h1>
     <p id="pw-hint" class="note"></p>
-    <input id="pw-input" type="password" autocomplete="new-password" spellcheck="false" aria-label="Password">
+    <input id="pw-input" type="password" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-1p-ignore data-lpignore="true" data-bwignore aria-label="Password">
     <div class="row">
       <button id="pw-cancel" class="btn" type="button">Cancel</button>
       <button id="pw-ok" class="btn primary" type="submit">OK</button>
@@ -373,6 +373,7 @@
   const TYPO_RATE = 0.035;             // chance of a simulated typo at a word start
   const HIDDEN_WIPE_MS = 10 * 60 * 1000; // wipe after this long in a hidden tab
   const PBKDF2_ITERATIONS = 310000;
+  const STORAGE_FAILED_NOTICE = 'The copy could not be kept on this device: storage is full or blocked';
   const MAX_ITERATIONS_ACCEPTED = 2000000; // refuse files that ask for more; a huge count would hang the tab
   const STORAGE = {
     intro: 'plainSight.introSeen',
@@ -680,7 +681,6 @@
       if (widget === 'word count') {
         wordCountEl = document.createElement('span');
         wordCountEl.id = 'word-count';
-        wordCountEl.title = 'Word count of the text on screen';
         headerMeta.appendChild(wordCountEl);
       }
       if (widget === 'last edited') {
@@ -778,9 +778,10 @@
     if (vaultOpen()) {
       const key = vaultKey;
       const salt = vaultSalt;
+      const iterations = vaultIterations;
       const text = real;
       vaultLock();
-      vaultWrite(key, salt, text);
+      vaultWrite(key, salt, iterations, text);
     }
     real = '';
     resetCover();
@@ -792,6 +793,9 @@
   }
 
   function dialogOpen() { return !introEl.hidden || !pwEl.hidden; }
+  // A password dialog waiting for its password, or a phrase typed on the intro and not applied: the
+  // 10-minute wipe must run for these too, or a credential left behind opens something on one key.
+  function awaitingSecret() { return !pwEl.hidden || (!introEl.hidden && vaultPhraseEl.value !== ''); }
 
   function isEditable(el) {
     if (!el || !el.tagName) return false;
@@ -900,7 +904,7 @@
     if (document.hidden) {
       endPeek();
       if (vaultOpen()) vaultSaveNow();
-      if (real && !hiddenAt) {
+      if ((real || awaitingSecret()) && !hiddenAt) {   // text on the page, or a phrase or password typed and not submitted (DM-132)
         hiddenAt = Date.now();
         hiddenTimer = setTimeout(wipeAfterAway, HIDDEN_WIPE_MS);
       }
@@ -947,7 +951,7 @@
   }
 
   // Encrypts the hidden text under a key and returns the file or vault record.
-  async function encryptRecord(key, salt, text) {
+  async function encryptRecord(key, salt, iterations, text) {
     const iv = crypto.getRandomValues(new Uint8Array(12));
     const data = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(text));
     return {
@@ -955,7 +959,7 @@
       version: 1,
       cipher: 'AES-256-GCM',
       kdf: 'PBKDF2-SHA-256',
-      iterations: PBKDF2_ITERATIONS,
+      iterations,
       salt: bytesToBase64(salt),
       iv: bytesToBase64(iv),
       data: bytesToBase64(new Uint8Array(data))
@@ -968,7 +972,7 @@
     const text = real;   // what was on the page when Save was confirmed, even if Esc follows
     const salt = crypto.getRandomValues(new Uint8Array(16));
     const key = await deriveKey(password, salt, PBKDF2_ITERATIONS);
-    return JSON.stringify(await encryptRecord(key, salt, text), null, 2);
+    return JSON.stringify(await encryptRecord(key, salt, PBKDF2_ITERATIONS, text), null, 2);
   }
 
   // The three byte fields are required. The descriptive fields are optional
@@ -998,7 +1002,7 @@
     if (salt.length !== 16 || iv.length !== 12) throw new Error('Damaged file');
     const key = await deriveKey(password, salt, iterations);
     const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, data);
-    return { text: new TextDecoder().decode(plain), key, salt };
+    return { text: new TextDecoder().decode(plain), key, salt, iterations };
   }
 
   // Replaces the hidden buffer with text and rebuilds the screen to match.
@@ -1026,6 +1030,7 @@
   // ------------------------------------------------------------------
   let vaultKey = null;
   let vaultSalt = null;
+  let vaultIterations = PBKDF2_ITERATIONS;   // the count the key in memory was derived with; every record this tab saves states it
   let vaultSaveTimer = null;
   let unlockArmedAt = 0;
   let vaultGeneration = 0;   // bumps when the vault is turned off and when another tab changes the copy; a write started before that is dropped
@@ -1071,9 +1076,10 @@
     if (attempt !== setupAttempt) return;   // Esc, untick or another setup meanwhile
     vaultKey = key;
     vaultSalt = salt;
+    vaultIterations = PBKDF2_ITERATIONS;
     body.classList.add('vault-open');
     if (!introEl.hidden) vaultStatusRefresh();   // an intro reopened during the setup says the vault is open once the key exists; the box stays as the person left it
-    await vaultWrite(key, salt, real, true);
+    await vaultWrite(key, salt, PBKDF2_ITERATIONS, real, true);
   }
   // Opens a stored copy with a phrase from the intro. Returns true on success,
   // 'changed' when the copy was deleted, re-keyed or rewritten meanwhile, else false.
@@ -1086,6 +1092,7 @@
       if (storageGet(STORAGE.vault) !== raw) return 'changed';
       vaultKey = r.key;
       vaultSalt = r.salt;
+      vaultIterations = r.iterations;   // the copy keeps the count it was made with (the intro's phrase check)
       body.classList.add('vault-open');
       replaceReal(r.text + real);   // anything typed before the intro opened follows the saved text
       return true;
@@ -1117,20 +1124,25 @@
   // disk must still carry this key's salt: if another tab deleted or re-keyed
   // it, the write is dropped, and this tab locks only when the write was its
   // open vault's own. An open intro then follows the copy this tab just wrote.
-  function vaultWrite(key, salt, text, fresh = false) {
+  function vaultWrite(key, salt, iterations, text, fresh = false) {
     const gen = vaultGeneration;
     const run = async () => {
-      const record = await encryptRecord(key, salt, text);
+      const record = await encryptRecord(key, salt, iterations, text);
       if (gen !== vaultGeneration) return;
       if (!fresh) {
         const current = vaultStored();
         if (!current || current.salt !== record.salt) {
           if (vaultOpen() && record.salt === bytesToBase64(vaultSalt)) vaultLock();   // the open vault's copy is gone or re-keyed; an older key's save is just dropped
-          if (!introEl.hidden) vaultStatusRefresh();   // the status follows the copy, which is gone or another tab's now (DM-129)
+          if (!introEl.hidden) vaultStatusRefresh(false);   // the status follows the lock; the intro still follows the copy it drew (DM-129, and the other tab's event may still be on its way)
           return;
         }
       }
-      storageSet(STORAGE.vault, JSON.stringify(record));
+      if (!storageSet(STORAGE.vault, JSON.stringify(record))) {   // storage full or blocked: say so, and do not pretend to be saving
+        if (vaultOpen() && record.salt === bytesToBase64(vaultSalt)) vaultLock();
+        toast(STORAGE_FAILED_NOTICE);
+        if (!introEl.hidden) vaultStatusRefresh();
+        return;
+      }
       if (!introEl.hidden) vaultStatusRefresh();   // the intro follows this tab's own copy, so another tab's delete or clear redraws it later and an autosave does not; the box and a phrase being typed are left alone
     };
     writeChain = writeChain.then(run, run);
@@ -1164,7 +1176,7 @@
   }
   function vaultSaveNow() {
     if (!vaultKey) return Promise.resolve();
-    return vaultWrite(vaultKey, vaultSalt, real);
+    return vaultWrite(vaultKey, vaultSalt, vaultIterations, real);
   }
   function vaultScheduleSave() {
     if (!vaultKey) return;
@@ -1186,6 +1198,7 @@
       if (storageGet(STORAGE.vault) !== raw) return;          // deleted, re-keyed or rewritten meanwhile: an untick here, or another tab
       vaultKey = r.key;
       vaultSalt = r.salt;
+      vaultIterations = r.iterations;   // the copy keeps the count it was made with (the chord)
       body.classList.add('vault-open');
       const extra = real.startsWith(phrase) ? real.slice(phrase.length) : '';   // keys typed while the key derived
       replaceReal(r.text + extra);
@@ -1496,10 +1509,12 @@
     vaultPhraseEl.disabled = !vaultOnEl.checked;
     vaultStatusEl.textContent = vaultStatusText(stored, pending);
   }
-  function vaultStatusRefresh() {
+  // followCopy false: the status follows the state but the intro keeps following the copy it drew, for a
+  // dropped write, where the copy in storage may be another tab's whose event has not arrived yet.
+  function vaultStatusRefresh(followCopy = true) {
     if (!cryptoAvailable()) return;
     const record = vaultStored();
-    drawnSalt = record === null ? null : record.salt;
+    if (followCopy) drawnSalt = record === null ? null : record.salt;
     vaultStatusEl.textContent = vaultStatusText(record !== null, vaultSetupPending());
   }
   function vaultStatusText(stored, pending) {
@@ -1614,7 +1629,8 @@
     try {
       if (value) localStorage.setItem(key, value);
       else localStorage.removeItem(key);
-    } catch (err) { /* storage blocked: the page still works, nothing is remembered */ }
+      return true;
+    } catch (err) { return false; }   // storage full or blocked: the page still works, nothing is remembered
   }
 
   // ------------------------------------------------------------------
@@ -1655,6 +1671,12 @@
     $('#btn-save').addEventListener('click', onSave);
     $('#btn-open').addEventListener('click', () => { blurActive(); if (!cryptoAvailable()) { toast(NO_CRYPTO_NOTICE); return; } fileInput.click(); });
     fileInput.addEventListener('change', onFileChosen);
+    // A password field invites the browser's password manager: a save prompt on screen and the phrase in a synced
+    // keychain. Where the browser can mask a text field, the two fields become masked text fields instead, which no
+    // password manager treats as a password; elsewhere they stay password fields, so nothing typed shows.
+    if (window.CSS && CSS.supports && CSS.supports('-webkit-text-security', 'disc')) {
+      for (const el of [vaultPhraseEl, pwInput]) { el.type = 'text'; el.setAttribute('style', '-webkit-text-security: disc'); }
+    }
     $('#btn-help').addEventListener('click', () => { blurActive(); openIntro(); });
     $('#btn-start').addEventListener('click', startWriting);
     vaultOnEl.addEventListener('change', () => { vaultPhraseEl.disabled = !vaultOnEl.checked; if (vaultOnEl.checked) vaultPhraseEl.focus(); });
@@ -1683,7 +1705,7 @@
   // reads or returns the hidden buffer in any form, encrypted or not. Save and
   // Open are reachable only through their buttons.
   window.PlainSight = Object.freeze({
-    version: '1.3.9',
+    version: '1.3.10',
     coverIds: COVER_IDS.slice(),
     coverId: () => (cover ? cover.id : null),
     coverText: () => coverText,
