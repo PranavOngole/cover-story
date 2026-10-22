@@ -782,9 +782,15 @@
     vaultScheduleSave();
   }
 
+  // A key that is one character: one UTF-16 unit, or the pair that holds one
+  // astral character such as an emoji. Longer key names (F1, Dead) are not characters.
+  function isOneCharacter(key) { return key.length === 1 || (key.length === 2 && key.codePointAt(0) > 0xFFFF); }
+  // The UTF-16 length of the last character of a string: 2 for an astral character, else 1.
+  function lastCharLength(s) { return s.length >= 2 && s.codePointAt(s.length - 2) > 0xFFFF ? 2 : 1; }
+
   function backspace() {
     if (peeking) endPeek();
-    if (real.length) real = real.slice(0, -1);
+    if (real.length) real = real.slice(0, -lastCharLength(real));   // one character, never half an emoji (QA-F-04)
     if (steps.length) undoStep();
     updateHeader();
     vaultScheduleSave();
@@ -860,7 +866,7 @@
     // (Safari skips buttons by default; there it is Option+Shift+Tab).
     if (key === 'Tab' && e.shiftKey) return;
     if (key === 'Enter' || key === 'Tab') { e.preventDefault(); typeChar(key === 'Enter' ? '\n' : '\t'); return; }
-    if (key.length === 1) { e.preventDefault(); typeChar(key); return; }
+    if (isOneCharacter(key)) { e.preventDefault(); typeChar(key); return; }
     // Arrows, function keys, Shift on its own and the rest go to the browser.
   }
 

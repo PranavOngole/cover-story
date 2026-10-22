@@ -3194,6 +3194,45 @@ test('device vault: a note larger than the device will store, opened with the va
   } finally { p.close(); }
 });
 
+test('Backspace removes one character, not one UTF-16 unit: after an emoji nothing half is left in the buffer or in a saved file; a key event that is one astral character is typed (QA-F-04)', async () => {
+  const p = await loadPage({ storage: { 'plainSight.saveMode': 'txt' } });
+  try {
+    p.start();
+    const smile = String.fromCodePoint(0x1F600);
+    const noLoneSurrogate = (s) => Array.from(s).every((c) => c.codePointAt(0) < 0xD800 || c.codePointAt(0) > 0xDFFF);
+    p.type('ab');
+    assert.equal(p.press(smile), true, 'a key that is one astral character is recorded');
+    assert.equal(p.coverLength(), 3, 'one cover character for it');
+    assert.equal(await p.readReal(), 'ab' + smile);
+    assert.equal(p.press('F1'), false, 'a key name of two letters is not a character');
+    assert.equal(p.coverLength(), 3);
+    p.press('Backspace');
+    assert.equal(await p.readReal(), 'ab', 'Backspace removed the whole emoji');
+    assert.equal(p.coverLength(), 2, 'and one cover character');
+    // An opened note that ends in an emoji, then Backspace, then Save.
+    chooseFile(p, new p.w.File(['plan ' + smile], 'n.txt', { type: 'text/plain' }));
+    await p.settle();
+    p.$('#pw-ok').click();
+    await p.settle();
+    assert.equal(await p.readReal(), 'plan ' + smile);
+    p.press('Backspace');
+    const text = await p.readReal();
+    assert.equal(text, 'plan ');
+    assert.ok(noLoneSurrogate(text), 'no lone surrogate in the buffer');
+    p.$('#btn-save').click();
+    await p.settle();
+    assert.equal(p.downloads.length, 1);
+    const bytes = Buffer.from(await p.downloads[0].blob.arrayBuffer());
+    assert.equal(bytes.toString('utf8'), 'plan ');
+    assert.ok(!bytes.includes(Buffer.from([0xEF, 0xBF, 0xBD])), 'no U+FFFD in the .txt');
+    // BR-13 still holds: append only, and Backspace removes the last character.
+    p.type('xy');
+    p.press('Backspace');
+    assert.equal(await p.readReal(), 'plan x');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
 // ---------------------------------------------------------------------------
 // Run
 // ---------------------------------------------------------------------------
