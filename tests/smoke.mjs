@@ -3351,6 +3351,45 @@ test('another tab changing the folder format redraws an open intro (QA-F-06)', a
   } finally { p.close(); }
 });
 
+test('the Save button says what Save will do: the download format in force, or the chosen folder and its format, following other tabs too (QA-F-08)', async () => {
+  const p = await loadPage({ folder: fakeFolder('Notes') });
+  try {
+    const title = () => p.$('#btn-save').getAttribute('title');
+    const pick = (name, value) => { const r = p.$('input[name="' + name + '"][value="' + value + '"]'); r.checked = true; r.dispatchEvent(new p.w.Event('change', { bubbles: true })); };
+    assert.equal(title(), 'Download your text as an encrypted .sight file');
+    pick('save-mode', 'txt');
+    assert.equal(title(), 'Download your text as a plain .txt file, no password');
+    pick('save-mode', 'md');
+    assert.equal(title(), 'Download your text as a Markdown .md file, no password');
+    pick('save-mode', 'docx');
+    assert.equal(title(), 'Download your text as a Word .docx file, no password');
+    p.$('#btn-folder').click();
+    await p.settle();
+    assert.equal(title(), 'Write your text as a plain .txt file into the folder "Notes"');
+    pick('folder-format', 'docx');
+    assert.equal(title(), 'Write your text as a Word .docx file into the folder "Notes"');
+    p.start();
+    // Another tab changes the folder format while the intro here is closed: the button follows.
+    p.w.localStorage.setItem('plainSight.folderFormat', 'md');
+    p.w.dispatchEvent(new p.w.StorageEvent('storage', { key: 'plainSight.folderFormat', oldValue: 'docx', newValue: 'md' }));
+    assert.equal(title(), 'Write your text as a Markdown .md file into the folder "Notes"');
+    p.$('#btn-help').click();
+    p.$('#btn-folder-forget').click();
+    await p.settle();
+    assert.equal(title(), 'Download your text as a Word .docx file, no password');
+    p.start();
+    p.w.localStorage.removeItem('plainSight.saveMode');
+    p.w.dispatchEvent(new p.w.StorageEvent('storage', { key: 'plainSight.saveMode', oldValue: 'docx', newValue: null }));
+    assert.equal(title(), 'Download your text as an encrypted .sight file');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+  const q = await loadPage({ storage: { 'plainSight.saveMode': 'md', 'plainSight.introSeen': '1' } });
+  try {
+    assert.equal(q.$('#btn-save').getAttribute('title'), 'Download your text as a Markdown .md file, no password', 'the title is drawn from the stored choice at load');
+    assert.deepEqual(q.errors, []);
+  } finally { q.close(); }
+});
+
 // ---------------------------------------------------------------------------
 // Run
 // ---------------------------------------------------------------------------

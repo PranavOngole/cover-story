@@ -450,6 +450,7 @@
   const folderChooseBtn = $('#btn-folder');
   const folderForgetBtn = $('#btn-folder-forget');
   const folderFormatEl = $('#folder-format');
+  const saveBtn = $('#btn-save');
   const titleBlockEl = $('#title-block');
   const caret = document.createElement('span');
   caret.className = 'caret';
@@ -1181,7 +1182,7 @@
   function onStorageChange(e) {
     const cleared = e.key === null;   // another document on this origin cleared the storage
     if (e.key === STORAGE.folderVersion) { onFolderChanged(); return; }
-    if ((e.key === STORAGE.saveMode || e.key === STORAGE.folderFormat || cleared) && !introEl.hidden) folderRender();
+    if (e.key === STORAGE.saveMode || e.key === STORAGE.folderFormat || cleared) { renderSaveTitle(); if (!introEl.hidden) folderRender(); }
     if (!cleared && e.key !== STORAGE.vault) return;
     const copyChanged = cleared || !e.newValue || recordSalt(e.oldValue) !== recordSalt(e.newValue);   // deleted, re-keyed or new; not an autosave
     if (vaultOpen()) {
@@ -1306,6 +1307,7 @@
   }
   async function onFolderChanged() {
     folderHandle = await folderLoad();
+    renderSaveTitle();
     if (!introEl.hidden) folderRender();
   }
   // True when the folder can be written now. Asks the browser if it has to;
@@ -1440,7 +1442,16 @@
         return 'This browser cannot write into a folder, so Save downloads a file.';
     }
   }
+  // The Save button's tooltip says what Save will do: write into the chosen
+  // folder in its format, or download in the format in force (QA-F-08).
+  function saveTitle() {
+    if (folderHandle) return 'Write your text as a ' + PLAIN_FORMATS[folderFormat()].label + ' into the folder "' + folderHandle.name + '"';
+    const mode = saveMode();
+    return mode === 'sight' ? 'Download your text as an encrypted .sight file' : 'Download your text as a ' + PLAIN_FORMATS[mode].label + ', no password';
+  }
+  function renderSaveTitle() { saveBtn.title = saveTitle(); }
   function folderRender() {
+    renderSaveTitle();
     const help = folderHelpText();
     folderHelpEl.textContent = help;
     folderHelpEl.hidden = !help;
@@ -1795,7 +1806,7 @@
     });
     window.addEventListener('pagehide', () => { if (vaultOpen()) vaultSaveNow(); });
 
-    $('#btn-save').addEventListener('click', onSave);
+    saveBtn.addEventListener('click', onSave);
     $('#btn-open').addEventListener('click', () => { blurActive(); if (!cryptoAvailable()) { toast(NO_CRYPTO_NOTICE); return; } fileInput.click(); });
     fileInput.addEventListener('change', onFileChosen);
     $('#btn-help').addEventListener('click', () => { blurActive(); openIntro(); });
