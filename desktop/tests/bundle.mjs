@@ -53,6 +53,20 @@ function domNodes(html) {
 // A property list as plutil reads it.
 const plist = (xml) => JSON.parse(execFileSync('plutil', ['-convert', 'json', '-o', '-', '-'], { input: xml, encoding: 'utf8' }));
 
+// Keys the built Info.plist must not hold (QA-G-26, B22): a bundle-level
+// network allowance (NSAppTransportSecurity) would loosen the no-network
+// promise behind the entitlement check's back. Read through plutil from the
+// built file, so a tampered copy of the bundle is caught; config.mjs holds
+// the function to a scratch property list on every npm test.
+export const FORBIDDEN_INFO_KEYS = ['NSAppTransportSecurity'];
+export function forbiddenInfoKeys(plistPath) {
+  return Object.keys(plist(readFileSync(plistPath))).filter((key) => FORBIDDEN_INFO_KEYS.includes(key));
+}
+
+// The tests below run only when this file is the program, so config.mjs can
+// import the function above without running them.
+const MAIN = Boolean(process.argv[1]) && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+
 const tests = [];
 const test = (name, fn) => tests.push({ name, fn });
 
@@ -92,6 +106,7 @@ test('Info.plist names the app, its identifier, its version, the macOS it needs,
   // From src-tauri/Info.plist, merged in by the bundler (D-46).
   assert.equal(read('ITSAppUsesNonExemptEncryption'), 'false', 'the export compliance answer');
   assert.equal(read('NSHumanReadableCopyright'), 'Copyright 2026 Pranav Ongole. MIT License.');
+  assert.deepEqual(forbiddenInfoKeys(path.join(APP, 'Contents/Info.plist')), [], 'no NSAppTransportSecurity key (QA-G-26, B22)');
   assert.match(execFileSync('lipo', ['-archs', BIN], { encoding: 'utf8' }).trim(), /^arm64$/);
 });
 
@@ -144,18 +159,20 @@ test('the page files embedded in the binary are exactly index.html and the three
   assert.deepEqual(domNodes(pages[0].toString('utf8')), domNodes(readFileSync(path.join(ROOT, 'index.html'), 'utf8')), 'the embedded page is the repository page, node for node');
 });
 
-let passed = 0;
-let failed = 0;
-for (const t of tests) {
-  try {
-    await t.fn();
-    passed += 1;
-    console.log('ok   - ' + t.name);
-  } catch (err) {
-    failed += 1;
-    console.log('FAIL - ' + t.name);
-    console.log('       ' + String(err && err.message ? err.message : err).split('\n').join('\n       '));
+if (MAIN) {
+  let passed = 0;
+  let failed = 0;
+  for (const t of tests) {
+    try {
+      await t.fn();
+      passed += 1;
+      console.log('ok   - ' + t.name);
+    } catch (err) {
+      failed += 1;
+      console.log('FAIL - ' + t.name);
+      console.log('       ' + String(err && err.message ? err.message : err).split('\n').join('\n       '));
+    }
   }
+  console.log(`\n${passed} passed, ${failed} failed, ${tests.length} total. Errors: ${failed}`);
+  process.exit(failed ? 1 : 0);
 }
-console.log(`\n${passed} passed, ${failed} failed, ${tests.length} total. Errors: ${failed}`);
-process.exit(failed ? 1 : 0);

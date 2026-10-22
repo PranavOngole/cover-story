@@ -5,7 +5,8 @@
 // Run from the repository root: node desktop/tests/config.mjs
 
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -262,14 +263,46 @@ test('no GUI test writes into ~/Documents or ~/Downloads: the test build takes P
     const text = read(tests, file);
     assert.equal(/join\((HOME|os\.homedir\(\)), '(Documents|Downloads)'/.test(text), false, file + ' names no folder of the real home');
   }
-  // The overrides exist in the test build only: the line before each read is its cfg.
-  const rs = read(TAURI, 'src', 'folder.rs').split('\n');
-  for (const variable of ['PLAIN_SIGHT_E2E_DOWNLOADS', 'PLAIN_SIGHT_E2E_SAVE_AS']) {
-    const at = rs.findIndex((l) => l.includes('var_os("' + variable + '")'));
-    assert.ok(at > 0, 'folder.rs reads ' + variable);
-    assert.equal(rs[at - 1].trim(), '#[cfg(feature = "e2e")]', variable + ' is read only in the e2e build');
-  }
   assert.match(e2e, /PLAIN_SIGHT_E2E_SAVE_AS: DOWNLOADS/, 'every e2e launch names the save panel\'s stand-in');
+});
+
+test('every PLAIN_SIGHT_E2E_* read in the Rust sources exists in the test build only (QA-G-26, F5)', () => {
+  // The line before each read is its cfg, or the whole module is (e2e.rs,
+  // declared under the cfg in main.rs). Comments are not reads.
+  const src = path.join(TAURI, 'src');
+  assert.match(read(src, 'main.rs'), /^#\[cfg\(feature = "e2e"\)\]\nmod e2e;$/m, 'e2e.rs is a module of the test build only');
+  const reads = [];
+  for (const file of readdirSync(src).filter((f) => f.endsWith('.rs')).sort()) {
+    const rs = read(src, file).split('\n');
+    rs.forEach((line, at) => {
+      for (const m of line.replace(/\/\/.*$/, '').matchAll(/"(PLAIN_SIGHT_E2E_[A-Z_]+)"/g)) {
+        reads.push(file + ':' + m[1]);
+        if (file === 'e2e.rs') continue;
+        assert.equal((rs[at - 1] || '').trim(), '#[cfg(feature = "e2e")]', file + ' line ' + (at + 1) + ': ' + m[1] + ' is read only in the e2e build');
+      }
+    });
+  }
+  for (const known of ['e2e.rs:PLAIN_SIGHT_E2E_DIR', 'folder.rs:PLAIN_SIGHT_E2E_DOWNLOADS', 'folder.rs:PLAIN_SIGHT_E2E_PICK', 'folder.rs:PLAIN_SIGHT_E2E_SAVE_AS']) {
+    assert.ok(reads.includes(known), 'the scan saw ' + known + ' among ' + reads.join(', '));
+  }
+});
+
+test('the bundle check refuses a built Info.plist that holds NSAppTransportSecurity (QA-G-26, B22)', async () => {
+  // bundle.mjs reads the built file through this function; held here to a
+  // scratch property list, since a bundle is not built on every npm test.
+  const { FORBIDDEN_INFO_KEYS, forbiddenInfoKeys } = await import('./bundle.mjs');
+  assert.deepEqual(FORBIDDEN_INFO_KEYS, ['NSAppTransportSecurity']);
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'plain-sight-plist-'));
+  try {
+    const file = path.join(dir, 'Info.plist');
+    const shipped = read(TAURI, 'Info.plist');
+    writeFileSync(file, shipped);
+    assert.deepEqual(forbiddenInfoKeys(file), [], 'the shipped keys pass');
+    writeFileSync(file, shipped.replace('</dict>', '<key>NSAppTransportSecurity</key><dict><key>NSAllowsArbitraryLoads</key><true/></dict></dict>'));
+    assert.deepEqual(forbiddenInfoKeys(file), ['NSAppTransportSecurity'], 'the added key is named');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('the web deployment allowlist is unchanged (DR-10)', () => {

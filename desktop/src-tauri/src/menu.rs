@@ -192,6 +192,10 @@ mod tests {
             "the button is the item's: {script}"
         );
         assert!(
+            script.contains("if (!button || button.hidden) return false;"),
+            "a hidden button is not pressed (QA-G-26, Me3): {script}"
+        );
+        assert!(
             script.ends_with("button.click(); return true; })()"),
             "the press is a click: {script}"
         );

@@ -274,17 +274,30 @@ pub async fn save_download<R: Runtime>(
     name: String,
     text: String,
 ) -> Result<Option<String>, String> {
-    if !is_download_name(&name) {
+    save_through(&name, &text, |proposed| save_as(window, proposed)).await
+}
+
+/// Save without a folder, with the panel handed in, so that the command's
+/// own path is unit-tested (QA-G-26): the proposed name is checked before
+/// anything else, so a name that is not one Save makes, or that holds a
+/// path, never reaches a panel; then the file's bytes are made, the panel
+/// asked, and the file written where it said, under the name chosen there.
+async fn save_through<F, Fut>(name: &str, text: &str, panel: F) -> Result<Option<String>, String>
+where
+    F: FnOnce(String) -> Fut,
+    Fut: std::future::Future<Output = Result<Option<PathBuf>, String>>,
+{
+    if !is_download_name(name) {
         return Err("The file name is not one Save makes".to_owned());
     }
-    let bytes = file_bytes(&name, &text).map_err(|e| format!("Could not save the file: {e}"))?;
-    let Some(path) = save_as(window, &name).await? else {
+    let bytes = file_bytes(name, text).map_err(|e| format!("Could not save the file: {e}"))?;
+    let Some(path) = panel(name.to_owned()).await? else {
         return Ok(None);
     };
     let chosen = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| name.clone());
+        .unwrap_or_else(|| name.to_owned());
     write_replacing(&path, &bytes).map_err(|e| format!("Could not save the file: {e}"))?;
     Ok(Some(chosen))
 }
@@ -295,7 +308,7 @@ pub async fn save_download<R: Runtime>(
 /// the user chose (the user-selected entitlement), so Downloads needs none.
 async fn save_as<R: Runtime>(
     window: WebviewWindow<R>,
-    name: &str,
+    name: String,
 ) -> Result<Option<PathBuf>, String> {
     // Test builds only: the end-to-end tests run while the screen is locked,
     // where no panel can be used, so they name the panel's answer in the
@@ -306,11 +319,15 @@ async fn save_as<R: Runtime>(
         if !path.is_absolute() {
             return Err("PLAIN_SIGHT_E2E_SAVE_AS must be an absolute path".to_owned());
         }
-        return Ok(Some(if path.is_dir() { path.join(name) } else { path }));
+        return Ok(Some(if path.is_dir() {
+            path.join(&name)
+        } else {
+            path
+        }));
     }
     let start = downloads_dir(&window).ok();
     let parent = window.clone();
-    let proposed = name.to_owned();
+    let proposed = name;
     let (sender, mut receiver) = tauri::async_runtime::channel(1);
     // AppKit panels belong to the main thread: rfd builds the panel and starts
     // the sheet there and hands back a future that completes when the user
@@ -800,6 +817,74 @@ mod tests {
             !is_download_name(&long),
             "a title longer than 60 characters is refused"
         );
+    }
+
+    /// The command's own path (QA-G-26, F6): a proposed name that is not one
+    /// Save makes, or that holds a path, is refused before any panel opens;
+    /// a good name reaches the panel, and the file is written where the panel
+    /// said, under the name chosen there; Cancel writes nothing.
+    #[test]
+    fn save_download_refuses_a_name_that_is_not_one_save_makes_before_any_panel() {
+        let dir = scratch("save-through");
+        let opened: Arc<Mutex<Vec<String>>> = Arc::default();
+        let panel = |answer: Option<PathBuf>| {
+            let opened = opened.clone();
+            move |proposed: String| {
+                opened.lock().unwrap().push(proposed);
+                async move { Ok(answer) }
+            }
+        };
+        for bad in [
+            "notes.sh",
+            "2026-10-20 14-55-03.docm",
+            "2026-10-20 14-55-03.TXT",
+            "../2026-10-20 14-55-03.txt",
+            "2026-10-20 14-55-03.txt/../x",
+            "untitled-draft-20261020-1455.sight/../../x",
+            "a/b-20261020-1455.sight",
+            "",
+        ] {
+            let result = tauri::async_runtime::block_on(save_through(
+                bad,
+                "text",
+                panel(Some(dir.join("never.txt"))),
+            ));
+            assert_eq!(
+                result,
+                Err("The file name is not one Save makes".to_owned()),
+                "{bad:?}"
+            );
+        }
+        assert!(
+            opened.lock().unwrap().is_empty(),
+            "no panel opened for a refused name"
+        );
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 0, "nothing written");
+        let chosen = dir.join("chosen in the panel.txt");
+        let result = tauri::async_runtime::block_on(save_through(
+            "2026-10-20 14-55-03.txt",
+            "the text",
+            panel(Some(chosen.clone())),
+        ));
+        assert_eq!(
+            result,
+            Ok(Some("chosen in the panel.txt".to_owned())),
+            "the name the panel chose comes back"
+        );
+        assert_eq!(
+            opened.lock().unwrap().as_slice(),
+            ["2026-10-20 14-55-03.txt"],
+            "the panel got the proposed name"
+        );
+        assert_eq!(fs::read_to_string(&chosen).unwrap(), "the text");
+        let result = tauri::async_runtime::block_on(save_through(
+            "untitled-draft-20261020-1455.sight",
+            "{}",
+            panel(None),
+        ));
+        assert_eq!(result, Ok(None), "a cancelled panel answers None");
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1, "and writes nothing");
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

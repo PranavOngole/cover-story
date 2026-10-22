@@ -615,6 +615,25 @@ test('the menu items press the page\'s buttons only while no dialog is open: Sav
   } finally { p.close(); }
 });
 
+test('the menu items click no hidden button: a button the page hides is left alone and the press reports false (QA-G-26, Me3)', async () => {
+  const native = fakeNative();
+  const p = await loadPage({ native, storage: { 'plainSight.introSeen': '1' } });
+  try {
+    await p.settle();
+    let clicks = 0;
+    p.$('#btn-save').addEventListener('click', () => { clicks += 1; });
+    p.$('#btn-save').hidden = true;
+    assert.equal(p.w.eval(PRESS('btn-save')), false, 'a hidden Save button is not pressed');
+    assert.equal(clicks, 0, 'no click reached it');
+    p.$('#btn-save').hidden = false;
+    p.type('words to save');
+    assert.equal(p.w.eval(PRESS('btn-save')), true, 'shown again, it is pressed');
+    assert.equal(clicks, 1);
+    assert.equal(p.w.eval(PRESS('btn-missing')), false, 'a button the page has not got is nothing to press');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
 // A .sight file of the text, in the page's own format, so that a text with
 // carriage returns reaches the page unchanged (Open of a plain note turns
 // them into line feeds; the web suite opens the sample the same way).
@@ -632,7 +651,7 @@ async function sightFile(w, text, password) {
 test('the page makes, byte for byte, the Word document the app is held to (tests/fixtures at the root, docx.rs)', async () => {
   const sample = readFileSync(path.join(ROOT, 'tests/fixtures/sample.txt'), 'utf8');
   const expected = readFileSync(path.join(ROOT, 'tests/fixtures/sample.docx'));
-  assert.ok(sample.includes('\r\n') && /[^\r]\r[^\n]/.test(sample) && sample.includes('\u000b') && sample.includes('\ufffe'), 'the sample holds a CRLF, a lone CR, a U+000B and a U+FFFE');
+  assert.ok(sample.includes('\r\n') && /[^\r]\r[^\n]/.test(sample) && ['\u000b', '\u000c', '\u0001', '\u001f', '\ufffe', '\uffff'].every((c) => sample.includes(c)), 'the sample holds a CRLF, a lone CR, U+000B, U+000C, U+0001, U+001F, U+FFFE and U+FFFF (QA-G-25)');
   const p = await loadPage({ storage: { 'plainSight.introSeen': '1', 'plainSight.saveMode': 'docx' } });
   try {
     await p.settle();

@@ -147,6 +147,17 @@ mod tests {
         // desktop/tests/native.mjs checks the page against the same file.
         let text = include_str!("../../../tests/fixtures/sample.txt");
         let page = include_bytes!("../../../tests/fixtures/sample.docx");
+        // The characters both writers must leave out or turn into line ends
+        // (QA-F-05, QA-G-25): the sample holds each of them.
+        for held in [
+            "\r\n", "\u{000B}", "\u{000C}", "\u{0001}", "\u{001F}", "\u{FFFE}", "\u{FFFF}",
+        ] {
+            assert!(text.contains(held), "the sample holds {held:?}");
+        }
+        assert!(
+            text.replace("\r\n", "").contains('\r'),
+            "the sample holds a lone CR"
+        );
         assert_eq!(docx(text).unwrap(), page.to_vec());
     }
 
