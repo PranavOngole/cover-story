@@ -3800,7 +3800,7 @@ test('Esc pressed while a .sight file is still being read wins: no password ques
     await p.settle();
     assert.equal(p.$('#pw').hidden, false);
     await p.submitPassword('file password');
-    await p.settle();
+    for (let i = 0; i < 100 && (await p.readReal()) !== 'file contents'; i++) await sleep(50);   // the key derives; up to 5 s on a loaded machine
     assert.equal(await p.readReal(), 'file contents');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
