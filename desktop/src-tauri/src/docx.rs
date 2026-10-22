@@ -29,8 +29,10 @@ const DOCUMENT_END: &str = "</w:body></w:document>";
 /// for each tab, with no metadata (no author, no dates, no application name),
 /// in a zip archive whose entries are stored, not compressed, and dated
 /// 1 January 1980, so the file says nothing about when it was made.
-/// Characters XML cannot hold are left out.
+/// Characters XML cannot hold are left out, and a carriage return, alone or
+/// before a line feed, ends a paragraph as a line feed does (QA-F-05).
 pub fn docx(text: &str) -> Result<Vec<u8>, String> {
+    let text = text.replace("\r\n", "\n").replace('\r', "\n");
     let mut document = String::with_capacity(DOCUMENT_START.len() + text.len() * 2 + 64);
     document.push_str(DOCUMENT_START);
     for line in text.split('\n') {
@@ -169,6 +171,24 @@ mod tests {
             3,
             "three parts"
         );
+    }
+
+    /// A carriage return can only reach the writer from a hand-made .sight
+    /// file; written raw inside <w:t> it turned into a space in some readers
+    /// (QA-F-05). Both "\r\n" and a lone "\r" end a paragraph, like "\n".
+    #[test]
+    fn carriage_returns_end_paragraphs_like_line_feeds() {
+        assert_eq!(
+            docx("one\r\ntwo\rthree\n\rfour").unwrap(),
+            docx("one\ntwo\nthree\n\nfour").unwrap()
+        );
+        let bytes = docx("a\rb").unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            !text.contains('\r'),
+            "no raw carriage return in the document"
+        );
+        assert_eq!(text.matches("<w:p>").count(), 2, "two paragraphs");
     }
 
     #[test]
