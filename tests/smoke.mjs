@@ -3987,6 +3987,65 @@ test('another tab choosing or forgetting the folder puts no title on Save or Ope
   } finally { p.close(); }
 });
 
+test('device vault: the memory of a lock the device caused is forgotten by Esc and by Open, so the intro path puts the saved text first again afterwards (QA-G-02)', async () => {
+  // A page locked by a refusal, then Esc and new text, then the phrase on the intro: the saved text comes first, as always after Esc.
+  const p = await loadPage();
+  const protoP = p.w.Storage.prototype;
+  const setItemP = protoP.setItem;
+  try {
+    p.start();
+    p.type('saved part. ');
+    await p.vaultOn('correct horse battery staple');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    let refuse = true;
+    protoP.setItem = function (key, value) { if (refuse && key === 'plainSight.vault') throw new p.w.DOMException('The quota has been exceeded.', 'QuotaExceededError'); return setItemP.call(this, key, value); };
+    p.type('UNSAVED tail');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    assert.ok(!p.d.body.classList.contains('vault-open'), 'locked by the refusal');
+    refuse = false;
+    p.press('Escape');
+    await sleep(300);
+    p.type('new words');
+    p.$('#btn-help').click();
+    p.$('#vault-phrase').value = 'correct horse battery staple';
+    p.start();
+    for (let i = 0; i < 100 && !p.d.body.classList.contains('vault-open'); i++) await sleep(50);   // the key derives
+    assert.ok(p.d.body.classList.contains('vault-open'));
+    assert.equal(await p.readReal(), 'saved part. new words', 'after Esc the saved text comes first: the lock is forgotten');
+    assert.equal(p.toast(), 'Saved copy opened');
+    assert.deepEqual(p.errors, []);
+  } finally { protoP.setItem = setItemP; p.close(); }
+  // The same lock, then a note opened over the page, then the phrase on the intro: the saved text comes first, before the note.
+  const q = await loadPage();
+  const protoQ = q.w.Storage.prototype;
+  const setItemQ = protoQ.setItem;
+  try {
+    q.start();
+    q.type('saved part. ');
+    await q.vaultOn('correct horse battery staple');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    let refuse = true;
+    protoQ.setItem = function (key, value) { if (refuse && key === 'plainSight.vault') throw new q.w.DOMException('The quota has been exceeded.', 'QuotaExceededError'); return setItemQ.call(this, key, value); };
+    q.type('UNSAVED tail');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    assert.ok(!q.d.body.classList.contains('vault-open'), 'locked by the refusal');
+    refuse = false;
+    chooseFile(q, new q.w.File(['NOTE BODY'], 'note.txt', { type: 'text/plain' }));
+    await q.settle();
+    q.$('#pw-ok').click();                   // the note replaces the page
+    await q.settle();
+    assert.equal(await q.readReal(), 'NOTE BODY');
+    q.$('#btn-help').click();
+    q.$('#vault-phrase').value = 'correct horse battery staple';
+    q.start();
+    for (let i = 0; i < 100 && !q.d.body.classList.contains('vault-open'); i++) await sleep(50);
+    assert.ok(q.d.body.classList.contains('vault-open'));
+    assert.equal(await q.readReal(), 'saved part. NOTE BODY', 'after Open the saved text comes first: the lock is forgotten');
+    assert.equal(q.toast(), 'Saved copy opened');
+    assert.deepEqual(q.errors, []);
+  } finally { protoQ.setItem = setItemQ; q.close(); }
+});
+
 // ---------------------------------------------------------------------------
 // Run
 // ---------------------------------------------------------------------------
