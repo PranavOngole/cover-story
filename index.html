@@ -830,6 +830,10 @@
     const t = el.tagName;
     return t === 'INPUT' || t === 'TEXTAREA' || t === 'SELECT' || el.isContentEditable === true;
   }
+  // A text field with a selection: Cmd+C there has something of the field's own to copy.
+  function fieldSelection(el) {
+    return isEditable(el) && typeof el.selectionStart === 'number' && el.selectionStart !== el.selectionEnd;
+  }
 
   function onKeyDown(e) {
     if (e.isComposing) return;
@@ -840,6 +844,10 @@
     // while peeking, and the two halves of the vault unlock. Every other chord,
     // and anything with Alt, belongs to the browser and is not recorded.
     if (e.ctrlKey || e.metaKey || e.altKey) {
+      // In the app, Cmd+C with no peek would reach the Edit menu's Copy, which
+      // with nothing selected empties the clipboard (Mac_PS_006): the key is
+      // taken unless a text field holds a selection for it to copy.
+      if (native && !e.altKey && !e.shiftKey && key.toLowerCase() === 'c' && !peeking && !fieldSelection(e.target)) { e.preventDefault(); return; }
       if (e.altKey || dialogOpen() || !cover) return;
       const k = key.toLowerCase();
       if (e.shiftKey && k === 'g') { e.preventDefault(); togglePeek(); return; }

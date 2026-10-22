@@ -209,10 +209,10 @@ test('Open shows the system open panel; a wrong password changes nothing; the ri
   assert.equal(await copyRealText('cmd'), 'opened from a file made outside the app');
 });
 
-// Without a peek the page leaves Cmd+C to the app's Edit menu, whose Copy
-// with nothing selected may empty the clipboard; what matters is that none of
-// the real text reaches it.
-test('Cmd+C without a peek puts none of the real text on the clipboard', async () => {
+// Without a peek the page takes Cmd+C itself, so the Edit menu's Copy never
+// runs with nothing selected and the clipboard keeps what it held
+// (Mac_PS_006); none of the real text reaches it either way.
+test('Cmd+C without a peek leaves the clipboard as it was: the sentinel is still there, and none of the real text', async () => {
   await cleanPage();
   await keys.type('not for the clipboard');
   const marker = 'clipboard marker ' + Date.now();
@@ -221,6 +221,7 @@ test('Cmd+C without a peek puts none of the real text on the clipboard', async (
   await sleep(300);
   const text = drive('clip-text').text;
   note('clipboard after Cmd+C without a peek: ' + JSON.stringify(text));
+  assert.equal(text, marker, 'the clipboard still holds the sentinel');
   assert.ok(!text.includes('not for the clipboard'), 'the real text stays off the clipboard');
   await cleanPage();
 });

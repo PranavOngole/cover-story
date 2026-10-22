@@ -459,6 +459,45 @@ test('in the app a .md or .docx download reaches the app as text, named by the m
   }
 });
 
+// In the app, Cmd+C with no peek would reach the Edit menu's Copy, which with
+// nothing selected empties the clipboard (Mac_PS_006): the page takes the key
+// unless a text field holds a selection of its own; on the web the browser
+// keeps it, as before.
+test('in the app Cmd+C with no peek is taken by the page unless a text field holds a selection (Mac_PS_006); on the web it is left to the browser', async () => {
+  const copyKey = (p, target, init) => {
+    const ev = new p.w.KeyboardEvent('keydown', { key: 'c', bubbles: true, cancelable: true, ...init });
+    target.dispatchEvent(ev);
+    return ev.defaultPrevented;
+  };
+  const native = fakeNative();
+  const p = await loadPage({ native, storage: { 'plainSight.introSeen': '1' } });
+  try {
+    await p.settle();
+    p.type('words that stay off the clipboard');
+    assert.equal(copyKey(p, p.d.body, { metaKey: true }), true, 'Cmd+C on the page with no peek is taken');
+    assert.equal(copyKey(p, p.d.body, { ctrlKey: true }), true, 'Ctrl+C too');
+    assert.equal(copyKey(p, p.d.body, { metaKey: true, shiftKey: true }), false, 'Cmd+Shift+C is not the copy chord and is left alone');
+    assert.equal(copyKey(p, p.d.body, { metaKey: true, altKey: true }), false, 'Cmd+Alt+C is left alone');
+    p.$('#btn-help').click();
+    const area = p.$('#custom-text');
+    area.value = 'pasted cover text';
+    area.focus();
+    area.setSelectionRange(0, 6);
+    assert.equal(copyKey(p, area, { metaKey: true }), false, 'a text field with a selection keeps Cmd+C for its own copy');
+    area.setSelectionRange(3, 3);
+    assert.equal(copyKey(p, area, { metaKey: true }), true, 'a text field without a selection does not');
+    p.start();
+    assert.equal(await p.real(), 'words that stay off the clipboard', 'the text is untouched');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+  const web = await loadPage({ storage: { 'plainSight.introSeen': '1' } });
+  try {
+    await web.settle();
+    web.type('words on the web');
+    assert.equal(copyKey(web, web.d.body, { metaKey: true }), false, 'without the adapter the browser keeps Cmd+C');
+  } finally { web.close(); }
+});
+
 // The menu items File > Open..., File > Save... and Help > Plain Sight Help
 // run menu.rs's PRESS script in the page (D-44). The script is read from
 // menu.rs as text and run here as the app runs it, so the guard tested is the
