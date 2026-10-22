@@ -298,6 +298,7 @@ test('choosing the test\'s own folder in the picker (typed into its Go-to box), 
 });
 
 test('Cmd+Q quits the app', async () => {
+  await keys.press('escape');   // the page still holds the saved text, and a quit with text to lose now asks first (D-48)
   await keys.press('cmd+q');
   await until(() => !alive(app.pid), 'the app to quit', 10000);
   app = null;
@@ -316,6 +317,35 @@ test('the window\'s red close button quits the app', async () => {
   await launch();
   drive('close-button', app.pid);
   await until(() => !alive(app.pid), 'the app to quit after the close button', 10000);
+  app = null;
+});
+
+// Wave G, round 2: the "Quit without saving?" sheet on real keys (D-48,
+// Mac_PS_005). With text on the page and no vault, Cmd+Q shows the sheet;
+// Return presses Cancel, the default button, and the app stays with its text;
+// Cmd+W shows it again, and its Quit button, pressed through Accessibility
+// (the sheet is a child of the document window), ends the app.
+const sheetShown = () => drive('cgwindows', app.pid).windows.filter((x) => x.onscreen).length >= 2;
+test('Cmd+Q with text on the page asks "Quit without saving?": Return cancels and keeps the text; after Cmd+W the sheet\'s Quit button ends the app', async () => {
+  await quitIfRunning();
+  clearTestData();   // a first launch, so the intro is up and no vault is on
+  await launch();
+  await keys.press('return');   // the intro's Start button has the focus on a first launch
+  await keys.type('words a quit would lose');
+  await keys.press('cmd+q');
+  await until(sheetShown, 'the sheet after Cmd+Q', 8000);
+  note('windows with the sheet: ' + JSON.stringify(drive('cgwindows', app.pid).windows.filter((x) => x.onscreen)));
+  await keys.press('return');   // Cancel, the default button
+  await until(() => !sheetShown(), 'the sheet to go after Return', 5000);
+  await sleep(1500);
+  assert.ok(alive(app.pid), 'the app is still running after Cancel');
+  assert.equal(await copyRealText('cmd'), 'words a quit would lose', 'the text is untouched');
+  await keys.press('cmd+w');
+  await until(sheetShown, 'the sheet after Cmd+W', 8000);
+  const t0 = Date.now();
+  drive('panel-button', app.pid, 'Quit');
+  await until(() => !alive(app.pid), 'the app to end after Quit', 10000);
+  note('Quit pressed in the sheet: the app ended ' + (Date.now() - t0) + ' ms after the press');
   app = null;
 });
 

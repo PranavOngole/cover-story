@@ -1864,6 +1864,9 @@
       // last copy is written.
       for (const el of document.querySelectorAll('[data-app]')) el.textContent = el.dataset.app;
       native.onQuit(() => { wipe(); return writeChain; });
+      // Before it quits, the app asks whether a quit would lose text: text on
+      // the page that no open vault keeps. It then shows "Quit without saving?".
+      native.onUnsavedText(() => real.length > 0 && !vaultOpen());
     }
     if (!storageGet(STORAGE.intro)) openIntro();
     else if (!cryptoAvailable()) toast(NO_CRYPTO_NOTICE);   // a return visit sees the notice too

@@ -13,6 +13,7 @@
   const invoke = window.__TAURI_INTERNALS__.invoke;
   const fixed = (name, value) => Object.defineProperty(window, name, { value, writable: false, configurable: false, enumerable: false });
   let quitCallback = null;   // the page's quit hook, run by __plainSightQuit below
+  let unsavedCallback = null;   // the page's answer whether a quit would lose text, asked by __plainSightUnsaved below
 
   fixed('PlainSightNative', Object.freeze({
     // { name } of the chosen folder, or null when the picker is cancelled.
@@ -27,8 +28,18 @@
     // Save without a folder: the app writes the file into Downloads and answers
     // with the name it used, or fails, so the page's toast tells the truth.
     saveDownload: (name, text) => invoke('save_download', { name, text }),
-    onQuit: (callback) => { if (typeof callback === 'function') quitCallback = callback; }
+    onQuit: (callback) => { if (typeof callback === 'function') quitCallback = callback; },
+    // The page's answer to "would a quit lose text?": true when text is on the
+    // page and no vault keeps it; the app then asks before it quits (D-48).
+    onUnsavedText: (callback) => { if (typeof callback === 'function') unsavedCallback = callback; }
   }));
+
+  // Before it quits, the app asks this first (src-tauri/src/quit.rs): true
+  // shows the "Quit without saving?" sheet, false quits as before. A missing or
+  // failing callback answers false, so a quit can never hang on the question.
+  fixed('__plainSightUnsaved', () => {
+    try { return Boolean(unsavedCallback && unsavedCallback()); } catch (err) { return false; }
+  });
 
   // Closing the window or quitting the app runs this first. The page's quit
   // callback (Esc's wipe and the vault's last write) gets up to 1.8 seconds.

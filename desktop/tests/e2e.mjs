@@ -480,7 +480,7 @@ test('the adapter cannot be replaced, gives no path, refuses any other file name
     let deleted = false; try { deleted = delete window.PlainSightNative; } catch (e) {}
     return { frozen: Object.isFrozen(n), replaced, deleted, still: window.PlainSightNative === n, keys: Object.keys(n).sort() };
   })()`);
-  assert.deepEqual(facts, { frozen: true, replaced: false, deleted: false, still: true, keys: ['forgetFolder', 'onQuit', 'pickFolder', 'saveDownload', 'savedFolder', 'writeTextFile'] });
+  assert.deepEqual(facts, { frozen: true, replaced: false, deleted: false, still: true, keys: ['forgetFolder', 'onQuit', 'onUnsavedText', 'pickFolder', 'saveDownload', 'savedFolder', 'writeTextFile'] });
   await js(`(() => { window.__r = {}; const I = window.__TAURI_INTERNALS__.invoke; const N = window.PlainSightNative;
     const note = (k, p) => p.then((v) => { window.__r[k] = 'ok ' + JSON.stringify(v); }, (e) => { window.__r[k] = 'refused ' + String(e); });
     note('saved', N.savedFolder());
@@ -652,6 +652,72 @@ for (const [how, quit] of QUIT_PATHS) {
     assert.equal(await page.peekText(), before + words, 'the copy holds every keystroke typed before ' + how);
   });
 }
+
+// ---------------------------------------------------------------------------
+// Wave G, round 2: the "Quit without saving?" sheet (D-48, Mac_PS_005). With
+// text on the page and no vault open, every way out first shows a sheet on
+// the document window: Cancel (the default button) keeps everything as it
+// was and answers a terminate request from macOS with cancel; Quit runs the
+// quit as before. The test build presses the sheet's buttons through the
+// probe ({"sheet": "cancel"} or "quit"), never through Accessibility.
+// ---------------------------------------------------------------------------
+const onscreenWindows = () => drive('cgwindows', app.pid).windows.filter((w) => w.onscreen);
+const sheetUp = async (how) => {
+  const windows = await until(() => { const w = onscreenWindows(); return w.length >= 2 ? w : null; }, 'the sheet after ' + how, 8000);
+  note('windows with the sheet (' + how + '): ' + JSON.stringify(windows));
+  return windows;
+};
+
+test('with text on the page and no vault, closing the window asks "Quit without saving?": Cancel keeps the app and the text, Quit ends it through the page', async () => {
+  await page.press('Escape');
+  await page.type('words a quit would lose');
+  await ask({ close: true });
+  await sheetUp('the close');
+  assert.equal(await ask({ sheet: 'cancel' }), true, 'the probe pressed Cancel');
+  await until(() => onscreenWindows().length === 1, 'the sheet to go', 5000);
+  await sleep(1500);
+  assert.ok(alive(app.pid), 'the app is still running after Cancel');
+  assert.equal(await page.peekText(), 'words a quit would lose', 'the text is untouched');
+  await ask({ close: true });
+  await sheetUp('the second close');
+  const t0 = Date.now();
+  assert.equal(await ask({ sheet: 'quit' }), true, 'the probe pressed Quit');
+  await until(() => !alive(app.pid), 'the app to end after Quit', 8000);
+  const ms = Date.now() - t0;
+  note('Quit in the sheet: the app ended ' + ms + ' ms after the press');
+  assert.ok(ms >= 600 && ms < 2500, 'ended through the page\'s quit, not at once nor by the timer: ' + ms + ' ms');
+  await launch();
+});
+
+test('a quit request as the Dock sends it shows the sheet too, and Cancel answers it with cancel: the app stays open', async () => {
+  await page.press('Escape');
+  await page.type('words the Dock would lose');
+  drive('quit-app', app.pid);
+  await sheetUp('the Dock quit request');
+  assert.equal(await ask({ sheet: 'cancel' }), true);
+  await until(() => onscreenWindows().length === 1, 'the sheet to go', 5000);
+  await sleep(2000);
+  assert.ok(alive(app.pid), 'the app is still running: the request was answered with cancel');
+  assert.equal(await page.peekText(), 'words the Dock would lose');
+  // After the cancel a plain quit still works, through the sheet once more.
+  drive('menu', app.pid, 'Plain Sight', 'Quit Plain Sight');
+  await sheetUp('the Quit item');
+  assert.equal(await ask({ sheet: 'quit' }), true);
+  await until(() => !alive(app.pid), 'the app to end', 8000);
+  await launch();
+});
+
+test('with no text on the page there is no sheet: the close ends the app as before', async () => {
+  await page.press('Escape');
+  assert.equal(await page.peekText(), '', 'nothing on the page');
+  await ask({ close: true });
+  await sleep(400);
+  const windows = onscreenWindows().length;
+  note('windows 400 ms after the close with nothing to lose: ' + windows);
+  assert.ok(windows <= 1, 'no sheet: ' + windows + ' windows');
+  await until(() => !alive(app.pid), 'the app to end without a sheet', 8000);
+  await launch();
+});
 
 // ---------------------------------------------------------------------------
 // Wave G: the window is not restorable (D-45, Mac_PS_015). macOS keeps a

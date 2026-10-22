@@ -1,9 +1,12 @@
-//! Quitting and closing the window work like Esc (decision D-21). Every way out
-//! of the app first runs the page's quit hook, window.__plainSightQuit
-//! (adapter.js): it awaits the callback the page registered with onQuit, which
-//! is Esc's wipe plus the vault's last write, and then calls quit_ready. The app
-//! ends after that, or after a 4-second safety timer, and always through
-//! AppKit's normal termination, so that WebKit sees the app end.
+//! Quitting and closing the window work like Esc (decision D-21), with one
+//! question first (D-48): when the page holds text that a quit would lose
+//! (text on the page and no vault open), a "Quit without saving?" sheet asks,
+//! and Cancel keeps everything as it was. Otherwise, or after Quit, every way
+//! out runs the page's quit hook, window.__plainSightQuit (adapter.js): it
+//! awaits the callback the page registered with onQuit, which is Esc's wipe
+//! plus the vault's last write, and then calls quit_ready. The app ends after
+//! that, or after a 4-second safety timer, and always through AppKit's normal
+//! termination, so that WebKit sees the app end.
 //!
 //! The ways out:
 //! - closing the window (the red button, Close Window, Cmd+W): main.rs keeps
@@ -11,7 +14,9 @@
 //! - the app menu's Quit item, Cmd+Q (menu.rs): begin;
 //! - a terminate request from macOS (the Dock's Quit, logout, restart,
 //!   shutdown): applicationShouldTerminate: answers "later" until the page is
-//!   done, then "now". It never answers "cancel", which would cancel a logout.
+//!   done, then "now". Cancel in the sheet answers "cancel", as any document
+//!   app with unsaved changes does, which cancels a logout (D-48); with
+//!   nothing to lose the request is never cancelled.
 
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Duration;
@@ -25,21 +30,47 @@ use tauri::{AppHandle, Manager};
 /// `Mac_PS_008`). `tests/adapter.mjs` holds the two files to that sum.
 const SAFETY: Duration = Duration::from_secs(4);
 
+/// How long the page gets to answer whether a quit would lose text. A page
+/// that does not answer (its web process hung, say) has nothing the quit
+/// could keep, so the quit goes on without the sheet.
+const ASK: Duration = Duration::from_millis(1500);
+
 /// Runs the page's hook; does nothing if the adapter is missing.
 const HOOK: &str = "window.__plainSightQuit && window.__plainSightQuit()";
+
+/// Asks the page whether a quit would lose text (adapter.js); false without
+/// the adapter.
+const UNSAVED: &str = "Boolean(window.__plainSightUnsaved && window.__plainSightUnsaved())";
 
 static STATE: Mutex<QuitState> = Mutex::new(QuitState::new());
 static APP: OnceLock<AppHandle> = OnceLock::new();
 
 /// Where a quit stands. Plain state with no AppKit in it, so it is unit-tested.
-#[derive(Debug, Default)]
-pub struct QuitState {
-    /// The page's hook has been started.
-    begun: bool,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    /// No quit in progress.
+    Idle,
+    /// The page has been asked whether a quit would lose text.
+    Asking,
+    /// The "Quit without saving?" sheet is up.
+    Confirming,
+    /// The page's quit hook runs; the safety timer is running.
+    Quitting,
     /// The page is done, or the timer fired: the app may end.
-    approved: bool,
+    Approved,
+}
+
+#[derive(Debug)]
+pub struct QuitState {
+    phase: Phase,
     /// macOS asked to terminate and is waiting for an answer.
     terminate_pending: bool,
+}
+
+impl Default for QuitState {
+    fn default() -> Self {
+        QuitState::new()
+    }
 }
 
 /// How the app ends once the page is done.
@@ -61,25 +92,44 @@ pub enum Answer {
     },
 }
 
+/// What follows the page's answer, or the sheet's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Next {
+    /// Run the page's quit hook and start the safety timer.
+    Quit,
+    /// Show the "Quit without saving?" sheet.
+    Confirm,
+    /// Stand down; with `reply`, answer the waiting terminate request with cancel.
+    Cancel { reply: bool },
+}
+
+/// The sheet's buttons.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Choice {
+    Quit,
+    Cancel,
+}
+
 impl QuitState {
     pub const fn new() -> Self {
         QuitState {
-            begun: false,
-            approved: false,
+            phase: Phase::Idle,
             terminate_pending: false,
         }
     }
 
-    /// Starts a quit. True only the first time: the caller then runs the hook.
+    /// Starts a quit. True only from idle: the caller then asks the page.
     pub fn begin(&mut self) -> bool {
-        let first = !self.begun;
-        self.begun = true;
-        first
+        if self.phase != Phase::Idle {
+            return false;
+        }
+        self.phase = Phase::Asking;
+        true
     }
 
     /// macOS asks whether the app may terminate now.
     pub fn should_terminate(&mut self) -> Answer {
-        if self.approved {
+        if self.phase == Phase::Approved {
             return Answer::Now;
         }
         self.terminate_pending = true;
@@ -88,13 +138,50 @@ impl QuitState {
         }
     }
 
-    /// The page is done, or the timer fired. How to end the app, the first
-    /// time after a begin; None before a begin and after the first finish.
-    pub fn finish(&mut self) -> Option<Ending> {
-        if !self.begun || self.approved {
+    /// The page's answer whether a quit would lose text: true shows the
+    /// sheet, false runs the hook. None unless the question is open, so a
+    /// late or repeated answer changes nothing.
+    pub fn unsaved(&mut self, unsaved: bool) -> Option<Next> {
+        if self.phase != Phase::Asking {
             return None;
         }
-        self.approved = true;
+        if unsaved {
+            self.phase = Phase::Confirming;
+            Some(Next::Confirm)
+        } else {
+            self.phase = Phase::Quitting;
+            Some(Next::Quit)
+        }
+    }
+
+    /// The sheet's answer. Quit runs the hook; Cancel stands down, and answers
+    /// a waiting terminate request with cancel. None unless the sheet is up.
+    pub fn chosen(&mut self, choice: Choice) -> Option<Next> {
+        if self.phase != Phase::Confirming {
+            return None;
+        }
+        match choice {
+            Choice::Quit => {
+                self.phase = Phase::Quitting;
+                Some(Next::Quit)
+            }
+            Choice::Cancel => {
+                let reply = self.terminate_pending;
+                self.terminate_pending = false;
+                self.phase = Phase::Idle;
+                Some(Next::Cancel { reply })
+            }
+        }
+    }
+
+    /// The page is done, or the timer fired. How to end the app, once, while
+    /// the hook runs; None before that (the page cannot end the app by itself,
+    /// nor from under the sheet) and after the first finish.
+    pub fn finish(&mut self) -> Option<Ending> {
+        if self.phase != Phase::Quitting {
+            return None;
+        }
+        self.phase = Phase::Approved;
         Some(if self.terminate_pending {
             Ending::Reply
         } else {
@@ -131,7 +218,50 @@ fn not_installed(reason: &str) -> String {
 pub fn begin(app: &AppHandle) {
     let first = state().begin();
     if first {
-        run_hook(app);
+        ask(app);
+    }
+}
+
+/// Asks the page whether a quit would lose text (D-48) and acts on the
+/// answer. Without a window there is nothing to lose; a page that stays
+/// silent for `ASK` counts the same, and its late answer is then ignored.
+fn ask(app: &AppHandle) {
+    let asked = app.get_webview_window("main").and_then(|window| {
+        window
+            .eval_with_callback(UNSAVED, |answer| answered(answer == "true"))
+            .ok()
+    });
+    if asked.is_none() {
+        answered(false);
+        return;
+    }
+    std::thread::spawn(|| {
+        std::thread::sleep(ASK);
+        answered(false);
+    });
+}
+
+/// The page's answer, or the time that stands in for it.
+fn answered(unsaved: bool) {
+    let next = state().unsaved(unsaved);
+    act(next);
+}
+
+/// The sheet's answer.
+fn chosen(choice: Choice) {
+    let next = state().chosen(choice);
+    act(next);
+}
+
+fn act(next: Option<Next>) {
+    let Some(app) = APP.get() else {
+        return;
+    };
+    match next {
+        Some(Next::Quit) => run_hook(app),
+        Some(Next::Confirm) => confirm(),
+        Some(Next::Cancel { reply: true }) => cancel_terminate(),
+        Some(Next::Cancel { reply: false }) | None => {}
     }
 }
 
@@ -174,6 +304,16 @@ fn end(ending: Ending) {
     macos::end(ending);
 }
 
+#[cfg(target_os = "macos")]
+fn confirm() {
+    macos::confirm();
+}
+
+#[cfg(target_os = "macos")]
+fn cancel_terminate() {
+    macos::cancel_terminate();
+}
+
 #[cfg(not(target_os = "macos"))]
 fn end(_ending: Ending) {
     if let Some(app) = APP.get() {
@@ -181,17 +321,39 @@ fn end(_ending: Ending) {
     }
 }
 
+/// Elsewhere (Windows comes later) there is no sheet yet: the quit goes on.
+#[cfg(not(target_os = "macos"))]
+fn confirm() {
+    chosen(Choice::Quit);
+}
+
+#[cfg(not(target_os = "macos"))]
+fn cancel_terminate() {}
+
 #[cfg(target_os = "macos")]
 pub(crate) mod macos {
+    use std::cell::RefCell;
     use std::ffi::CStr;
 
     use block2::RcBlock;
+    use objc2::rc::Retained;
     use objc2::runtime::{AnyClass, AnyObject, Imp, Sel};
     use objc2::{ffi, sel, MainThreadMarker};
-    use objc2_app_kit::{NSApplication, NSApplicationTerminateReply};
+    use objc2_app_kit::{
+        NSAlert, NSAlertSecondButtonReturn, NSApplication, NSApplicationTerminateReply,
+        NSModalResponse, NSWindow,
+    };
     use objc2_core_foundation::{kCFRunLoopCommonModes, CFRunLoop};
+    use objc2_foundation::NSString;
+    use tauri::Manager;
 
-    use super::{state, Answer, Ending, APP};
+    use super::{state, Answer, Choice, Ending, APP};
+
+    thread_local! {
+        /// The sheet while it is up, on the main thread, where AppKit keeps it;
+        /// the test build ends it through `end_sheet`.
+        static SHEET: RefCell<Option<Retained<NSAlert>>> = const { RefCell::new(None) };
+    }
 
     /// applicationShouldTerminate: as a Rust function: self, the selector and
     /// the sending NSApplication in, an NSApplicationTerminateReply out.
@@ -251,7 +413,7 @@ pub(crate) mod macos {
             Answer::Now => NSApplicationTerminateReply::TerminateNow.0,
             Answer::Later { begin } => {
                 if begin {
-                    super::run_hook(app);
+                    super::ask(app);
                 }
                 NSApplicationTerminateReply::TerminateLater.0
             }
@@ -270,6 +432,82 @@ pub(crate) mod macos {
                 Ending::Terminate => app.terminate(None),
             }
         });
+    }
+
+    /// Answers a waiting terminate request with cancel: the person chose
+    /// Cancel in the sheet, so a logout or shutdown stops, as it does for any
+    /// document app with unsaved changes.
+    pub fn cancel_terminate() {
+        on_main_run_loop(|| {
+            let Some(mtm) = MainThreadMarker::new() else {
+                return;
+            };
+            NSApplication::sharedApplication(mtm).replyToApplicationShouldTerminate(false);
+        });
+    }
+
+    /// Shows the "Quit without saving?" sheet on the document window: Cancel
+    /// is the default button (the first one added, which answers Return) and
+    /// Quit the other. The sheet's answer goes to `chosen`. Without a window
+    /// to hang it on there is nothing to keep, and the quit goes on.
+    pub fn confirm() {
+        on_main_run_loop(|| {
+            let Some(mtm) = MainThreadMarker::new() else {
+                return;
+            };
+            let window = APP
+                .get()
+                .and_then(|app| app.get_webview_window("main"))
+                .and_then(|window| window.ns_window().ok());
+            let Some(ns_window) = window else {
+                super::chosen(Choice::Quit);
+                return;
+            };
+            // SAFETY: Tauri's pointer to the window's NSWindow, on the main thread.
+            let ns_window: &NSWindow = unsafe { &*ns_window.cast() };
+            let alert = NSAlert::new(mtm);
+            alert.setMessageText(&NSString::from_str("Quit without saving?"));
+            alert.setInformativeText(&NSString::from_str(
+                "Your text has not been saved. If you quit now, it will be lost.",
+            ));
+            let _cancel = alert.addButtonWithTitle(&NSString::from_str("Cancel"));
+            let _quit = alert.addButtonWithTitle(&NSString::from_str("Quit"));
+            let done = RcBlock::new(move |response: NSModalResponse| {
+                SHEET.with(|sheet| sheet.borrow_mut().take());
+                super::chosen(if response == NSAlertSecondButtonReturn {
+                    Choice::Quit
+                } else {
+                    Choice::Cancel
+                });
+            });
+            alert.beginSheetModalForWindow_completionHandler(ns_window, Some(&done));
+            SHEET.with(|sheet| *sheet.borrow_mut() = Some(alert));
+        });
+    }
+
+    /// Test builds only: presses the sheet's button from a probe request, as
+    /// the completion handler sees it. False when no sheet is up. Main thread.
+    #[cfg(feature = "e2e")]
+    pub fn end_sheet(choice: Choice) -> bool {
+        use objc2_app_kit::NSAlertFirstButtonReturn;
+        let Some(alert) = SHEET.with(|sheet| sheet.borrow().clone()) else {
+            return false;
+        };
+        let window = APP
+            .get()
+            .and_then(|app| app.get_webview_window("main"))
+            .and_then(|window| window.ns_window().ok());
+        let Some(ns_window) = window else {
+            return false;
+        };
+        // SAFETY: Tauri's pointer to the window's NSWindow, on the main thread.
+        let ns_window: &NSWindow = unsafe { &*ns_window.cast() };
+        let code = match choice {
+            Choice::Quit => NSAlertSecondButtonReturn,
+            Choice::Cancel => NSAlertFirstButtonReturn,
+        };
+        ns_window.endSheet_returnCode(&alert.window(), code);
+        true
     }
 
     /// Runs `work` on the main thread from the main run loop, in its common
@@ -299,24 +537,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_quit_begins_once() {
+    fn a_quit_begins_once_and_asks_the_page_first() {
         let mut quit = QuitState::new();
-        assert!(quit.begin(), "the first begin runs the page's hook");
-        assert!(
-            !quit.begin(),
-            "a second close or Cmd+Q does not run it again"
-        );
-    }
-
-    #[test]
-    fn a_quit_finishes_once_and_only_after_it_began() {
-        let mut quit = QuitState::new();
+        assert!(quit.begin(), "the first begin asks the page");
+        assert!(!quit.begin(), "a second close or Cmd+Q does not ask again");
         assert_eq!(
-            quit.finish(),
-            None,
-            "quit_ready with no quit in progress is refused"
+            quit.unsaved(false),
+            Some(Next::Quit),
+            "nothing to lose: the hook runs"
         );
-        quit.begin();
+        assert!(!quit.begin(), "nor while the hook runs");
         assert_eq!(
             quit.finish(),
             Some(Ending::Terminate),
@@ -330,13 +560,71 @@ mod tests {
     }
 
     #[test]
-    fn a_terminate_request_waits_for_the_page_and_is_then_answered() {
+    fn text_to_lose_shows_the_sheet_and_quit_runs_the_hook() {
+        let mut quit = QuitState::new();
+        quit.begin();
+        assert_eq!(
+            quit.unsaved(true),
+            Some(Next::Confirm),
+            "the sheet is shown"
+        );
+        assert_eq!(
+            quit.finish(),
+            None,
+            "the page cannot end the app from under the sheet"
+        );
+        assert_eq!(quit.chosen(Choice::Quit), Some(Next::Quit));
+        assert_eq!(quit.finish(), Some(Ending::Terminate));
+    }
+
+    #[test]
+    fn cancel_stands_down_and_a_later_quit_asks_again() {
+        let mut quit = QuitState::new();
+        quit.begin();
+        quit.unsaved(true);
+        assert_eq!(
+            quit.chosen(Choice::Cancel),
+            Some(Next::Cancel { reply: false }),
+            "no terminate request waits, so nothing to answer"
+        );
+        assert_eq!(quit.finish(), None, "nothing ends the app");
+        assert!(quit.begin(), "the next close asks the page again");
+        assert_eq!(quit.unsaved(true), Some(Next::Confirm));
+    }
+
+    #[test]
+    fn a_terminate_request_waits_for_the_sheet_and_cancel_answers_it_with_cancel() {
         let mut quit = QuitState::new();
         assert_eq!(
             quit.should_terminate(),
             Answer::Later { begin: true },
             "the request starts the quit"
         );
+        assert_eq!(quit.unsaved(true), Some(Next::Confirm));
+        assert_eq!(
+            quit.should_terminate(),
+            Answer::Later { begin: false },
+            "a second request waits for the same sheet"
+        );
+        assert_eq!(
+            quit.chosen(Choice::Cancel),
+            Some(Next::Cancel { reply: true }),
+            "the waiting request is answered with cancel"
+        );
+        assert_eq!(
+            quit.should_terminate(),
+            Answer::Later { begin: true },
+            "a later request asks the page again, with nothing left over"
+        );
+        assert_eq!(quit.unsaved(false), Some(Next::Quit));
+        assert_eq!(quit.finish(), Some(Ending::Reply));
+    }
+
+    #[test]
+    fn a_terminate_request_with_nothing_to_lose_is_answered_when_the_page_is_done() {
+        let mut quit = QuitState::new();
+        assert_eq!(quit.should_terminate(), Answer::Later { begin: true });
+        assert_eq!(quit.unsaved(false), Some(Next::Quit));
         assert_eq!(quit.should_terminate(), Answer::Later { begin: false });
         assert_eq!(
             quit.finish(),
@@ -353,8 +641,18 @@ mod tests {
         assert_eq!(
             quit.should_terminate(),
             Answer::Later { begin: false },
-            "the hook is not run twice"
+            "the page is not asked twice"
         );
+        assert_eq!(quit.unsaved(false), Some(Next::Quit));
+        assert_eq!(quit.finish(), Some(Ending::Reply));
+    }
+
+    #[test]
+    fn quit_in_the_sheet_answers_a_waiting_terminate_request_with_yes() {
+        let mut quit = QuitState::new();
+        quit.should_terminate();
+        quit.unsaved(true);
+        assert_eq!(quit.chosen(Choice::Quit), Some(Next::Quit));
         assert_eq!(quit.finish(), Some(Ending::Reply));
     }
 
@@ -362,6 +660,7 @@ mod tests {
     fn once_approved_the_terminate_that_follows_goes_ahead() {
         let mut quit = QuitState::new();
         quit.begin();
+        quit.unsaved(false);
         assert_eq!(quit.finish(), Some(Ending::Terminate));
         assert_eq!(
             quit.should_terminate(),
@@ -369,6 +668,45 @@ mod tests {
             "terminate: after the page is done ends the app"
         );
         assert_eq!(quit.finish(), None);
+    }
+
+    #[test]
+    fn answers_out_of_turn_change_nothing() {
+        let mut quit = QuitState::new();
+        assert_eq!(quit.unsaved(true), None, "no question is open");
+        assert_eq!(quit.chosen(Choice::Quit), None, "no sheet is up");
+        assert_eq!(
+            quit.finish(),
+            None,
+            "quit_ready with no quit in progress is refused"
+        );
+        quit.begin();
+        assert_eq!(
+            quit.chosen(Choice::Quit),
+            None,
+            "no sheet while the page is asked"
+        );
+        assert_eq!(
+            quit.finish(),
+            None,
+            "quit_ready while the page is asked is refused"
+        );
+        assert_eq!(quit.unsaved(true), Some(Next::Confirm));
+        assert_eq!(quit.unsaved(true), None, "a late second answer is ignored");
+        assert_eq!(
+            quit.unsaved(false),
+            None,
+            "so is the time standing in for it"
+        );
+        assert_eq!(
+            quit.chosen(Choice::Cancel),
+            Some(Next::Cancel { reply: false })
+        );
+        assert_eq!(quit.chosen(Choice::Cancel), None, "the sheet is gone");
+        assert!(quit.begin());
+        assert_eq!(quit.unsaved(false), Some(Next::Quit));
+        assert_eq!(quit.unsaved(true), None, "the hook already runs");
+        assert_eq!(quit.chosen(Choice::Cancel), None, "no sheet to cancel from");
     }
 
     #[test]

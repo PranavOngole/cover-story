@@ -3,8 +3,9 @@
 // each app command, so the adapter's own rules are checked: its objects are
 // fixed, each call becomes one command, the quit sequence waits for the page
 // (at most 1.8 s), then for the storage to answer (at most 0.4 s) and for
-// WebKit's commit (0.7 s), and a right click shows no menu outside the text
-// fields. The commands themselves are tested by the app tests.
+// WebKit's commit (0.7 s), the app's question whether a quit would lose text
+// is answered by the page's callback (D-48), and a right click shows no menu
+// outside the text fields. The commands themselves are tested by the app tests.
 //
 // Run from the repository root: node desktop/tests/adapter.mjs   (exit code 0
 // only when every test passes)
@@ -86,7 +87,7 @@ test('each call becomes exactly one app command, with the arguments the app expe
       ['write_text_file', { base: '2026-10-21 10-00-00', ext: '.docx', text: 'the real text' }],
       ['save_download', { name: 'moment.txt', text: 'the real text' }]
     ]);
-    assert.deepEqual(Object.keys(a.native).sort(), ['forgetFolder', 'onQuit', 'pickFolder', 'saveDownload', 'savedFolder', 'writeTextFile']);
+    assert.deepEqual(Object.keys(a.native).sort(), ['forgetFolder', 'onQuit', 'onUnsavedText', 'pickFolder', 'saveDownload', 'savedFolder', 'writeTextFile']);
   } finally { a.close(); }
 });
 
@@ -200,6 +201,27 @@ test('the adapter\'s three waits leave the app\'s safety timer a full second of 
   assert.equal(waits.length, 3, 'the page callback, the storage answer and the commit wait: ' + waits.join(', '));
   const longest = waits.reduce((a, b) => a + b, 0);
   assert.ok(longest + 1000 <= Number(safety[1]) * 1000, 'the waits take ' + longest + ' ms at most, which leaves less than 1000 ms before the ' + safety[1] + ' s safety timer');
+});
+
+test('the app\'s question whether a quit would lose text is answered by the page\'s callback, and false without one or when it fails (D-48)', () => {
+  const a = load();
+  try {
+    assert.equal(typeof a.window.__plainSightUnsaved, 'function', 'the app can ask');
+    assert.equal(a.window.__plainSightUnsaved(), false, 'no callback: nothing to lose');
+    for (const given of ['not a function', null, {}]) { a.native.onUnsavedText(given); assert.equal(a.window.__plainSightUnsaved(), false, String(given) + ' is ignored'); }
+    a.native.onUnsavedText(() => true);
+    assert.equal(a.window.__plainSightUnsaved(), true, 'the page says there is text to lose');
+    a.native.onUnsavedText(() => 'yes');
+    assert.equal(a.window.__plainSightUnsaved(), true, 'a truthy answer counts as true');
+    a.native.onUnsavedText(() => false);
+    assert.equal(a.window.__plainSightUnsaved(), false);
+    a.native.onUnsavedText(() => { throw new Error('page broke'); });
+    assert.equal(a.window.__plainSightUnsaved(), false, 'a failing callback never holds the quit');
+    a.native.onUnsavedText(null);   // ignored: the callback stays
+    assert.equal(a.window.__plainSightUnsaved(), false);
+    const d = Object.getOwnPropertyDescriptor(a.window, '__plainSightUnsaved');
+    assert.deepEqual([d.writable, d.configurable, d.enumerable], [false, false, false], 'the question cannot be replaced');
+  } finally { a.close(); }
 });
 
 test('a quit_ready the app refuses (it is not quitting) is swallowed', async () => {

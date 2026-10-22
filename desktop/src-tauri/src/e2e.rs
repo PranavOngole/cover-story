@@ -16,7 +16,10 @@
 //! `{"id": n, "writingTools": true}` the web view's Writing Tools setting,
 //! `{"id": n, "delegateResponds": true}` whether the app's delegate answers
 //! applicationShouldTerminate: (quit.rs), `{"id": n, "windowRestorable": true}`
-//! whether macOS may keep the window's state (main.rs sets it off), and
+//! whether macOS may keep the window's state (main.rs sets it off),
+//! `{"id": n, "sheet": "quit"}` (or "cancel") presses that button of the
+//! "Quit without saving?" sheet (quit.rs) as its completion handler sees it,
+//! false when no sheet is up, and
 //! `{"id": n, "window": "minimize"}` (or "unminimize", "hide", "show")
 //! minimizes it or hides the app as the yellow button and Cmd+H do. The Quit
 //! item and the Dock's quit need no probe: the runner presses the real item
@@ -33,7 +36,8 @@ use objc2_web_kit::WKWebView;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 
-use crate::quit::macos::on_main_run_loop;
+use crate::quit::macos::{end_sheet, on_main_run_loop};
+use crate::quit::Choice;
 
 pub fn watch(app: AppHandle) {
     let Some(dir) = std::env::var_os("PLAIN_SIGHT_E2E_DIR").map(PathBuf::from) else {
@@ -99,6 +103,24 @@ pub fn watch(app: AppHandle) {
                     delegate.respondsToSelector(sel!(applicationShouldTerminate:))
                 });
                 respond(&answer, json!({ "ok": true, "value": responds }));
+            });
+        } else if let Some(button) = req["sheet"].as_str() {
+            let choice = match button {
+                "quit" => Choice::Quit,
+                "cancel" => Choice::Cancel,
+                _ => {
+                    respond(
+                        &answer,
+                        json!({ "ok": false, "error": "unknown sheet button" }),
+                    );
+                    continue;
+                }
+            };
+            // The sheet lives on the main thread; ending it there runs the
+            // completion handler, as a press of the button would.
+            on_main_run_loop(move || {
+                let pressed = end_sheet(choice);
+                respond(&answer, json!({ "ok": true, "value": pressed }));
             });
         } else if req["windowRestorable"].as_bool() == Some(true) {
             // NSWindow's isRestorable as AppKit holds it (main.rs sets it off).

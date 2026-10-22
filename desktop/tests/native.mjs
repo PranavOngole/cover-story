@@ -30,12 +30,15 @@ function fakeNative({ saved = null, pick = { name: 'Build_Test_1' }, failPick = 
   const calls = [];
   const files = new Set();
   let quit = null;
+  let unsaved = null;
   let folder = saved;
   return {
     calls,
     files,
     quit: () => quit(),
     hasQuit: () => typeof quit === 'function',
+    // The app's question before a quit (D-48), as the adapter asks it.
+    unsaved: () => Boolean(unsaved && unsaved()),
     api: {
       pickFolder: async () => { calls.push(['pickFolder']); if (failPick) throw new Error('Could not remember the folder'); if (pick) folder = pick; return pick; },
       savedFolder: async () => { calls.push(['savedFolder']); return folder; },
@@ -54,7 +57,8 @@ function fakeNative({ saved = null, pick = { name: 'Build_Test_1' }, failPick = 
         if (failDownload) throw new Error('Could not save the file: Operation not permitted');
         return downloadAnswer || name;
       },
-      onQuit: (callback) => { calls.push(['onQuit']); quit = callback; }
+      onQuit: (callback) => { calls.push(['onQuit']); quit = callback; },
+      onUnsavedText: (callback) => { calls.push(['onUnsavedText']); unsaved = callback; }
     }
   };
 }
@@ -300,6 +304,33 @@ test('a failed write shows a toast and keeps the text', async () => {
     await p.settle();
     assert.equal(p.toast(), 'Could not write to the folder');
     assert.equal(await p.real(), 'not lost');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+// The app asks before it quits whether a quit would lose text (D-48): yes
+// with text on the page and no vault open, no otherwise.
+test('the page answers the app\'s question before a quit: text to lose only when text is on the page and no vault keeps it (D-48)', async () => {
+  const native = fakeNative();
+  const p = await loadPage({ native, storage: { 'plainSight.introSeen': '1' } });
+  try {
+    await p.settle();
+    assert.equal(native.calls.filter((c) => c[0] === 'onUnsavedText').length, 1, 'the answer is registered once');
+    assert.equal(native.unsaved(), false, 'an empty page has nothing to lose');
+    p.type('words a quit would lose');
+    assert.equal(native.unsaved(), true, 'text on the page, no vault');
+    p.press('Escape');
+    assert.equal(native.unsaved(), false, 'Esc erased it');
+    p.type('words the vault keeps');
+    assert.equal(native.unsaved(), true);
+    p.$('#btn-help').click();
+    p.$('#vault-on').checked = true;
+    p.$('#vault-on').dispatchEvent(new p.w.Event('change', { bubbles: true }));
+    p.$('#vault-phrase').value = 'correct horse battery staple';
+    p.start();
+    await p.settle(600);   // the key derives and the vault opens
+    assert.ok(p.d.body.classList.contains('vault-open'));
+    assert.equal(native.unsaved(), false, 'an open vault keeps the text: nothing to lose');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
