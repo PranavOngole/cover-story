@@ -82,6 +82,7 @@ async function loadPage({ random = () => 1, storage = {}, inject = true, folder 
   const errors = [];
   openErrors.add(errors);
   const downloads = [];
+  const netCalls = [];
   const copied = [];
   const virtualConsole = new VirtualConsole();
   virtualConsole.on('jsdomError', (e) => errors.push('jsdomError: ' + e.message));
@@ -95,6 +96,15 @@ async function loadPage({ random = () => 1, storage = {}, inject = true, folder 
     beforeParse(window) {
       if (userAgent) Object.defineProperty(window.navigator, 'userAgent', { value: userAgent, configurable: true });
       if (brave) Object.defineProperty(window.navigator, 'brave', { value: { isBrave: async () => true }, configurable: true });
+      // Network spies (DM-235): every way the page could send anything is a function that records the call. jsdom has no
+      // fetch, sendBeacon or EventSource, so a beacon spelled to pass a text search would otherwise fail silently and unseen.
+      const net = (what) => (...a) => { netCalls.push(what + ' ' + String(a[0] || '').slice(0, 60)); throw new window.Error('network call: ' + what); };
+      Object.defineProperty(window, 'fetch', { value: net('fetch'), configurable: true, writable: true });
+      Object.defineProperty(window.navigator, 'sendBeacon', { value: net('sendBeacon'), configurable: true, writable: true });
+      Object.defineProperty(window, 'EventSource', { value: net('EventSource'), configurable: true, writable: true });
+      Object.defineProperty(window, 'WebSocket', { value: net('WebSocket'), configurable: true, writable: true });
+      window.XMLHttpRequest.prototype.open = net('XMLHttpRequest');
+      Object.defineProperty(window.HTMLImageElement.prototype, 'src', { set: net('Image.src'), configurable: true });
       // jsdom has no CSS.supports; with cssSupports the page sees a browser that can mask a text field.
       if (cssSupports) Object.defineProperty(window, 'CSS', { value: { supports: () => true }, configurable: true });
       // Deterministic typos: Math.random() === 1 means "never a typo".
@@ -121,7 +131,8 @@ async function loadPage({ random = () => 1, storage = {}, inject = true, folder 
         proto.setItem = function (key, value) {
           let total = String(key).length + String(value).length;
           for (let i = 0; i < this.length; i++) { const k = this.key(i); if (k !== String(key)) total += k.length + this.getItem(k).length; }
-          if (total > storageQuota) throw new window.DOMException('The quota has been exceeded.', 'QuotaExceededError');
+          const limit = typeof storageQuota === 'object' ? storageQuota.value : storageQuota;   // DM: a quota the test can lift
+          if (limit && total > limit) throw new window.DOMException('The quota has been exceeded.', 'QuotaExceededError');
           return setItem.call(this, key, value);
         };
       }
@@ -212,6 +223,7 @@ async function loadPage({ random = () => 1, storage = {}, inject = true, folder 
     },
     wordCount() { return $('#word-count').textContent; },
     toast() { return $('#toast').textContent; },
+    get netCalls() { return netCalls; },
     start() { $('#btn-start').click(); },
     async submitPassword(value) {
       assert.equal($('#pw').hidden, false, 'password dialog should be open');
@@ -4066,6 +4078,301 @@ test('the masked text fields keep the page\'s styling: where the browser masks t
     } finally { p.close(); }
   }
   assert.match(HTML, /\.card input\[type="password"\], \.card input\[type="text"\] \{/, 'the field rule names the text field the page makes of a password field');
+});
+
+// ---------------------------------------------------------------------------
+// Fixes after the Delivery Manager's gate of 4140502 (DM-230 to DM-235). The helpers and the tests AT-04, AT-05, AT-07,
+// AT-10 and AT-12 are the Delivery Manager's, cut out of its tests/dm_body.mjs byte for byte; R2 is its repro with the
+// step prints removed; the DM-231 test and the network-spy test are the developer's.
+// ---------------------------------------------------------------------------
+const U = (n) => String.fromCharCode(n);
+const C = (n) => String.fromCodePoint(n);
+const CR = U(13), LF = U(10), TAB = U(9);
+const KNOWN_KEYS = new Set(['plainSight.introSeen', 'plainSight.customText', 'plainSight.cover', 'plainSight.vault', 'plainSight.folderVersion', 'plainSight.saveMode', 'plainSight.folderFormat']);
+async function waitFor(fn, ms = 6000, step = 20) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms) { const v = await fn(); if (v) return v; await sleep(step); }
+  return fn();
+}
+function pickRadio(p, group, value) {
+  const r = p.$('input[name="' + group + '"][value="' + value + '"]');
+  r.checked = true;
+  r.dispatchEvent(new p.w.Event('change', { bubbles: true }));
+}
+async function saveDownload(p) {
+  const n = p.downloads.length;
+  p.$('#btn-save').click();
+  await waitFor(() => p.downloads.length > n && p.downloads[p.downloads.length - 1].name, 4000);
+  assert.equal(p.downloads.length, n + 1, 'one download');
+  return p.downloads[n];
+}
+function storageHolds(p, needles) {
+  const dump = p.storageDump();
+  const hits = [];
+  for (const [k, v] of Object.entries(dump)) for (const n of needles) if (k.includes(n) || String(v).includes(n)) hits.push(k + ' holds ' + n);
+  const unknown = Object.keys(dump).filter((k) => !KNOWN_KEYS.has(k));
+  return { hits, unknown };
+}
+const HOSTILE_NAMES = [
+  '<img src=x onerror="window.__pwn=1">.txt',
+  '<script>window.__pwn=2</script>.md',
+  'evil' + U(0x202E) + 'txt.md',
+  '../../etc/passwd.txt',
+  'first line' + LF + 'second line.txt',
+  'n'.repeat(5000) + '.txt',
+  '.txt',
+  'UPPER.TXT',
+  'quote " and apostrophe \' and amp &amp;.md'
+];
+
+test('AT-04 (expected PASS) Open of plain notes with hostile names: the name is shown only as text in the question, no element is created from it, nothing runs, it never reaches storage or the tab title, and the note lands after the confirmation', async () => {
+  const p = await loadPage({ storage: { 'plainSight.introSeen': '1' } });
+  try {
+    const title = p.d.title;
+    for (let i = 0; i < HOSTILE_NAMES.length; i++) {
+      const name = HOSTILE_NAMES[i];
+      p.press('Escape');
+      p.type('page words');
+      const elements = p.d.getElementsByTagName('*').length;
+      chooseFile(p, new p.w.File(['NOTE-SENTINEL-' + i], name, { type: 'text/plain' }));
+      await waitFor(() => !p.$('#pw').hidden, 3000);
+      assert.equal(p.$('#pw-title').textContent, 'Open ' + name + '?', 'name ' + i + ': shown as text');
+      assert.equal(p.$('#pw-title').children.length, 0, 'name ' + i + ': no element inside the title');
+      assert.equal(p.d.getElementsByTagName('*').length, elements, 'name ' + i + ': no element created');
+      assert.equal(p.w.__pwn, undefined, 'name ' + i + ': nothing ran');
+      assert.equal(p.d.title, title, 'name ' + i + ': the tab title is unchanged');
+      const s = storageHolds(p, [name.slice(0, 12), 'NOTE-SENTINEL']);
+      assert.deepEqual(s.hits, [], 'name ' + i + ': storage');
+      p.$('#pw-ok').click();
+      await waitFor(() => p.toast() === 'Opened', 3000);
+      assert.equal(await p.readReal(), 'NOTE-SENTINEL-' + i, 'name ' + i + ': the note replaced the page');
+    }
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('AT-05 (expected PASS) Open of plain notes with hostile content (markup, NULs, invalid UTF-8, a byte-order mark, 1,000,000 characters): nothing runs, no element is created, the text is in the page only while peeking and then only as text, the cover is rebuilt to its length, and storage stays clean', async () => {
+  const p = await loadPage({ storage: { 'plainSight.introSeen': '1' } });
+  try {
+    const enc = (s) => Buffer.from(s, 'utf8');
+    const cases = [
+      ['markup', enc('<script>window.__pwn=3</script><img src=x onerror="window.__pwn=4"> &lt;b&gt; ' + U(0) + U(0) + 'nul' + CR + LF + 'crlf' + CR + 'cr ' + C(0x1F600))],
+      ['invalid UTF-8', Buffer.from([0x66, 0xFF, 0xFE, 0xC3, 0x28, 0x61, 0xED, 0xA0, 0x80, 0x7A])],
+      ['byte-order mark', Buffer.concat([Buffer.from([0xEF, 0xBB, 0xBF]), enc('bom text')])],
+      ['one million characters', enc('word '.repeat(200000))]
+    ];
+    for (const [label, bytes] of cases) {
+      p.press('Escape');
+      const elements = p.d.getElementsByTagName('*').length;
+      chooseFile(p, new p.w.File([bytes], label.replace(/ /g, '-') + '.txt', { type: 'text/plain' }));
+      await waitFor(() => p.toast() === 'Opened', 8000);
+      const want = new TextDecoder().decode(bytes).replace(/\r\n?/g, LF);
+      assert.equal(p.w.__pwn, undefined, label + ': nothing ran');
+      assert.equal(p.$('#real').textContent, '', label + ': not in the page outside a peek');
+      const probe = want.slice(0, 40);
+      assert.equal(p.d.documentElement.outerHTML.includes(probe) && probe.length > 3, false, label + ': not in the markup');
+      assert.equal(p.coverLength(), want.length, label + ': the cover is rebuilt to the text length');
+      p.peekChord();
+      assert.equal(p.$('#real').textContent === want, true, label + ': the peek shows exactly the decoded text (lengths ' + p.$('#real').textContent.length + '/' + want.length + ')');
+      assert.equal(p.$('#real').children.length, 0, label + ': as text, no element');
+      p.peekChord();
+      assert.equal(p.d.getElementsByTagName('*').length >= elements, true);
+      assert.equal(p.d.querySelectorAll('script:not([src]), img').length, 2, label + ': only the page\'s own two scripts, no image');
+      assert.deepEqual(storageHolds(p, ['__pwn', 'bom text', 'word word']).hits, [], label + ': storage');
+    }
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('AT-07 (expected PASS) a folder save writes the format in force at the click: changing "Files in the folder are" during the permission prompt does not change the file being written', async () => {
+  const folder = fakeFolder('Notes', { permissionDelay: 400 });
+  const p = await loadPage({ folder, storage: { 'plainSight.introSeen': '1' } });
+  try {
+    p.$('#btn-help').click();
+    p.$('#btn-folder').click();
+    await waitFor(() => /into the folder "Notes"/.test(p.$('#folder-status').textContent), 3000);
+    pickRadio(p, 'folder-format', 'txt');
+    p.start();
+    p.type('click time text');
+    p.$('#btn-save').click();
+    await sleep(100);
+    pickRadio(p, 'folder-format', 'docx');   // while the permission is being asked
+    await waitFor(() => folder.written.length === 1, 3000);
+    assert.equal(folder.written.length, 1);
+    assert.match(folder.written[0].name, /^\d{4}-\d{2}-\d{2} \d{2}-\d{2}-\d{2}\.txt$/, 'the format of the click');
+    assert.equal(folder.written[0].text, 'click time text');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('AT-10 (expected PASS per the README; written to fail on a duplication) after a lock the device caused on the first write under a NEW phrase, the old phrase on the intro reopens the stored copy around the page text without putting the copy in front of it again', async () => {
+  const quota = { value: 0 };
+  const p = await loadPage({ storageQuota: quota });
+  try {
+    p.start();
+    p.type('first words ');
+    await p.vaultOn('phrase number one');
+    await waitFor(() => p.storageDump()['plainSight.vault'], 3000);
+    const c1 = JSON.parse(p.storageDump()['plainSight.vault']);
+    assert.equal(await decryptVault(c1, 'phrase number one'), 'first words ', 'the first copy');
+    const total = Object.entries(p.storageDump()).reduce((n, [k, v]) => n + k.length + v.length, 0);
+    quota.value = total + 8;   // the device is now full: nothing larger than this copy fits
+    p.type('more words');      // the page now holds more than the copy
+    await p.vaultOn('phrase number two');   // a new phrase, before the autosave: its first write is refused
+    await waitFor(() => !p.d.body.classList.contains('vault-open'), 4000);
+    assert.equal(p.d.body.classList.contains('vault-open'), false, 'the refused write locked the vault');
+    assert.equal(p.toast(), 'The copy could not be kept on this device: storage is full or blocked');
+    assert.equal(p.storageDump()['plainSight.vault'], JSON.stringify(c1), 'the earlier copy stands');
+    quota.value = 0;   // the device has room again
+    await sleep(1700);  // any autosave still scheduled has run
+    p.$('#btn-help').click();
+    p.$('#vault-phrase').value = 'phrase number one';
+    p.start();
+    await waitFor(() => p.d.body.classList.contains('vault-open'), 4000);
+    const page = await p.readReal();
+    assert.equal(page, 'first words more words', 'the page text as it was, not the copy in front of it again; toast: ' + p.toast());
+    await sleep(2000);
+    const stored = JSON.parse(p.storageDump()['plainSight.vault']);
+    assert.equal(await decryptVault(stored, 'phrase number one'), 'first words more words', 'the copy saved is the page text');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('AT-12 (expected PASS) honesty: through a session that uses every new surface (four download formats, three folder formats, Open of a note and of a .sight, the vault on, a lock, an unlock, an untick), localStorage never holds the typed text, the note, its name, a password or the phrase, and holds no key outside the page\'s seven', async () => {
+  const folder = fakeFolder('Notes');
+  const p = await loadPage({ folder });
+  const needles = ['SENTINEL', 'alpha-typed', 'beta-note', 'gamma-name', 'delta-password', 'epsilon-phrase'];
+  const check = (step) => { const s = storageHolds(p, needles); assert.deepEqual(s.hits, [], step + ': ' + s.hits.join(', ')); assert.deepEqual(s.unknown, [], step + ': unknown keys'); assert.equal(p.w.sessionStorage.length, 0, step + ': sessionStorage'); assert.equal(p.d.cookie, '', step + ': cookie'); };
+  try {
+    p.start();
+    p.type('SENTINEL alpha-typed words');
+    check('typed');
+    for (const m of ['txt', 'md', 'docx']) { p.$('#btn-help').click(); pickRadio(p, 'save-mode', m); p.start(); await saveDownload(p); check('download ' + m); }
+    p.$('#btn-help').click(); pickRadio(p, 'save-mode', 'sight'); p.start();
+    p.$('#btn-save').click(); await waitFor(() => !p.$('#pw').hidden, 2000);
+    await p.submitPassword('SENTINEL delta-password'); await waitFor(() => p.downloads.length === 4, 6000);
+    check('download sight');
+    p.$('#btn-help').click(); p.$('#btn-folder').click();
+    await waitFor(() => /into the folder/.test(p.$('#folder-status').textContent), 3000);
+    for (const f of ['txt', 'md', 'docx']) { pickRadio(p, 'folder-format', f); p.start(); const n = folder.written.length; p.$('#btn-save').click(); await waitFor(() => folder.written.length > n, 3000); check('folder ' + f); p.$('#btn-help').click(); }
+    p.start();
+    chooseFile(p, new p.w.File(['SENTINEL beta-note text'], 'SENTINEL gamma-name.txt', { type: 'text/plain' }));
+    await waitFor(() => !p.$('#pw').hidden, 3000);
+    check('question open');
+    p.$('#pw-ok').click(); await waitFor(() => p.toast() === 'Opened', 3000);
+    check('note opened');
+    await p.vaultOn('SENTINEL epsilon-phrase');
+    await sleep(1800);
+    check('vault on');
+    p.type(' more');
+    await sleep(1800);
+    check('autosave');
+    p.press('Escape');
+    await sleep(300);
+    check('Esc lock');
+    p.type('SENTINEL epsilon-phrase');
+    p.unlockChord();
+    await waitFor(() => p.d.body.classList.contains('vault-open'), 4000);
+    check('chord unlock');
+    p.$('#btn-help').click();
+    p.$('#vault-on').checked = false;
+    p.$('#vault-on').dispatchEvent(new p.w.Event('change', { bubbles: true }));
+    p.start();
+    await sleep(200);
+    check('untick');
+    assert.equal(p.storageDump()['plainSight.vault'], undefined, 'the copy is gone after the untick');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('a leading U+FEFF in the hidden text survives a .sight round trip and the vault: the decrypt keeps it (DM-232; the Delivery Manager\'s R2, its step prints removed)', async () => {
+  const p = await loadPage({ storage: { 'plainSight.introSeen': '1' } });
+  try {
+    p.press(U(0xFEFF));
+    p.type('words');
+    const before = await p.readReal();
+    p.$('#btn-save').click();
+    await waitFor(() => !p.$('#pw').hidden, 2000);
+    await p.submitPassword('a file password');
+    await waitFor(() => p.downloads.length === 1, 6000);
+    const json = await p.downloads[0].blob.text();
+    p.press('Escape');
+    chooseFile(p, makeCoverFile(p.w, json));
+    await waitFor(() => !p.$('#pw').hidden, 2000);
+    await p.submitPassword('a file password');
+    await waitFor(() => p.toast() === 'Opened', 6000);
+    const opened = await p.readReal();
+    p.press('Escape');
+    p.press(U(0xFEFF));
+    p.type('vault words');
+    await p.vaultOn('a phrase for the vault');
+    await waitFor(() => p.d.body.classList.contains('vault-open') && p.storageDump()['plainSight.vault'], 6000);
+    await sleep(300);
+    p.press('Escape');
+    await sleep(300);
+    p.type('a phrase for the vault');
+    p.unlockChord();
+    await waitFor(() => p.d.body.classList.contains('vault-open'), 4000);
+    const unlocked = await p.readReal();
+    assert.equal(opened, before, 'a .sight gives back exactly what was saved');
+    assert.equal(unlocked, U(0xFEFF) + 'vault words', 'the vault gives back exactly what was kept');
+  } finally { p.close(); }
+});
+
+test('a held key whose press closed a dialog does not type its repeats into the text: Enter held on the Open question, on the Save dialog or on the intro\'s Start adds no line breaks; a fresh press types as before (DM-231)', async () => {
+  const p = await loadPage();
+  try {
+    p.start();
+    p.type('page words');
+    chooseFile(p, new p.w.File(['NOTE BODY'], 'note.txt', { type: 'text/plain' }));
+    await p.settle();
+    assert.equal(p.$('#pw').hidden, false, 'the question is open, focus on its Open button');
+    const keydown = (key, repeat) => p.d.dispatchEvent(new p.w.KeyboardEvent('keydown', { key, repeat, bubbles: true, cancelable: true }));
+    p.$('#pw-ok').click();                   // what the first keydown of Enter does on the focused button
+    await p.settle();
+    keydown('Enter', true); keydown('Enter', true);   // the browser\'s auto-repeats while the key is still down, the dialog gone (a peek here would be a fresh press)
+    assert.equal(await p.readReal(), 'NOTE BODY', 'the note landed, and the repeats of the press that closed the question added nothing');
+    keydown('Enter', false);
+    assert.equal(await p.readReal(), 'NOTE BODY\n', 'a fresh press types a line break as before');
+    keydown('Enter', true);
+    assert.equal(await p.readReal(), 'NOTE BODY\n\n', 'and its own repeats type too, as before');
+    p.$('#btn-save').click();                // the Save dialog, closed by the submit a held Enter makes
+    await p.submitPassword('a password');
+    await p.settle(400);
+    keydown('Enter', true);
+    assert.equal(await p.readReal(), 'NOTE BODY\n\n', 'the repeats after the Save dialog closed add nothing');
+    p.$('#btn-help').click();                // the intro, closed by Start
+    p.start();
+    keydown('Enter', true);
+    assert.equal(await p.readReal(), 'NOTE BODY\n\n', 'the repeats after Start closed the intro add nothing');
+    keydown('a', false); keydown('a', true);
+    assert.equal(await p.readReal(), 'NOTE BODY\n\naa', 'a fresh press and its repeats type as before');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('honesty: no network API is called through a session that uses every new surface: fetch, XMLHttpRequest, sendBeacon, WebSocket, EventSource and an image source are spied in the harness, and none fires on a download in each format, a .sight save, a note opened, the vault on and an unlock (DM-235, the beacon spelled to pass a text search)', async () => {
+  const p = await loadPage();
+  try {
+    p.start();
+    p.type('SENTINEL beacon-bait words');
+    for (const m of ['txt', 'md', 'docx']) { p.$('#btn-help').click(); pickRadio(p, 'save-mode', m); p.start(); await saveDownload(p); }
+    p.$('#btn-help').click(); pickRadio(p, 'save-mode', 'sight'); p.start();
+    p.$('#btn-save').click(); await waitFor(() => !p.$('#pw').hidden, 2000);
+    await p.submitPassword('SENTINEL password'); await waitFor(() => p.downloads.length === 4, 6000);
+    chooseFile(p, new p.w.File(['SENTINEL note text'], 'note.txt', { type: 'text/plain' }));
+    await waitFor(() => !p.$('#pw').hidden, 3000);
+    p.$('#pw-ok').click(); await waitFor(() => p.toast() === 'Opened', 3000);
+    await p.vaultOn('SENTINEL phrase words');
+    await sleep(1800);
+    p.press('Escape');
+    await sleep(300);
+    p.type('SENTINEL phrase words');
+    p.unlockChord();
+    await waitFor(() => p.d.body.classList.contains('vault-open'), 4000);
+    assert.deepEqual(p.netCalls, [], 'no network API was called');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
 });
 
 // ---------------------------------------------------------------------------
