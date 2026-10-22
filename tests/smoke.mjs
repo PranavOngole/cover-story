@@ -78,7 +78,7 @@ process.on('unhandledRejection', (reason) => {
   for (const errors of openErrors) errors.push(text);
 });
 
-async function loadPage({ random = () => 1, storage = {}, inject = true, folder = null, slowEncrypt = 0, failDerive = 0, slowDerive = 0, noSubtle = false, userAgent = undefined, brave = false, storageQuota = 0 } = {}) {
+async function loadPage({ random = () => 1, storage = {}, inject = true, folder = null, slowEncrypt = 0, failDerive = 0, slowDerive = 0, noSubtle = false, userAgent = undefined, brave = false, storageQuota = 0, cssSupports = false } = {}) {
   const errors = [];
   openErrors.add(errors);
   const downloads = [];
@@ -95,6 +95,8 @@ async function loadPage({ random = () => 1, storage = {}, inject = true, folder 
     beforeParse(window) {
       if (userAgent) Object.defineProperty(window.navigator, 'userAgent', { value: userAgent, configurable: true });
       if (brave) Object.defineProperty(window.navigator, 'brave', { value: { isBrave: async () => true }, configurable: true });
+      // jsdom has no CSS.supports; with cssSupports the page sees a browser that can mask a text field.
+      if (cssSupports) Object.defineProperty(window, 'CSS', { value: { supports: () => true }, configurable: true });
       // Deterministic typos: Math.random() === 1 means "never a typo".
       window.Math.random = random;
       // jsdom has no crypto.subtle, URL.createObjectURL or navigator.clipboard.
@@ -257,14 +259,14 @@ function countWords(blocks) {
   return blocks.reduce((n, b) => n + (b.text.match(/\S+/g) || []).length, 0);
 }
 // Makes a vault record outside the page, in the page's own format, as another tab would store it.
-async function encryptVaultRecord(text, phrase) {
+async function encryptVaultRecord(text, phrase, iterations = 310000) {
   const salt = webcrypto.getRandomValues(new Uint8Array(16));
   const iv = webcrypto.getRandomValues(new Uint8Array(12));
   const base = await webcrypto.subtle.importKey('raw', new TextEncoder().encode(phrase), 'PBKDF2', false, ['deriveKey']);
-  const key = await webcrypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations: 310000, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, false, ['encrypt']);
+  const key = await webcrypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, false, ['encrypt']);
   const data = new Uint8Array(await webcrypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(text)));
   const b64 = (u) => Buffer.from(u).toString('base64');
-  return JSON.stringify({ format: 'plain-sight', version: 1, cipher: 'AES-256-GCM', kdf: 'PBKDF2-SHA-256', iterations: 310000, salt: b64(salt), iv: b64(iv), data: b64(data) });
+  return JSON.stringify({ format: 'plain-sight', version: 1, cipher: 'AES-256-GCM', kdf: 'PBKDF2-SHA-256', iterations, salt: b64(salt), iv: b64(iv), data: b64(data) });
 }
 // Decrypts a stored vault record outside the page, to prove what the page saved.
 async function decryptVault(record, phrase) {
@@ -2012,7 +2014,7 @@ test('after a confirmation the password dialog still refuses an empty password',
 test('folder help text fits the browser: Brave gets its setting, Safari and Firefox their download tip, folder-capable browsers no help', async () => {
   const cases = [
     { opts: { brave: true }, expect: /^Brave keeps folder access switched off\. To write into a folder: open brave:\/\/flags\/#file-system-access-api in a new tab, set it to Enabled, click Relaunch, then come back here\.$/ },
-    { opts: { userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15' }, expect: /^Safari cannot write into a folder, so Save downloads a file\. To choose where each file goes: Safari menu, Settings, General, "File download location", pick "Ask for each download"\. Safari also opens downloaded text files by itself unless "Open safe files after downloading" is off in the same settings pane; with a plain \.txt or \.md choice that would put your text on screen, and a \.docx may open too\.$/ },
+    { opts: { userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15' }, expect: /^Safari cannot write into a folder, so Save downloads a file\. To choose where each file goes: Safari menu, Settings, General, "File download location", pick "Ask for each download"\. Safari also opens downloaded text files by itself unless "Open safe files after downloading" is off in the same settings pane; with a plain \.txt or \.md choice that may put your text on screen, and a \.docx may open too\.$/ },
     { opts: { userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14.0; rv:120.0) Gecko/20100101 Firefox/120.0' }, expect: /^Firefox cannot write into a folder, so Save downloads a file\. To choose where each file goes: Settings, General, Downloads, "Always ask you where to save files"\.$/ },
     { opts: { userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' }, expect: /^This browser cannot write into a folder, so Save downloads a file\.$/ }
   ];
@@ -3040,30 +3042,241 @@ test('device vault: another tab\'s re-key empties a phrase half typed on this ta
   } finally { p.close(); }
 });
 
-// ---------------------------------------------------------------------------
-// Fixes after the Wave F gates (QA-F-01 to QA-F-12, Web_PS_006)
-// ---------------------------------------------------------------------------
-test('the Open question for a plain note draws no password field: the stylesheet hides a hidden password input, and the field is drawn again for the next password dialog (QA-F-01)', async () => {
+test('device vault: a copy made with another iteration count keeps that count through this tab\'s saves, so it still opens on the next visit', async () => {
+  const record = await encryptVaultRecord('old words', 'correct horse battery staple', 1000);   // made elsewhere, at the lowest count the page accepts
+  const p = await loadPage({ storage: { 'plainSight.vault': record, 'plainSight.introSeen': '1' } });
+  try {
+    p.type('correct horse battery staple');
+    p.unlockChord();
+    await sleep(900);
+    assert.ok(p.d.body.classList.contains('vault-open'), 'opened at the record\'s own count');
+    p.type(' and new');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    const saved = JSON.parse(p.storageDump()['plainSight.vault']);
+    assert.equal(saved.iterations, 1000, 'the saved record states the count the key was made with');
+    assert.equal(await decryptVault(saved, 'correct horse battery staple'), 'old words and new');
+    const q = await loadPage({ storage: p.storageDump() });   // the next visit
+    try {
+      q.type('correct horse battery staple');
+      q.unlockChord();
+      await sleep(900);
+      assert.ok(q.d.body.classList.contains('vault-open'), 'the next visit opens the copy');
+      assert.equal(await q.readReal(), 'old words and new');
+      assert.deepEqual(q.errors, []);
+    } finally { q.close(); }
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('device vault: when the browser refuses to store the copy, the vault says so and does not pretend to be open', async () => {
+  const p = await loadPage();
+  const proto = Object.getPrototypeOf(p.w.localStorage);
+  const original = proto.setItem;
+  try {
+    p.start();
+    p.type('nowhere to keep this');
+    proto.setItem = function (key, value) {
+      if (key === 'plainSight.vault') { const e = new p.w.Error('quota'); e.name = 'QuotaExceededError'; throw e; }
+      return original.call(this, key, value);
+    };
+    await p.vaultOn('correct horse battery staple');
+    await sleep(600);
+    assert.ok(!p.d.body.classList.contains('vault-open'), 'not shown as open');
+    assert.equal(p.toast(), 'The copy could not be kept on this device: storage is full or blocked');
+    assert.equal(p.storageDump()['plainSight.vault'], undefined, 'nothing stored');
+    p.$('#btn-help').click();
+    assert.equal(p.$('#vault-on').checked, false, 'nothing shown as pending or open');
+    assert.deepEqual(p.errors, []);
+  } finally { proto.setItem = original; p.close(); }
+});
+
+test('the phrase and password fields keep the browser\'s password manager out: no generated-password hint, manager ignore marks, a masked text field where the browser can mask one, a password field elsewhere', async () => {
+  const p = await loadPage({ cssSupports: true });
+  const q = await loadPage();
+  try {
+    for (const id of ['#vault-phrase', '#pw-input']) {
+      const el = p.$(id);
+      assert.equal(el.getAttribute('autocomplete'), 'off', id + ' does not ask for a generated password');
+      assert.equal(el.getAttribute('data-1p-ignore'), '', id + ' tells 1Password to stay out');
+      assert.equal(el.getAttribute('data-lpignore'), 'true', id + ' tells LastPass to stay out');
+      assert.equal(el.getAttribute('data-bwignore'), '', id + ' tells Bitwarden to stay out');
+      assert.equal(el.getAttribute('autocorrect'), 'off');
+      assert.equal(el.getAttribute('autocapitalize'), 'off');
+      assert.equal(el.type, 'text', id + ' is a masked text field, which no password manager treats as a password');
+      assert.match(el.getAttribute('style') || '', /-webkit-text-security:\s*disc/, id + ' masks what is typed');
+      assert.equal(q.$(id).type, 'password', id + ' stays a password field where the browser cannot mask a text field');
+    }
+    assert.deepEqual(p.errors, []);
+    assert.deepEqual(q.errors, []);
+  } finally { p.close(); q.close(); }
+});
+
+test('the Save and Open buttons and the word count carry no tooltip that names encryption or the file format', async () => {
   const p = await loadPage();
   try {
     p.start();
-    p.type('words');
-    chooseFile(p, new p.w.File(['other'], 'note.txt', { type: 'text/plain' }));
-    await p.settle();
-    assert.equal(p.$('#pw').hidden, false, 'the question is open');
-    assert.equal(p.$('#pw-input').hidden, true);
-    assert.equal(p.w.getComputedStyle(p.$('#pw-input')).display, 'none', 'a hidden password field is not drawn');
-    assert.equal(p.d.activeElement, p.$('#pw-ok'), 'focus is on the Open button');
-    p.$('#pw-cancel').click();
-    await p.settle();
-    p.$('#btn-save').click();   // the encrypted download asks for a password
-    assert.equal(p.$('#pw').hidden, false);
-    assert.equal(p.$('#pw-input').hidden, false);
-    assert.equal(p.w.getComputedStyle(p.$('#pw-input')).display, 'block', 'the password field is drawn again');
-    p.press('Escape');
-    assert.match(HTML, /\.card input\[type="password"\]\[hidden\] \{ display: none; \}/, 'the rule that hides a hidden password field is in the stylesheet');
+    for (const sel of ['#btn-save', '#btn-open', '#word-count']) assert.equal(p.$(sel).title, '', sel + ' has no tooltip');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
+});
+
+test('device vault: a copy made with another iteration count opened through the intro keeps that count in its saves', async () => {
+  const record = await encryptVaultRecord('old words', 'correct horse battery staple', 1000);
+  const p = await loadPage({ storage: { 'plainSight.vault': record, 'plainSight.introSeen': '1' } });
+  try {
+    p.$('#btn-help').click();
+    assert.equal(p.$('#vault-on').checked, true, 'the locked copy shows');
+    p.$('#vault-phrase').value = 'correct horse battery staple';
+    p.start();                               // the phrase check opens the copy
+    await sleep(900);
+    assert.ok(p.d.body.classList.contains('vault-open'));
+    p.type(' and new');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    const saved = JSON.parse(p.storageDump()['plainSight.vault']);
+    assert.equal(saved.iterations, 1000, 'the saved record states the count the key was made with');
+    assert.equal(await decryptVault(saved, 'correct horse battery staple'), 'old words and new');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('device vault: with nothing typed on the page, a phrase typed on the intro over a locked copy still goes with the 10-minute wipe (DM-132)', async () => {
+  const q = await loadPage({ storage: await lockedCopyStorage() });
+  try {
+    q.$('#btn-help').click();
+    q.$('#vault-phrase').value = 'correct horse battery staple';   // typed, not submitted; the buffer is empty
+    const realNow = q.w.Date.now();
+    let fakeNow = realNow;
+    q.w.Date.now = () => fakeNow;
+    const setHidden = (hidden) => {
+      Object.defineProperty(q.d, 'hidden', { get: () => hidden, configurable: true });
+      q.d.dispatchEvent(new q.w.Event('visibilitychange'));
+    };
+    setHidden(true);
+    fakeNow += TEN_MINUTES + 1000;
+    setHidden(false);
+    assert.equal(q.toast(), 'Cleared after 10 minutes in the background');
+    assert.equal(q.$('#vault-phrase').value, '', 'the phrase typed before the absence is gone');
+    q.press('Escape');                       // someone at the machine
+    await sleep(900);
+    assert.ok(!q.d.body.classList.contains('vault-open'), 'nothing opened');
+    assert.deepEqual(q.errors, []);
+  } finally { q.close(); }
+});
+
+test('with nothing typed on the page, a password typed into the Open dialog still goes with the 10-minute wipe (DM-132)', async () => {
+  const p = await loadPage();
+  try {
+    p.start();
+    p.type('file contents');
+    p.$('#btn-save').click();
+    await p.submitPassword('file password');
+    await p.settle(400);
+    const json = await p.downloads[0].blob.text();
+    p.press('Escape');                       // the buffer is empty from here on
+    chooseFile(p, makeCoverFile(p.w, json));
+    await p.settle();
+    assert.equal(p.$('#pw').hidden, false);
+    p.$('#pw-input').value = 'file password';   // typed, not submitted
+    const realNow = p.w.Date.now();
+    let fakeNow = realNow;
+    p.w.Date.now = () => fakeNow;
+    const setHidden = (hidden) => {
+      Object.defineProperty(p.d, 'hidden', { get: () => hidden, configurable: true });
+      p.d.dispatchEvent(new p.w.Event('visibilitychange'));
+    };
+    setHidden(true);
+    fakeNow += TEN_MINUTES + 1000;
+    setHidden(false);
+    assert.equal(p.$('#pw').hidden, true, 'the wipe ended the waiting dialog');
+    p.$('#pw-ok').click();                   // someone at the machine
+    await sleep(600);
+    assert.equal(await p.readReal(), '', 'nothing opened');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('device vault: a dropped write inside the cross-tab sync window leaves the intro following the copy it drew, so the other tab\'s event still redraws it', async () => {
+  const p = await loadPage();
+  let hidden = false;
+  try {
+    const rekeyed = await encryptVaultRecord('the other tab\'s text', 'phrase of the other tab');
+    p.start();
+    p.type('open here');
+    await p.vaultOn('correct horse battery staple');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    const original = p.storageDump()['plainSight.vault'];
+    p.$('#btn-help').click();
+    p.$('#vault-phrase').value = 'half a phr';
+    p.w.localStorage.setItem('plainSight.vault', rekeyed);   // the other tab's re-key is in storage, its event not yet delivered
+    Object.defineProperty(p.d, 'hidden', { get: () => hidden, configurable: true });
+    hidden = true;
+    p.d.dispatchEvent(new p.w.Event('visibilitychange'));   // this tab's save on hide finds another salt and is dropped
+    await sleep(600);
+    hidden = false;
+    p.d.dispatchEvent(new p.w.Event('visibilitychange'));
+    assert.equal(p.$('#vault-phrase').value, 'half a phr', 'the dropped write disturbs nothing on the intro');
+    p.w.dispatchEvent(new p.w.StorageEvent('storage', { key: 'plainSight.vault', oldValue: original, newValue: rekeyed }));   // the event arrives
+    assert.equal(p.$('#vault-phrase').value, '', 'the other tab\'s change redraws the intro and empties the phrase meant for the old copy');
+    assert.equal(p.$('#vault-on').checked, true, 'the box shows the other tab\'s locked copy');
+    assert.ok(!p.d.body.classList.contains('vault-open'));
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('without encryption, the 10-minute wipe leaves the intro\'s no-encryption notice in place', async () => {
+  const p = await loadPage({ noSubtle: true });
+  try {
+    p.start();
+    p.type('typed without encryption');
+    p.$('#btn-help').click();
+    assert.match(p.$('#vault-status').textContent, /no encryption/);
+    const realNow = p.w.Date.now();
+    let fakeNow = realNow;
+    p.w.Date.now = () => fakeNow;
+    const setHidden = (h) => {
+      Object.defineProperty(p.d, 'hidden', { get: () => h, configurable: true });
+      p.d.dispatchEvent(new p.w.Event('visibilitychange'));
+    };
+    setHidden(true);
+    fakeNow += TEN_MINUTES + 1000;
+    setHidden(false);
+    assert.equal(p.toast(), 'Cleared after 10 minutes in the background');
+    assert.match(p.$('#vault-status').textContent, /no encryption/, 'the notice stays');
+    assert.equal(p.$('#vault-on').disabled, true);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+// ---------------------------------------------------------------------------
+// Fixes after the Wave F gates (QA-F-01 to QA-F-12, Web_PS_006)
+// ---------------------------------------------------------------------------
+test('the Open question for a plain note draws no password field: the stylesheet hides a hidden field, a password field or the masked text field a browser that can mask one gets, and the field is drawn again for the next password dialog (QA-F-01)', async () => {
+  // Two pages: one where the field stays a password field (jsdom, Firefox), one where the page turned it into a masked text field (WebKit, Chromium).
+  for (const [options, type, drawn] of [[{}, 'password', 'block'], [{ cssSupports: true }, 'text', 'block']]) {   // both forms share the field rule
+    const p = await loadPage(options);
+    try {
+      assert.equal(p.$('#pw-input').getAttribute('type'), type, 'the field is a ' + type + ' field on this page');
+      p.start();
+      p.type('words');
+      chooseFile(p, new p.w.File(['other'], 'note.txt', { type: 'text/plain' }));
+      await p.settle();
+      assert.equal(p.$('#pw').hidden, false, 'the question is open');
+      assert.equal(p.$('#pw-input').hidden, true);
+      assert.equal(p.w.getComputedStyle(p.$('#pw-input')).display, 'none', 'a hidden ' + type + ' field is not drawn');
+      assert.equal(p.d.activeElement, p.$('#pw-ok'), 'focus is on the Open button');
+      p.$('#pw-cancel').click();
+      await p.settle();
+      p.$('#btn-save').click();   // the encrypted download asks for a password
+      assert.equal(p.$('#pw').hidden, false);
+      assert.equal(p.$('#pw-input').hidden, false);
+      const display = p.w.getComputedStyle(p.$('#pw-input')).display;
+      assert.notEqual(display, 'none', 'the ' + type + ' field is drawn again');
+      if (drawn) assert.equal(display, drawn, 'the password field keeps its own display');
+      p.press('Escape');
+      assert.deepEqual(p.errors, []);
+    } finally { p.close(); }
+  }
+  assert.match(HTML, /\.card input\[hidden\] \{ display: none; \}/, 'the rule that hides a hidden field of either type is in the stylesheet');
 });
 
 test('Esc pressed while a plain note is still being read wins: the note never lands and nothing says Opened (QA-F-02)', async () => {
@@ -3109,7 +3322,7 @@ test('device vault: a save the device refuses locks the vault and says so, inste
     assert.match(p.$('#vault-status').textContent, /^The vault is open and saving as you type/);
     await sleep(VAULT_SAVE_DELAY_MS + 400);
     assert.ok(!p.d.body.classList.contains('vault-open'), 'the vault locked: the header is grey again');
-    assert.equal(p.toast(), 'This device could not keep the saved copy; the vault is locked');
+    assert.equal(p.toast(), 'The copy could not be kept on this device: storage is full or blocked');
     assert.equal(p.storageDump()['plainSight.vault'], before, 'the earlier copy stands');
     assert.match(p.$('#vault-status').textContent, /^A saved copy is on this device/, 'the open intro follows the lock and the copy still on the device');
     assert.equal(p.$('#vault-on').checked, true, 'the box is left as it was');
@@ -3128,7 +3341,7 @@ test('device vault: a save the device refuses locks the vault and says so, inste
     await p.vaultOn('a brand new phrase here');
     await sleep(500);
     assert.ok(!p.d.body.classList.contains('vault-open'), 'the first save was refused, so the vault is not open');
-    assert.equal(p.toast(), 'This device could not keep the saved copy; the vault is locked');
+    assert.equal(p.toast(), 'The copy could not be kept on this device: storage is full or blocked');
     assert.equal(p.storageDump()['plainSight.vault'], undefined, 'no copy');
     p.$('#btn-help').click();
     assert.equal(p.$('#vault-on').checked, false, 'nothing stored, nothing open, nothing pending');
@@ -3151,7 +3364,7 @@ test('device vault: a save the device refuses locks the vault and says so, inste
     q.type(' then Esc');
     q.press('Escape');                       // locks and asks for the save of everything typed
     await sleep(500);
-    assert.equal(q.toast(), 'This device could not keep the saved copy');
+    assert.equal(q.toast(), 'The copy could not be kept on this device: storage is full or blocked');
     assert.equal(q.storageDump()['plainSight.vault'], first, 'the copy on the device is the earlier one');
     assert.ok(!q.d.body.classList.contains('vault-open'));
     assert.equal(await q.readReal(), '');
@@ -3175,7 +3388,7 @@ test('device vault: a note larger than the device will store, opened with the va
     assert.equal(await p.readReal(), 'w'.repeat(5000));
     await sleep(VAULT_SAVE_DELAY_MS + 400);  // its autosave is over the quota
     assert.ok(!p.d.body.classList.contains('vault-open'), 'locked');
-    assert.equal(p.toast(), 'This device could not keep the saved copy; the vault is locked');
+    assert.equal(p.toast(), 'The copy could not be kept on this device: storage is full or blocked');
     assert.equal(p.storageDump()['plainSight.vault'], small, 'the stored copy is still the small one');
     assert.equal(await p.readReal(), 'w'.repeat(5000), 'the note stays on the page');
     // A later visit: the phrase brings back the old words, which is what the device holds.
@@ -3266,11 +3479,13 @@ test('the page writes the golden sample (tests/fixtures/sample.txt) as the Word 
   const sample = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(readFileSync(path.join(ROOT, 'tests', 'fixtures', 'sample.txt')));
   const expected = readFileSync(path.join(ROOT, 'tests', 'fixtures', 'sample.docx'));
   // The sample holds what the writer must get right: tabs, a run of two, blank lines, accents, Japanese, an emoji,
-  // markup, a CRLF, a lone CR, a U+000B and a U+FFFE (both left out of the document), and a long line.
+  // markup, a CRLF, a lone CR, the control characters U+0001, U+000B, U+000C and U+001F and the non-characters U+FFFE
+  // and U+FFFF (all six left out of the document, QA-G-25), and a long line.
   const CR = String.fromCharCode(13);
   const has = (s) => sample.includes(s);
   assert.ok(has('\t') && has('\t\t') && has('\n\n') && has(']]>') && has('&<>"\'') && has(CR + '\n') && /[^\r]\r[^\n]/.test(sample), 'tabs, blank lines, markup, CRLF and a lone CR');
-  assert.ok(has(String.fromCharCode(0x0B)) && has(String.fromCharCode(0xFFFE)), 'a U+000B and a U+FFFE');
+  const dropped = [0x01, 0x0B, 0x0C, 0x1F, 0xFFFE, 0xFFFF].map((cp) => String.fromCharCode(cp));
+  assert.ok(dropped.every((ch) => has(ch)), 'U+0001, U+000B, U+000C, U+001F, U+FFFE and U+FFFF (QA-G-25)');
   assert.ok(sample.normalize('NFD') !== sample && /\p{Script=Han}/u.test(sample) && /\p{Script=Hiragana}/u.test(sample) && Array.from(sample).some((c) => c.codePointAt(0) > 0xFFFF), 'accents, Japanese and an emoji');
   assert.ok(sample.split('\n').some((line) => line.length >= 300), 'a long line');
   const p = await loadPage({ storage: { 'plainSight.saveMode': 'docx', 'plainSight.introSeen': '1' } });
@@ -3291,7 +3506,7 @@ test('the page writes the golden sample (tests/fixtures/sample.txt) as the Word 
     const paragraphs = body.match(/<w:p\/>|<w:p>[\s\S]*?<\/w:p>/g) || [];
     const lines = sample.replace(/\r\n?/g, '\n').split('\n');
     assert.equal(paragraphs.length, lines.length, 'one paragraph per line, carriage returns included, the trailing line feed giving an empty last paragraph');
-    assert.ok(!body.includes(CR) && !body.includes(String.fromCharCode(0x0B)) && !body.includes(String.fromCharCode(0xFFFE)), 'no carriage return, U+000B or U+FFFE in the document');
+    assert.ok(!body.includes(CR) && dropped.every((ch) => !body.includes(ch)), 'no carriage return, U+0001, U+000B, U+000C, U+001F, U+FFFE or U+FFFF in the document');
     assert.equal((body.match(/<w:tab\/>/g) || []).length, (sample.match(/\t/g) || []).length, 'a Word tab for every tab');
     assert.equal((body.match(/<w:p\/>/g) || []).length, lines.filter((l) => l === '').length, 'an empty paragraph for every blank line');
     assert.deepEqual(p.errors, []);
@@ -3356,41 +3571,64 @@ test('another tab changing the folder format redraws an open intro (QA-F-06)', a
   } finally { p.close(); }
 });
 
-test('the Save button says what Save will do: the download format in force, or the chosen folder and its format, following other tabs too (QA-F-08)', async () => {
+test('the Save and Open buttons and the word count carry no title in any state, the download format in force, a chosen folder and its format or another tab\'s change, and the intro\'s status line says what Save will do (QA-F-08, Web_PS_012)', async () => {
   const p = await loadPage({ folder: fakeFolder('Notes') });
   try {
-    const title = () => p.$('#btn-save').getAttribute('title');
+    const noTitle = (when) => {
+      for (const sel of ['#btn-save', '#btn-open', '#word-count']) {
+        const el = p.$(sel);
+        if (!el) { assert.equal(sel, '#word-count', sel + ' exists'); continue; }   // the word count arrives with the cover at Start
+        assert.equal(el.hasAttribute('title'), false, sel + ' carries no title ' + when);
+        assert.equal(el.title, '', sel + ' has no tooltip ' + when);
+      }
+    };
+    const status = () => p.$('#folder-status').textContent;
     const pick = (name, value) => { const r = p.$('input[name="' + name + '"][value="' + value + '"]'); r.checked = true; r.dispatchEvent(new p.w.Event('change', { bubbles: true })); };
-    assert.equal(title(), 'Download your text as an encrypted .sight file');
+    noTitle('at load');
+    assert.equal(status(), 'Save downloads an encrypted .sight file.');
     pick('save-mode', 'txt');
-    assert.equal(title(), 'Download your text as a plain .txt file, no password');
+    noTitle('with the plain .txt download in force');
+    assert.equal(status(), 'Save downloads a plain .txt file named by the moment.');
     pick('save-mode', 'md');
-    assert.equal(title(), 'Download your text as a Markdown .md file, no password');
+    noTitle('with the Markdown download in force');
+    assert.equal(status(), 'Save downloads a Markdown .md file named by the moment.');
     pick('save-mode', 'docx');
-    assert.equal(title(), 'Download your text as a Word .docx file, no password');
+    noTitle('with the Word download in force');
+    assert.equal(status(), 'Save downloads a Word .docx file named by the moment.');
     p.$('#btn-folder').click();
     await p.settle();
-    assert.equal(title(), 'Write your text as a plain .txt file into the folder "Notes"');
+    noTitle('with a folder chosen');
+    assert.equal(status(), 'Save writes a plain text file into the folder "Notes".');
     pick('folder-format', 'docx');
-    assert.equal(title(), 'Write your text as a Word .docx file into the folder "Notes"');
+    noTitle('with the folder set to Word');
+    assert.equal(status(), 'Save writes a Word file into the folder "Notes".');
     p.start();
-    // Another tab changes the folder format while the intro here is closed: the button follows.
+    assert.ok(p.$('#word-count'), 'the word count is on the page after Start');
+    noTitle('after Start');
+    // Another tab changes the folder format while the intro here is closed.
     p.w.localStorage.setItem('plainSight.folderFormat', 'md');
     p.w.dispatchEvent(new p.w.StorageEvent('storage', { key: 'plainSight.folderFormat', oldValue: 'docx', newValue: 'md' }));
-    assert.equal(title(), 'Write your text as a Markdown .md file into the folder "Notes"');
+    noTitle('after another tab changed the folder format');
     p.$('#btn-help').click();
+    assert.equal(status(), 'Save writes a Markdown file into the folder "Notes".', 'the reopened intro reads the other tab\'s format');
     p.$('#btn-folder-forget').click();
     await p.settle();
-    assert.equal(title(), 'Download your text as a Word .docx file, no password');
+    noTitle('with the folder forgotten');
+    assert.equal(status(), 'Save downloads a Word .docx file named by the moment.');
     p.start();
     p.w.localStorage.removeItem('plainSight.saveMode');
     p.w.dispatchEvent(new p.w.StorageEvent('storage', { key: 'plainSight.saveMode', oldValue: 'docx', newValue: null }));
-    assert.equal(title(), 'Download your text as an encrypted .sight file');
+    noTitle('after another tab reset the download format');
+    p.$('#btn-help').click();
+    assert.equal(status(), 'Save downloads an encrypted .sight file.');
+    noTitle('with the intro open again');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
   const q = await loadPage({ storage: { 'plainSight.saveMode': 'md', 'plainSight.introSeen': '1' } });
   try {
-    assert.equal(q.$('#btn-save').getAttribute('title'), 'Download your text as a Markdown .md file, no password', 'the title is drawn from the stored choice at load');
+    for (const sel of ['#btn-save', '#btn-open']) assert.equal(q.$(sel).hasAttribute('title'), false, sel + ' carries no title with a stored choice at load');
+    q.$('#btn-help').click();
+    assert.equal(q.$('#folder-status').textContent, 'Save downloads a Markdown .md file named by the moment.', 'the status line names the stored choice');
     assert.deepEqual(q.errors, []);
   } finally { q.close(); }
 });
@@ -3467,6 +3705,367 @@ test('a long unbroken file name wraps inside the Open question instead of runnin
     assert.match(HTML, /\.card h1, \.card p \{ overflow-wrap: anywhere; \}/, 'the rule is in the stylesheet');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
+});
+
+// ---------------------------------------------------------------------------
+// Fixes after QA-01's Wave G web report (QA-G-01 to QA-G-07, QA-G-09)
+// ---------------------------------------------------------------------------
+test('the "Files in the folder are" row is not drawn where folder access does not exist: a hidden element is never drawn, whatever its display rule (QA-G-01)', async () => {
+  const p = await loadPage();   // no showDirectoryPicker, as in Safari and Firefox
+  try {
+    assert.equal(typeof p.w.showDirectoryPicker, 'undefined');
+    const row = p.$('#folder-format');
+    assert.equal(row.hidden, true, 'the page hides the row');
+    assert.equal(p.w.getComputedStyle(row).display, 'none', 'and it is not drawn');
+    for (const el of p.d.querySelectorAll('[hidden]')) assert.equal(p.w.getComputedStyle(el).display, 'none', (el.id || el.tagName) + ' is hidden and not drawn');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+  const q = await loadPage({ folder: fakeFolder('Notes') });
+  try {
+    const row = q.$('#folder-format');
+    assert.equal(row.hidden, false, 'with folder access the row is offered');
+    assert.equal(q.w.getComputedStyle(row).display, 'flex', 'and drawn as the row it is');
+    assert.match(HTML, /\[hidden\] \{ display: none !important; \}/, 'the rule that keeps every hidden element off the screen is in the stylesheet');
+    assert.deepEqual(q.errors, []);
+  } finally { q.close(); }
+});
+
+test('a file whose name is none of .sight, .txt or .md is answered "Open reads .sight, .txt and .md files", as a .docx is, never "not a .sight file"; a .sight or .cover file still goes to its password (QA-G-03)', async () => {
+  const p = await loadPage();
+  try {
+    p.start();
+    for (const name of ['todo.log', 'notes.text', 'readme.markdown', 'notes.txt.bak', 'note.txt ', 'noextension', 'data.json']) {
+      chooseFile(p, new p.w.File(['plain words'], name, { type: 'text/plain' }));
+      await p.settle();
+      assert.equal(p.$('#pw').hidden, true, name + ': no dialog');
+      assert.equal(p.toast(), 'Open reads .sight, .txt and .md files', name);
+      assert.equal(await p.readReal(), '', name + ': nothing opened');
+    }
+    chooseFile(p, new p.w.File(['not json'], 'broken.sight', { type: 'application/json' }));   // a .sight that is not one is still told so
+    await p.settle();
+    assert.equal(p.toast(), 'That is not a .sight file');
+    const record = await encryptVaultRecord('old words', 'file password');
+    for (const name of ['saved.sight', 'old-name.cover', 'UPPER.SIGHT']) {
+      chooseFile(p, new p.w.File([record], name, { type: 'application/json' }));
+      await p.settle();
+      assert.equal(p.$('#pw').hidden, false, name + ': asks for its password');
+      p.press('Escape');
+      await p.settle();
+    }
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('device vault: when the saved copy is gone from the device under the page (site data cleared, no storage event) the vault locks and says so (QA-G-04)', async () => {
+  const p = await loadPage();
+  try {
+    p.start();
+    p.type('keep ');
+    await p.vaultOn('correct horse battery staple');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    assert.ok(p.storageDump()['plainSight.vault'], 'a copy is stored');
+    p.w.localStorage.clear();                // the same document: no storage event for it
+    p.$('#toast').textContent = '';
+    p.type('x');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    assert.ok(!p.d.body.classList.contains('vault-open'), 'locked');
+    assert.equal(p.toast(), 'The saved copy is gone from this device; the vault is locked');
+    assert.equal(p.storageDump()['plainSight.vault'], undefined, 'nothing was written back');
+    assert.equal(await p.readReal(), 'keep x', 'the text stays on the page');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('Esc pressed while a .sight file is still being read wins: no password question appears afterwards and nothing opens, as for a plain note (QA-G-05)', async () => {
+  const p = await loadPage();
+  try {
+    p.start();
+    p.type('file contents');
+    p.$('#btn-save').click();
+    await p.submitPassword('file password');
+    await p.settle(400);
+    const json = await p.downloads[0].blob.text();
+    p.press('Escape');
+    p.type('keep');
+    const read = p.w.Blob.prototype.text;
+    p.w.Blob.prototype.text = function () { return new Promise((resolve) => setTimeout(() => resolve(read.call(this)), 300)); };   // a slow disk or share
+    chooseFile(p, makeCoverFile(p.w, json));
+    await sleep(100);
+    p.press('Escape');                       // the panic key, while the read is still in flight
+    assert.equal(await p.readReal(), '', 'wiped at once');
+    await sleep(500);                        // the read finishes after the wipe
+    assert.equal(p.$('#pw').hidden, true, 'no password question appears after the wipe');
+    assert.equal(p.toast(), 'Open cancelled');
+    assert.equal(await p.readReal(), '');
+    p.w.Blob.prototype.text = read;
+    chooseFile(p, makeCoverFile(p.w, json));   // without the Esc the same file asks for its password
+    await p.settle();
+    assert.equal(p.$('#pw').hidden, false);
+    await p.submitPassword('file password');
+    for (let i = 0; i < 100 && (await p.readReal()) !== 'file contents'; i++) await sleep(50);   // the key derives; up to 5 s on a loaded machine
+    assert.equal(await p.readReal(), 'file contents');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('the Open question is described by its hint for a screen reader: aria-describedby names the line that says the page will be replaced (QA-G-06)', async () => {
+  const p = await loadPage();
+  try {
+    p.start();
+    p.type('words');
+    chooseFile(p, new p.w.File(['other'], 'note.txt', { type: 'text/plain' }));
+    await p.settle();
+    const dialog = p.$('#pw');
+    assert.equal(dialog.hidden, false);
+    const described = p.d.getElementById(dialog.getAttribute('aria-describedby') || '');
+    assert.ok(described && dialog.contains(described), 'the dialog is described by an element inside it');
+    assert.equal(described.textContent, 'Opening replaces what is on the page now.');
+    p.$('#pw-cancel').click();
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('device vault: after a lock because the device refused the copy, the phrase on the intro reopens the vault without duplicating the text: the page text stays as it is, becomes the copy if the device now accepts it, and the toast says so; if the device still refuses, the vault locks again and says so (QA-G-02)', async () => {
+  const p = await loadPage();
+  const proto = p.w.Storage.prototype;
+  const setItem = proto.setItem;
+  try {
+    p.start();
+    p.type('first words ');
+    await p.vaultOn('correct horse battery staple');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    assert.ok(p.storageDump()['plainSight.vault']);
+    let refuse = true;                       // from now on the device refuses the vault's writes
+    proto.setItem = function (key, value) { if (refuse && key === 'plainSight.vault') throw new p.w.DOMException('The quota has been exceeded.', 'QuotaExceededError'); return setItem.call(this, key, value); };
+    p.type('more words after the device filled');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    assert.ok(!p.d.body.classList.contains('vault-open'), 'locked by the refusal');
+    assert.equal(p.toast(), 'The copy could not be kept on this device: storage is full or blocked');
+    p.type(' and still more');
+    const onPage = await p.readReal();
+    assert.equal(onPage, 'first words more words after the device filled and still more');
+    // The device still refuses: the phrase opens the vault, the page text is kept, and the save is refused again, honestly.
+    p.$('#btn-help').click();
+    assert.match(p.$('#vault-status').textContent, /^A saved copy is on this device/);
+    p.$('#vault-phrase').value = 'correct horse battery staple';
+    p.start();
+    await sleep(900);
+    assert.equal(await p.readReal(), onPage, 'the page text is unchanged: no duplicated start');
+    assert.ok(!p.d.body.classList.contains('vault-open'), 'the device still refuses, so the vault locked again');
+    assert.equal(p.toast(), 'The copy could not be kept on this device: storage is full or blocked');
+    assert.equal(await decryptVault(JSON.parse(p.storageDump()['plainSight.vault']), 'correct horse battery staple'), 'first words ', 'the earlier copy stands');
+    // Room again: the phrase reopens the vault, the page text is kept and becomes the copy.
+    refuse = false;
+    p.$('#btn-help').click();
+    p.$('#vault-phrase').value = 'correct horse battery staple';
+    p.start();
+    await sleep(900);
+    assert.ok(p.d.body.classList.contains('vault-open'), 'the vault is open again');
+    assert.equal(await p.readReal(), onPage, 'the page text is unchanged: no duplicated start');
+    assert.equal(p.toast(), 'Vault opened; the text on the page is kept');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    assert.equal(await decryptVault(JSON.parse(p.storageDump()['plainSight.vault']), 'correct horse battery staple'), onPage, 'the page text is now the copy');
+    p.type(' more');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    assert.equal(await decryptVault(JSON.parse(p.storageDump()['plainSight.vault']), 'correct horse battery staple'), onPage + ' more', 'and saving goes on');
+    assert.deepEqual(p.errors, []);
+  } finally { proto.setItem = setItem; p.close(); }
+});
+
+test('device vault: the intro path without such a lock is unchanged: Esc then the phrase on the intro puts the saved text before what was typed since; and after a lock the device caused, Esc then the phrase and the chord on the blank page bring back the earlier copy without the unsaved tail (QA-G-02, V4)', async () => {
+  const p = await loadPage();
+  const proto = p.w.Storage.prototype;
+  const setItem = proto.setItem;
+  try {
+    p.start();
+    p.type('saved part. ');
+    await p.vaultOn('correct horse battery staple');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    p.press('Escape');                       // locks, the copy stays; the page is blank
+    await sleep(300);                        // the save Esc asked for lands
+    p.type('typed before ');
+    p.$('#btn-help').click();
+    p.$('#vault-phrase').value = 'correct horse battery staple';
+    p.start();
+    await sleep(900);
+    assert.ok(p.d.body.classList.contains('vault-open'));
+    assert.equal(await p.readReal(), 'saved part. typed before ', 'the intro path after Esc still puts the saved text first');
+    assert.equal(p.toast(), 'Saved copy opened');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);  // that text is saved
+    let refuse = true;
+    proto.setItem = function (key, value) { if (refuse && key === 'plainSight.vault') throw new p.w.DOMException('The quota has been exceeded.', 'QuotaExceededError'); return setItem.call(this, key, value); };
+    p.type('UNSAVED tail');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    assert.ok(!p.d.body.classList.contains('vault-open'), 'locked by the refusal');
+    p.press('Escape');
+    await sleep(300);
+    assert.equal(await p.readReal(), '', 'Esc wipes the page, the unsaved tail with it');
+    refuse = false;
+    p.type('correct horse battery staple');
+    p.unlockChord();
+    await sleep(900);
+    assert.ok(p.d.body.classList.contains('vault-open'));
+    assert.equal(await p.readReal(), 'saved part. typed before ', 'the chord brings back the earlier copy only');
+    assert.deepEqual(p.errors, []);
+  } finally { proto.setItem = setItem; p.close(); }
+});
+
+test('device vault: an older key\'s save refused by the device does not lock the newer vault it no longer belongs to (QA-G-09: Q3a, Q3b)', async () => {
+  const p = await loadPage({ slowEncrypt: (n) => (n === 1 ? 1200 : 0) });   // the second encryption, the hidden-tab save under the first key, takes 1200 ms
+  const proto = p.w.Storage.prototype;
+  const setItem = proto.setItem;
+  try {
+    p.start();
+    p.type('first key ');
+    await p.vaultOn('correct horse battery staple');   // encryption 0: the first key's first write
+    await sleep(400);
+    const salt1 = JSON.parse(p.storageDump()['plainSight.vault']).salt;
+    proto.setItem = function (key, value) { if (key === 'plainSight.vault' && JSON.parse(value).salt === salt1) throw new p.w.DOMException('The quota has been exceeded.', 'QuotaExceededError'); return setItem.call(this, key, value); };   // the device refuses the first key's records only
+    let hidden = false;
+    Object.defineProperty(p.d, 'hidden', { get: () => hidden, configurable: true });
+    hidden = true;
+    p.d.dispatchEvent(new p.w.Event('visibilitychange'));   // the save on hide: the first key's write, slow to encrypt, is now in flight
+    hidden = false;
+    p.d.dispatchEvent(new p.w.Event('visibilitychange'));
+    p.$('#btn-help').click();                // meanwhile a new phrase re-keys the vault; its first write queues behind the slow one
+    p.$('#vault-phrase').value = 'a brand new phrase here';
+    p.start();
+    await sleep(1200 + 800);
+    assert.ok(p.d.body.classList.contains('vault-open'), 'the newer vault stays open: the refused save was an older key\'s');
+    assert.equal(p.toast(), 'The copy could not be kept on this device: storage is full or blocked', 'the refusal is still reported');
+    const saved = JSON.parse(p.storageDump()['plainSight.vault']);
+    assert.notEqual(saved.salt, salt1, 'the stored copy is the new key\'s');
+    assert.equal(await decryptVault(saved, 'a brand new phrase here'), 'first key ');
+    assert.deepEqual(p.errors, []);
+  } finally { proto.setItem = setItem; p.close(); }
+});
+
+test('Backspace and the key test at the code point boundaries: U+10000 is one astral character, two fullwidth letters and U+FFFE U+FFFF are two characters each, and a key string of two emoji is not one key (QA-G-09: Q4a to Q4d)', async () => {
+  const p = await loadPage();
+  try {
+    p.start();
+    const key = (k) => p.d.dispatchEvent(new p.w.KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }));
+    const first = String.fromCodePoint(0x10000);
+    key('a'); key(first);
+    assert.equal(await p.readReal(), 'a' + first, 'U+10000, the first astral code point, is typed as one character (Q4b)');
+    p.press('Backspace');
+    assert.equal(await p.readReal(), 'a', 'Backspace removes the whole of U+10000 (Q4a)');
+    const ff = String.fromCharCode(0xFF21) + String.fromCharCode(0xFF22);
+    key(ff[0]); key(ff[1]);
+    assert.equal(await p.readReal(), 'a' + ff);
+    p.press('Backspace');
+    assert.equal(await p.readReal(), 'a' + ff[0], 'after two fullwidth letters Backspace removes one (Q4d)');
+    const nonchars = String.fromCharCode(0xFFFE) + String.fromCharCode(0xFFFF);
+    key(nonchars[0]); key(nonchars[1]);
+    assert.equal(await p.readReal(), 'a' + ff[0] + nonchars);
+    p.press('Backspace');
+    assert.equal(await p.readReal(), 'a' + ff[0] + nonchars[0], 'after U+FFFE U+FFFF Backspace removes one (Q4d)');
+    key(String.fromCodePoint(0x1F600) + String.fromCodePoint(0x1F601));
+    assert.equal(await p.readReal(), 'a' + ff[0] + nonchars[0], 'a key string of two emoji is not one character and is not typed (Q4c)');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('another tab choosing or forgetting the folder puts no title on Save or Open, and an intro opened afterwards names the folder (QA-G-09: Q11)', async () => {
+  const p = await loadPage({ folder: fakeFolder('Notes') });
+  try {
+    p.$('#btn-folder').click();              // the handle is in IndexedDB, as another tab's choice would leave it
+    await p.settle();
+    p.start();
+    const noTitle = (when) => { for (const sel of ['#btn-save', '#btn-open']) assert.equal(p.$(sel).hasAttribute('title'), false, sel + ' carries no title ' + when); };
+    noTitle('after this tab chose the folder');
+    p.$('#btn-help').click();
+    assert.equal(p.$('#folder-status').textContent, 'Save writes a plain text file into the folder "Notes".', 'the intro names the folder');
+    p.start();
+    // Another tab's change reaches this tab while its intro is closed. jsdom has no IndexedDB, so the handle reloaded here is
+    // always none, as after the other tab forgot the folder; the choice case with a handle present is WebKit's to show.
+    p.w.dispatchEvent(new p.w.StorageEvent('storage', { key: 'plainSight.folderVersion', oldValue: '1', newValue: '2' }));
+    await p.settle();
+    noTitle('after another tab\'s folder change arrived');
+    p.$('#btn-help').click();
+    assert.equal(p.$('#folder-status').textContent, 'Save downloads an encrypted .sight file.', 'the intro opened afterwards shows the state the other tab left');
+    noTitle('with the intro open again');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('device vault: the memory of a lock the device caused is forgotten by Esc and by Open, so the intro path puts the saved text first again afterwards (QA-G-02)', async () => {
+  // A page locked by a refusal, then Esc and new text, then the phrase on the intro: the saved text comes first, as always after Esc.
+  const p = await loadPage();
+  const protoP = p.w.Storage.prototype;
+  const setItemP = protoP.setItem;
+  try {
+    p.start();
+    p.type('saved part. ');
+    await p.vaultOn('correct horse battery staple');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    let refuse = true;
+    protoP.setItem = function (key, value) { if (refuse && key === 'plainSight.vault') throw new p.w.DOMException('The quota has been exceeded.', 'QuotaExceededError'); return setItemP.call(this, key, value); };
+    p.type('UNSAVED tail');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    assert.ok(!p.d.body.classList.contains('vault-open'), 'locked by the refusal');
+    refuse = false;
+    p.press('Escape');
+    await sleep(300);
+    p.type('new words');
+    p.$('#btn-help').click();
+    p.$('#vault-phrase').value = 'correct horse battery staple';
+    p.start();
+    for (let i = 0; i < 100 && !p.d.body.classList.contains('vault-open'); i++) await sleep(50);   // the key derives
+    assert.ok(p.d.body.classList.contains('vault-open'));
+    assert.equal(await p.readReal(), 'saved part. new words', 'after Esc the saved text comes first: the lock is forgotten');
+    assert.equal(p.toast(), 'Saved copy opened');
+    assert.deepEqual(p.errors, []);
+  } finally { protoP.setItem = setItemP; p.close(); }
+  // The same lock, then a note opened over the page, then the phrase on the intro: the saved text comes first, before the note.
+  const q = await loadPage();
+  const protoQ = q.w.Storage.prototype;
+  const setItemQ = protoQ.setItem;
+  try {
+    q.start();
+    q.type('saved part. ');
+    await q.vaultOn('correct horse battery staple');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    let refuse = true;
+    protoQ.setItem = function (key, value) { if (refuse && key === 'plainSight.vault') throw new q.w.DOMException('The quota has been exceeded.', 'QuotaExceededError'); return setItemQ.call(this, key, value); };
+    q.type('UNSAVED tail');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    assert.ok(!q.d.body.classList.contains('vault-open'), 'locked by the refusal');
+    refuse = false;
+    chooseFile(q, new q.w.File(['NOTE BODY'], 'note.txt', { type: 'text/plain' }));
+    await q.settle();
+    q.$('#pw-ok').click();                   // the note replaces the page
+    await q.settle();
+    assert.equal(await q.readReal(), 'NOTE BODY');
+    q.$('#btn-help').click();
+    q.$('#vault-phrase').value = 'correct horse battery staple';
+    q.start();
+    for (let i = 0; i < 100 && !q.d.body.classList.contains('vault-open'); i++) await sleep(50);
+    assert.ok(q.d.body.classList.contains('vault-open'));
+    assert.equal(await q.readReal(), 'saved part. NOTE BODY', 'after Open the saved text comes first: the lock is forgotten');
+    assert.equal(q.toast(), 'Saved copy opened');
+    assert.deepEqual(q.errors, []);
+  } finally { protoQ.setItem = setItemQ; q.close(); }
+});
+
+test('the masked text fields keep the page\'s styling: where the browser masks text fields, the Save dialog\'s field and the intro\'s phrase field are drawn as the password fields were, full width and in the page\'s font (a follow-up to Web_PS_010)', async () => {
+  // jsdom computes display from the stylesheet; width, font and border it does not resolve, so the rule's text (asserted last) carries those, and the WebKit probe (wk_pwstyle.mjs) the look.
+  for (const [options, type] of [[{ cssSupports: true }, 'text'], [{}, 'password']]) {
+    const p = await loadPage(options);
+    try {
+      assert.equal(p.$('#pw-input').getAttribute('type'), type);
+      assert.equal(p.$('#vault-phrase').getAttribute('type'), type);
+      assert.equal(p.w.getComputedStyle(p.$('#vault-phrase')).display, 'block', 'the phrase field on the intro is drawn as a block, as a ' + type + ' field');
+      p.start();
+      p.type('abc');
+      p.$('#btn-save').click();
+      assert.equal(p.$('#pw').hidden, false);
+      assert.equal(p.w.getComputedStyle(p.$('#pw-input')).display, 'block', 'the Save dialog\'s field is drawn as a block, as a ' + type + ' field');
+      p.press('Escape');
+      assert.deepEqual(p.errors, []);
+    } finally { p.close(); }
+  }
+  assert.match(HTML, /\.card input\[type="password"\], \.card input\[type="text"\] \{/, 'the field rule names the text field the page makes of a password field');
 });
 
 // ---------------------------------------------------------------------------

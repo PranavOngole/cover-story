@@ -160,7 +160,7 @@ test('the bundle is sealed with an ad-hoc signature until a Developer ID exists 
 
 test('the web deployment allowlist is unchanged (DR-10)', () => {
   const lines = read(ROOT, '.vercelignore').split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
-  assert.deepEqual(lines, ['*', '!index.html', '!covers', '!covers/**']);
+  assert.deepEqual(lines, ['*', '!index.html', '!covers', '!covers/**', '!vercel.json']);
 });
 
 let passed = 0;

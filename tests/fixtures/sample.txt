@@ -9,6 +9,6 @@ A Windows line end follows this line
 A lone carriage return follows this lineand this comes after the lone carriage return
 
 
-Two blank lines above. Characters XML cannot hold are left out of the document: [] and [￾] become [] and [].
+Two blank lines above. Characters XML cannot hold are left out of the document: the control characters [], [], [] and [] and the non-characters [￾] and [￿] become [], [], [], [], [] and [].
 Long line: The quick brown fox jumps over the lazy dog. The quick brown fox jumps over the lazy dog. The quick brown fox jumps over the lazy dog. The quick brown fox jumps over the lazy dog. The quick brown fox jumps over the lazy dog. The quick brown fox jumps over the lazy dog. The quick brown fox jumps over the lazy dog. The quick brown fox jumps over the lazy dog. The quick brown fox jumps over the lazy dog. The quick brown fox jumps over the lazy dog. The quick brown fox jumps over the lazy dog. The quick brown fox jumps over the lazy dog. 
 The last line ends with a line feed.
