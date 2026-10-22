@@ -3452,6 +3452,23 @@ test('without encryption a plain .txt or .md note still opens, with the question
   } finally { p.close(); }
 });
 
+test('a long unbroken file name wraps inside the Open question instead of running out of the card (QA-F-12)', async () => {
+  const p = await loadPage();
+  try {
+    p.start();
+    p.type('abc');
+    const long = 'L'.repeat(300) + '.txt';
+    chooseFile(p, new p.w.File(['x'], long, { type: 'text/plain' }));
+    await p.settle();
+    assert.equal(p.$('#pw-title').textContent, 'Open ' + long + '?', 'the name is text, not markup');
+    assert.equal(p.w.getComputedStyle(p.$('#pw-title')).overflowWrap, 'anywhere', 'the title may break anywhere, so a name without spaces wraps');
+    assert.equal(p.w.getComputedStyle(p.$('#pw-hint')).overflowWrap, 'anywhere', 'and so may the hint');
+    p.$('#pw-cancel').click();
+    assert.match(HTML, /\.card h1, \.card p \{ overflow-wrap: anywhere; \}/, 'the rule is in the stylesheet');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
 // ---------------------------------------------------------------------------
 // Run
 // ---------------------------------------------------------------------------
