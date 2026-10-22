@@ -730,7 +730,9 @@ test('with no text on the page there is no sheet: the close ends the app as befo
 
 // ---------------------------------------------------------------------------
 // Wave G: the window is not restorable (D-45, Mac_PS_015). macOS keeps a
-// restorable window's state, and a picture of it, under Saved Application
+// restorable window's state, and may keep a picture of it (a third-party
+// reverse-engineering of the format, mothersruin.com, describes window
+// snapshot files; Apple's pages do not say), under Saved Application
 // State, written at key times (Apple, Mac App Programming Guide, User
 // Interface Preservation: "changes are coalesced and written at key times,
 // such as when the user switches to another app or logs out") and at a quit.
