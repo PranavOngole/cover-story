@@ -26,7 +26,7 @@ const STAMP = /^\d{4}-\d{2}-\d{2} \d{2}-\d{2}-\d{2}$/;
 // A fake adapter with the same surface as desktop/adapter.js. It records
 // every call; files is the set of names already in the folder, so the
 // counter rule can be checked from the page's side.
-function fakeNative({ saved = null, pick = { name: 'Build_Test_1' }, failPick = false, failForget = false, failWrite = false, failDownload = false, downloadAnswer = null } = {}) {
+function fakeNative({ saved = null, pick = { name: 'Build_Test_1' }, failPick = false, failForget = false, failWrite = false, failDownload = false, cancelDownload = false, downloadAnswer = null } = {}) {
   const calls = [];
   const files = new Set();
   let quit = null;
@@ -52,9 +52,11 @@ function fakeNative({ saved = null, pick = { name: 'Build_Test_1' }, failPick = 
         files.add(name);
         return name;
       },
+      // As the app does (folder.rs): the save panel's name, or null when it was cancelled (D-49).
       saveDownload: async (name, text) => {
         calls.push(['saveDownload', name, text]);
         if (failDownload) throw new Error('Could not save the file: Operation not permitted');
+        if (cancelDownload) return null;
         return downloadAnswer || name;
       },
       onQuit: (callback) => { calls.push(['onQuit']); quit = callback; },
@@ -436,6 +438,31 @@ test('in the app a Save the app could not write says so, in both modes, and neve
       assert.equal(p.toast(), 'Could not save', mode + ': the failure is told');
       assert.equal(await p.real(), 'not written', mode + ': the text stays');
       assert.deepEqual(unhandled, [], mode + ': the page handled the failure itself');
+    } finally { p.close(); }
+  }
+});
+
+test('in the app a cancelled save panel shows no toast and keeps the text, in both modes (D-49)', async () => {
+  for (const mode of ['txt', 'sight']) {
+    const native = fakeNative({ cancelDownload: true });
+    const storage = { 'plainSight.introSeen': '1' };
+    if (mode === 'txt') storage['plainSight.saveMode'] = 'txt';
+    const p = await loadPage({ native, storage });
+    try {
+      await p.settle();
+      p.type('kept after a cancel');
+      p.$('#btn-save').click();
+      await p.settle();
+      if (mode === 'sight') {
+        p.$('#pw-input').value = 'a file password';
+        p.$('#pw-ok').click();
+        await p.settle(800);
+      }
+      assert.equal(native.calls.filter((c) => c[0] === 'saveDownload').length, 1, mode + ': the app was asked');
+      assert.equal(p.toast(), '', mode + ': nothing is said, as after a cancelled folder choice');
+      assert.equal(await p.real(), 'kept after a cancel', mode + ': the text stays');
+      assert.deepEqual(unhandled, [], mode + ': nothing left unhandled');
+      assert.deepEqual(p.errors, []);
     } finally { p.close(); }
   }
 });

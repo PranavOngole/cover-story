@@ -91,6 +91,13 @@ test('each call becomes exactly one app command, with the arguments the app expe
   } finally { a.close(); }
 });
 
+test('a cancelled save panel reaches the page as null, not as a name', async () => {
+  const a = load({ save_download: () => null });
+  try {
+    assert.equal(await a.native.saveDownload('2026-10-21 10-00-00.txt', 'the real text'), null);
+  } finally { a.close(); }
+});
+
 test('a failed command reaches the page as a failure', async () => {
   const a = load({ write_text_file: () => { throw new Error('Could not write the file'); }, save_download: () => { throw new Error('Could not save the file'); } });
   try {

@@ -13,7 +13,7 @@ import { execFileSync } from 'node:child_process';
 import { webcrypto } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { DESKTOP, EVIDENCE, HOME, NotRun, alive, clearTestData, drive, driveRaw, note, run, sleep, until } from './harness.mjs';
+import { DESKTOP, EVIDENCE, HOME, NotRun, alive, clearTestData, decryptRecord, drive, driveRaw, note, run, sleep, until } from './harness.mjs';
 
 const APP = process.env.PLAIN_SIGHT_APP || path.join(DESKTOP, 'src-tauri/target/release/bundle/macos/Plain Sight.app');
 let app = null;   // { pid }
@@ -207,6 +207,44 @@ test('Open shows the system open panel; a wrong password changes nothing; the ri
   assert.equal(await copyRealText('cmd'), null, 'a wrong password leaves the page empty');
   await openWithKeys(file, 'outside password 2026');
   assert.equal(await copyRealText('cmd'), 'opened from a file made outside the app');
+});
+
+// Save without a folder shows the system save panel (D-49), a sheet on the
+// document window started in Downloads with the page's proposed name. The
+// robot goes to a folder of its own under the evidence directory through
+// the panel's Go-to box, as the folder test does, and presses Save (the
+// panel's default button); the file must land there and decrypt to the text.
+const SAVE_AS = path.join(EVIDENCE, 'folders', 'Saved from the panel');
+const savePanelShown = () => drive('cgwindows', app.pid).windows.filter((x) => x.onscreen && x.layer === 0 && x.width > 400).length >= 2;
+test('Save without a folder opens the system save panel; saved into the test\'s own folder through the panel, the .sight file decrypts to the text', async () => {
+  mkdirSync(SAVE_AS, { recursive: true });
+  await cleanPage();
+  await keys.type('saved through the panel');
+  await pressControl('btn-save');
+  await sleep(700);
+  await keys.type('panel password 2026');   // the page's password dialog, then its Save button
+  await keys.press('return');
+  await sleep(3000);   // the key derives from the password (310,000 rounds)
+  await until(savePanelShown, 'the save panel on screen', 10000);
+  note('windows with the save panel open: ' + JSON.stringify(drive('cgwindows', app.pid).windows.filter((x) => x.onscreen)));
+  await inPanel(savePanelShown, async () => {
+    await keys.press('cmd+shift+g');
+    await sleep(1000);
+    drive('type', app.pid, SAVE_AS, 10);
+    await sleep(800);
+    await keys.press('return');   // go to the folder
+    await sleep(1500);
+    await keys.press('return');   // Save, the panel's default button
+    await until(() => !savePanelShown(), 'the save panel to close', 8000);
+  });
+  const fresh = await until(() => { const n = readdirSync(SAVE_AS); return n.length ? n : null; }, 'a file in the test\'s folder', 8000);
+  assert.equal(fresh.length, 1);
+  assert.match(fresh[0], /^untitled-draft-\d{8}-\d{4}\.sight$/, 'the name the page proposed');
+  const record = JSON.parse(readFileSync(path.join(SAVE_AS, fresh[0]), 'utf8'));
+  assert.equal(await decryptRecord(record, 'panel password 2026'), 'saved through the panel');
+  renameSync(path.join(SAVE_AS, fresh[0]), path.join(EVIDENCE, 'downloads', 'save-panel ' + fresh[0]));
+  rmSync(SAVE_AS, { recursive: true, force: true });
+  await cleanPage();
 });
 
 // Without a peek the page takes Cmd+C itself, so the Edit menu's Copy never

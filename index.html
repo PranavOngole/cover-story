@@ -1506,9 +1506,10 @@
     const p = (n) => String(n).padStart(2, '0');
     return d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '-' + p(d.getHours()) + p(d.getMinutes());
   }
-  // Returns the name the file was saved under. The app writes the file itself
-  // and answers with the name it used (numbered if taken) or fails, so the
-  // page never says Saved for a file that was not written.
+  // Returns the name the file was saved under. The app shows its save panel
+  // with this name proposed, writes the file where the panel put it and
+  // answers with the name used, null when the panel was cancelled, or fails,
+  // so the page never says Saved for a file that was not written.
   async function downloadText(content, name, type = 'application/json') {
     if (native) return native.saveDownload(name, content);
     const blob = new Blob([content], { type });
@@ -1550,7 +1551,8 @@
       // password. Where it lands is the browser's download setting.
       const name = momentBase() + PLAIN_FORMATS[mode].ext;
       try {
-        toast('Saved ' + await downloadText(plainContent(mode, real), name, PLAIN_FORMATS[mode].type));
+        const saved = await downloadText(plainContent(mode, real), name, PLAIN_FORMATS[mode].type);
+        if (saved !== null) toast('Saved ' + saved);   // null: the app's save panel was cancelled, so nothing to say
       } catch (err) {
         toast('Could not save');
       }
@@ -1562,7 +1564,7 @@
     try {
       const json = await exportEncrypted(password);
       const slug = cover.tabTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'draft';
-      await downloadText(json, slug + '-' + fileStamp() + FILE_EXT);
+      if ((await downloadText(json, slug + '-' + fileStamp() + FILE_EXT)) === null) return;   // the app's save panel was cancelled
       toast('Saved');
     } catch (err) {
       toast('Could not save');

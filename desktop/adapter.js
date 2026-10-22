@@ -25,8 +25,10 @@
     // app makes the Word document from the text) and answers with the file
     // name used, such as "2026-10-20 14-55-03 (2).docx".
     writeTextFile: (base, ext, text) => invoke('write_text_file', { base, ext, text }),
-    // Save without a folder: the app writes the file into Downloads and answers
-    // with the name it used, or fails, so the page's toast tells the truth.
+    // Save without a folder: the app shows the system save panel with the
+    // name proposed, starting in Downloads, writes the file where the panel
+    // put it and answers with the name used, null when the panel was
+    // cancelled, or fails, so the page's toast tells the truth (D-49).
     saveDownload: (name, text) => invoke('save_download', { name, text }),
     onQuit: (callback) => { if (typeof callback === 'function') quitCallback = callback; },
     // The page's answer to "would a quit lose text?": true when text is on the

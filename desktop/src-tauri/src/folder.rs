@@ -4,9 +4,10 @@
 //! name, and it can only write `.txt`, `.md` or `.docx` files named
 //! "YYYY-MM-DD HH-MM-SS" into the folder the user picked. The page sends text
 //! only: the app makes a Word document itself (docx.rs), so no file is ever
-//! written from bytes the page made. Without a folder, Save writes the page's
-//! own download into the Downloads folder through `save_download`, so the
-//! page learns whether the file was really written (DM-202).
+//! written from bytes the page made. Without a folder, Save shows the system
+//! save panel through `save_download` (D-49), starting in the Downloads folder
+//! with the name the page proposes, and writes the file where the panel put
+//! it, so the page learns whether the file was really written (DM-202).
 //!
 //! The macOS App Sandbox (D-37) lets an app into a folder only after the user
 //! picks it in the system panel. So the folder is remembered as a
@@ -261,27 +262,89 @@ pub fn write_text_file(
     folder.write(&base, &ext, &text)
 }
 
-/// Save without a folder: writes the page's file into the Downloads folder
-/// under the page's own name, numbered when that name is taken, and returns the
-/// name used. A failure reaches the page, which then says it could not save.
-#[tauri::command(async)]
-pub fn save_download<R: Runtime>(
+/// Save without a folder: the system save panel, started in the Downloads
+/// folder with the name the page proposes (D-49). The file is written where
+/// the panel put it, under the name chosen there, replacing a file that is
+/// already there, since the panel itself confirmed that with the user; every
+/// other write the app makes stays create-new. Cancel answers None and the
+/// page shows nothing; a failed write reaches the page, which says so.
+#[tauri::command]
+pub async fn save_download<R: Runtime>(
     window: WebviewWindow<R>,
     name: String,
     text: String,
-) -> Result<String, String> {
+) -> Result<Option<String>, String> {
     if !is_download_name(&name) {
         return Err("The file name is not one Save makes".to_owned());
     }
     let bytes = file_bytes(&name, &text).map_err(|e| format!("Could not save the file: {e}"))?;
-    let downloads = downloads_dir(&window)?;
-    write_new(&downloads, &name, &bytes).map_err(|e| format!("Could not save the file: {e}"))
+    let Some(path) = save_as(window, &name).await? else {
+        return Ok(None);
+    };
+    let chosen = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| name.clone());
+    write_replacing(&path, &bytes).map_err(|e| format!("Could not save the file: {e}"))?;
+    Ok(Some(chosen))
 }
 
-/// The folder a download goes into: the user's Downloads folder.
+/// The system save panel: a sheet on the document window, starting in the
+/// Downloads folder with the proposed name, with a New Folder button. None
+/// when cancelled. In the sandbox the panel itself lets the app write the file
+/// the user chose (the user-selected entitlement), so Downloads needs none.
+async fn save_as<R: Runtime>(
+    window: WebviewWindow<R>,
+    name: &str,
+) -> Result<Option<PathBuf>, String> {
+    // Test builds only: the end-to-end tests run while the screen is locked,
+    // where no panel can be used, so they name the panel's answer in the
+    // environment: a file, or a folder that takes the proposed name.
+    #[cfg(feature = "e2e")]
+    if let Some(stand_in) = std::env::var_os("PLAIN_SIGHT_E2E_SAVE_AS") {
+        let path = PathBuf::from(stand_in);
+        if !path.is_absolute() {
+            return Err("PLAIN_SIGHT_E2E_SAVE_AS must be an absolute path".to_owned());
+        }
+        return Ok(Some(if path.is_dir() { path.join(name) } else { path }));
+    }
+    let start = downloads_dir(&window).ok();
+    let parent = window.clone();
+    let proposed = name.to_owned();
+    let (sender, mut receiver) = tauri::async_runtime::channel(1);
+    // AppKit panels belong to the main thread: rfd builds the panel and starts
+    // the sheet there and hands back a future that completes when the user
+    // saves or cancels.
+    window
+        .run_on_main_thread(move || {
+            let mut dialog = rfd::AsyncFileDialog::new()
+                .set_parent(&parent)
+                .set_title("Save")
+                .set_file_name(proposed)
+                .set_can_create_directories(true);
+            if let Some(start) = start {
+                dialog = dialog.set_directory(start);
+            }
+            let _ = sender.try_send(dialog.save_file());
+        })
+        .map_err(|e| e.to_string())?;
+    let chosen = receiver.recv().await.ok_or("The save panel did not open")?;
+    Ok(chosen.await.map(|handle| handle.path().to_path_buf()))
+}
+
+/// Writes `bytes` to the path the save panel returned, replacing what is
+/// there: the panel already asked the user about a replacement. One write,
+/// then wait for the disk, so a reported save is really on it.
+fn write_replacing(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let mut file = fs::File::create(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()
+}
+
+/// The folder the save panel starts in: the user's Downloads folder.
 fn downloads_dir<R: Runtime>(window: &WebviewWindow<R>) -> Result<PathBuf, String> {
     // Test builds only: the end-to-end tests name a folder of their own, so a
-    // run never writes into the real Downloads folder (Mac_PS_010).
+    // run never touches the real Downloads folder (Mac_PS_010).
     #[cfg(feature = "e2e")]
     if let Some(dir) = std::env::var_os("PLAIN_SIGHT_E2E_DOWNLOADS") {
         return Ok(PathBuf::from(dir));
@@ -1060,6 +1123,37 @@ mod tests {
             );
         }
         assert_eq!(fs::read_dir(&chosen).unwrap().count(), 0, "nothing written");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The one write that may replace a file: the path the save panel
+    /// returned, which the panel confirmed with the user (D-49). A write into
+    /// the chosen folder still never replaces anything.
+    #[test]
+    fn the_panels_path_is_replaced_but_a_folder_write_never_is() {
+        let dir = scratch("replacing");
+        let path = dir.join("chosen in the panel.txt");
+        write_replacing(&path, b"first").unwrap();
+        write_replacing(&path, b"second, longer").unwrap();
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            b"second, longer",
+            "the panel's path takes the new text"
+        );
+        assert_eq!(
+            write_new(&dir, "chosen in the panel.txt", b"third").unwrap(),
+            "chosen in the panel (2).txt",
+            "a folder write goes to the next free name"
+        );
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            b"second, longer",
+            "and leaves the file alone"
+        );
+        assert!(
+            write_replacing(&dir.join("no such folder").join("x.txt"), b"x").is_err(),
+            "a path that cannot be written fails, so the page says so"
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 

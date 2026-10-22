@@ -65,13 +65,15 @@ test('the container migration manifest is the repository\'s, byte for byte (D-37
   assert.equal(sha(bundled), sha(readFileSync(path.join(DESKTOP, 'src-tauri/container-migration.plist'))));
 });
 
-test('the signature carries exactly the entitlements of Entitlements.plist: the App Sandbox, no network (D-37)', () => {
+test('the signature carries exactly the three entitlements of Entitlements.plist: the App Sandbox, no network, no Downloads (D-37, D-49)', () => {
   const shown = spawnSync('codesign', ['-d', '--entitlements', '-', '--xml', APP], { encoding: 'utf8' });
   assert.equal(shown.status, 0, shown.stderr);
   const signed = plist(shown.stdout);
   assert.deepEqual(signed, plist(readFileSync(path.join(DESKTOP, 'src-tauri/Entitlements.plist'))));
+  assert.deepEqual(Object.keys(signed).sort(), ['com.apple.security.app-sandbox', 'com.apple.security.files.bookmarks.app-scope', 'com.apple.security.files.user-selected.read-write'], 'exactly three');
   assert.equal(signed['com.apple.security.app-sandbox'], true, 'sandboxed');
   assert.deepEqual(Object.keys(signed).filter((k) => k.startsWith('com.apple.security.network.')), [], 'no network entitlement');
+  assert.equal(signed['com.apple.security.files.downloads.read-write'], undefined, 'no Downloads entitlement: Save without a folder goes through the save panel');
 });
 
 test('the app is small: well under 10 MB (DR-06)', () => {

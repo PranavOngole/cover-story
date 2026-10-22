@@ -204,15 +204,15 @@ test('src-tauri/Info.plist, which Tauri merges into the app\'s, holds exactly th
   });
 });
 
-test('the app runs in the App Sandbox with exactly its four entitlements, none for the network (D-37, D-14)', () => {
+test('the app runs in the App Sandbox with exactly its three entitlements, none for the network and none for Downloads (D-37, D-14, D-49)', () => {
   assert.equal(conf.bundle.macOS.entitlements, './Entitlements.plist');
   assert.notEqual(conf.bundle.macOS.hardenedRuntime, false, 'the hardened runtime stays on');
   assert.deepEqual(readPlist(read(TAURI, 'Entitlements.plist')), {
     'com.apple.security.app-sandbox': true,
-    // The folder panel (folder.rs) and the page's Open panel.
+    // The folder panel, the save panel (folder.rs) and the page's Open panel.
+    // Save without a folder goes through the save panel, so no Downloads
+    // entitlement is needed (D-49).
     'com.apple.security.files.user-selected.read-write': true,
-    // Save without a folder writes into Downloads (save_download).
-    'com.apple.security.files.downloads.read-write': true,
     // The remembered folder is a security-scoped bookmark (bookmark.rs).
     'com.apple.security.files.bookmarks.app-scope': true
   });
@@ -262,11 +262,14 @@ test('no GUI test writes into ~/Documents or ~/Downloads: the test build takes P
     const text = read(tests, file);
     assert.equal(/join\((HOME|os\.homedir\(\)), '(Documents|Downloads)'/.test(text), false, file + ' names no folder of the real home');
   }
-  // The override exists in the test build only: the line before the read is its cfg.
+  // The overrides exist in the test build only: the line before each read is its cfg.
   const rs = read(TAURI, 'src', 'folder.rs').split('\n');
-  const at = rs.findIndex((l) => l.includes('var_os("PLAIN_SIGHT_E2E_DOWNLOADS")'));
-  assert.ok(at > 0, 'folder.rs reads the variable');
-  assert.equal(rs[at - 1].trim(), '#[cfg(feature = "e2e")]', 'and only in the e2e build');
+  for (const variable of ['PLAIN_SIGHT_E2E_DOWNLOADS', 'PLAIN_SIGHT_E2E_SAVE_AS']) {
+    const at = rs.findIndex((l) => l.includes('var_os("' + variable + '")'));
+    assert.ok(at > 0, 'folder.rs reads ' + variable);
+    assert.equal(rs[at - 1].trim(), '#[cfg(feature = "e2e")]', variable + ' is read only in the e2e build');
+  }
+  assert.match(e2e, /PLAIN_SIGHT_E2E_SAVE_AS: DOWNLOADS/, 'every e2e launch names the save panel\'s stand-in');
 });
 
 test('the web deployment allowlist is unchanged (DR-10)', () => {

@@ -69,10 +69,12 @@ async function picture(name) {
   return path.join(PICTURES, name);
 }
 
-// Every launch names the probe folder and the folder downloads go into (the
-// test build's PLAIN_SIGHT_E2E_DOWNLOADS, folder.rs), never ~/Downloads.
+// Every launch names the probe folder, the folder that stands for Downloads
+// (the test build's PLAIN_SIGHT_E2E_DOWNLOADS, folder.rs) and the save
+// panel's stand-in (PLAIN_SIGHT_E2E_SAVE_AS: a folder takes the name the page
+// proposes, a file path is the panel's answer as it is), never ~/Downloads.
 async function launch(env = {}) {
-  const child = spawnApp(EXE, { PLAIN_SIGHT_E2E_DIR: PROBE, PLAIN_SIGHT_E2E_DOWNLOADS: DOWNLOADS, ...env });
+  const child = spawnApp(EXE, { PLAIN_SIGHT_E2E_DIR: PROBE, PLAIN_SIGHT_E2E_DOWNLOADS: DOWNLOADS, PLAIN_SIGHT_E2E_SAVE_AS: DOWNLOADS, ...env });
   app = { child, pid: child.pid };
   await until(() => documentWindows().length === 1, 'the app window', 20000);
   await until(async () => (await js('window.PlainSight && window.PlainSight.coverId()')) !== null, 'the cover to load', 15000);
@@ -187,7 +189,9 @@ test('the work document and the research paper covers load from the intro, with 
   await until(async () => (await page.text('header-left')) === 'Untitled draft', 'the novel header');
 });
 
-test('Save downloads an encrypted .sight file into Downloads under the page\'s name; it decrypts to the text', async () => {
+// Save without a folder goes through the save panel (D-49); the test build
+// writes where PLAIN_SIGHT_E2E_SAVE_AS says instead, the folder named above.
+test('Save without a folder saves an encrypted .sight file under the page\'s proposed name, where the save panel\'s stand-in points; it decrypts to the text', async () => {
   assert.ok(DOWNLOADS.startsWith(EVIDENCE), 'the test build writes downloads under the evidence directory, not into ~/Downloads: ' + DOWNLOADS);
   await page.type('saved through the app');
   await page.click('btn-save');
@@ -215,23 +219,28 @@ test('the plain .txt mode downloads the exact text, named by the moment', async 
   assert.equal(readFileSync(path.join(DOWNLOADS, name), 'utf8'), 'saved through the app');
 });
 
-test('a download name that is taken gets " (2)" and the file already there is left untouched', async () => {
-  // The page names a .txt by the second of the click, so the names of the
-  // next few seconds are taken in advance by files the app must not touch.
-  const stamp = (d) => { const p = (n) => String(n).padStart(2, '0'); return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + '-' + p(d.getMinutes()) + '-' + p(d.getSeconds()); };
-  const taken = [];
-  for (let s = 0; s < 4; s++) {
-    const name = stamp(new Date(Date.now() + s * 1000)) + '.txt';
-    writeFileSync(path.join(DOWNLOADS, name), 'placed here by the test, must stay as it is');
-    taken.push(name);
-  }
+test('the file the save panel returns is written under the panel\'s name and replaces what is there, as the panel confirmed (D-49)', async () => {
+  // The stand-in as a file path: the panel's answer, with a name of its own
+  // and a file already at that path.
+  const chosen = path.join(EVIDENCE, 'chosen in the panel.txt');
+  writeFileSync(chosen, 'the file the panel offered to replace');
+  await stopApp(app);
+  await launch({ PLAIN_SIGHT_E2E_SAVE_AS: chosen });
+  await page.press('Escape');
+  await page.openIntro();
+  await page.choose('save-mode', 'txt');
+  await page.start();
+  await page.type('written where the panel said');
   await page.click('btn-save');
-  const numbered = (await page.waitToast('Saved 2')).replace(/^Saved /, '');
-  assert.match(numbered, / \(2\)\.txt$/, 'the toast names the numbered file the app wrote: ' + numbered);
-  assert.ok(taken.includes(numbered.replace(' (2).txt', '.txt')), 'the page asked for a name that was taken');
-  await until(() => newDownloads().includes(numbered), 'the numbered file ' + numbered, 10000);
-  assert.equal(readFileSync(path.join(DOWNLOADS, numbered), 'utf8'), 'saved through the app');
-  for (const n of taken) assert.equal(readFileSync(path.join(DOWNLOADS, n), 'utf8'), 'placed here by the test, must stay as it is', n + ' was not overwritten');
+  assert.equal(await page.waitToast('Saved '), 'Saved chosen in the panel.txt', 'the toast names the file the panel chose');
+  assert.equal(readFileSync(chosen, 'utf8'), 'written where the panel said', 'replaced, as the panel confirmed');
+  await stopApp(app);
+  await launch();
+  await page.press('Escape');
+  await page.openIntro();
+  await page.choose('save-mode', 'txt');
+  await page.start();
+  await page.type('saved through the app');
   await page.openIntro();
   await page.choose('save-mode', 'sight');
   await page.start();
@@ -261,15 +270,15 @@ test('the .md and .docx modes download the text as Markdown and as a Word docume
 });
 
 test('a Save the app cannot write says "Could not save" in both modes and writes nothing (DM-202)', async () => {
-  // A home whose Downloads folder cannot be written, as after "Don't Allow";
-  // the test build's downloads override points at that folder for this launch.
+  // A folder that cannot be written, as a panel's answer inside a folder
+  // macOS refused: the test build's overrides point at it for this launch.
   const home = path.join(EVIDENCE, 'home-without-downloads');
   const blocked = path.join(home, 'Downloads');
   mkdirSync(blocked, { recursive: true });
   execFileSync('chmod', ['555', blocked]);
   await stopApp(app);
   try {
-    await launch({ HOME: home, PLAIN_SIGHT_E2E_DOWNLOADS: blocked });
+    await launch({ HOME: home, PLAIN_SIGHT_E2E_DOWNLOADS: blocked, PLAIN_SIGHT_E2E_SAVE_AS: blocked });
     await page.press('Escape');
     await page.openIntro();
     await page.choose('save-mode', 'txt');
