@@ -3023,6 +3023,32 @@ test('device vault: another tab\'s re-key empties a phrase half typed on this ta
 });
 
 // ---------------------------------------------------------------------------
+// Fixes after the Wave F gates (QA-F-01 to QA-F-12, Web_PS_006)
+// ---------------------------------------------------------------------------
+test('the Open question for a plain note draws no password field: the stylesheet hides a hidden password input, and the field is drawn again for the next password dialog (QA-F-01)', async () => {
+  const p = await loadPage();
+  try {
+    p.start();
+    p.type('words');
+    chooseFile(p, new p.w.File(['other'], 'note.txt', { type: 'text/plain' }));
+    await p.settle();
+    assert.equal(p.$('#pw').hidden, false, 'the question is open');
+    assert.equal(p.$('#pw-input').hidden, true);
+    assert.equal(p.w.getComputedStyle(p.$('#pw-input')).display, 'none', 'a hidden password field is not drawn');
+    assert.equal(p.d.activeElement, p.$('#pw-ok'), 'focus is on the Open button');
+    p.$('#pw-cancel').click();
+    await p.settle();
+    p.$('#btn-save').click();   // the encrypted download asks for a password
+    assert.equal(p.$('#pw').hidden, false);
+    assert.equal(p.$('#pw-input').hidden, false);
+    assert.equal(p.w.getComputedStyle(p.$('#pw-input')).display, 'block', 'the password field is drawn again');
+    p.press('Escape');
+    assert.match(HTML, /\.card input\[type="password"\]\[hidden\] \{ display: none; \}/, 'the rule that hides a hidden password field is in the stylesheet');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+// ---------------------------------------------------------------------------
 // Run
 // ---------------------------------------------------------------------------
 let passed = 0;

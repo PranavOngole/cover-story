@@ -202,6 +202,8 @@
     width: 100%; display: block; font: 16px var(--sans); padding: 8px 10px;
     border: 1px solid var(--rule); border-radius: 6px;
   }
+  /* The Open question for a plain note hides the field: display above would still draw it (QA-F-01). */
+  .card input[type="password"][hidden] { display: none; }
   .row { display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap; margin-top: 16px; }
   .btn { font: inherit; padding: 8px 16px; border-radius: 6px; border: 1px solid var(--rule); background: #fff; cursor: pointer; color: var(--ink); }
   .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
