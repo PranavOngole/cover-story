@@ -11,7 +11,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { webcrypto } from 'node:crypto';
-import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { DESKTOP, EVIDENCE, HOME, NotRun, alive, clearTestData, drive, driveRaw, note, run, sleep, until } from './harness.mjs';
 
@@ -245,8 +245,11 @@ test('a window blur ends a peek: after the About panel has had the focus, Cmd+C 
   await cleanPage();
 });
 
-// Wave B: the real system folder picker, from the intro's folder button.
-const BUILD_TEST = path.join(HOME, 'Documents', 'Plain-Sight', 'Build_Test_1');
+// Wave B: the real system folder picker, from the intro's folder button. The
+// folder the test chooses in the panel is its own, under the evidence
+// directory, made before the panel opens and removed after the file it holds
+// is kept as evidence; nothing is written into ~/Documents (Mac_PS_010).
+const BUILD_TEST = path.join(EVIDENCE, 'folders', 'Chosen in the panel');
 
 test('the system folder picker opens from the folder button, at the normal window level', async () => {
   await quitIfRunning();
@@ -266,7 +269,8 @@ test('the system folder picker opens from the folder button, at the normal windo
 // The folder panel is a sheet on the document window (rfd); its default
 // button chooses the folder shown.
 const folderSheetShown = () => drive('cgwindows', app.pid).windows.filter((x) => x.onscreen && x.layer === 0 && x.width > 400).length >= 2;
-test('choosing ~/Documents/Plain-Sight/Build_Test_1 in the picker, then Save, writes the text there', async () => {
+test('choosing the test\'s own folder in the picker (typed into its Go-to box), then Save, writes the text there', async () => {
+  mkdirSync(BUILD_TEST, { recursive: true });
   await inPanel(folderSheetShown, async () => {
     await keys.press('cmd+shift+g');
     await sleep(1000);
@@ -282,11 +286,14 @@ test('choosing ~/Documents/Plain-Sight/Build_Test_1 in the picker, then Save, wr
   const before = new Set(existsSync(BUILD_TEST) ? readdirSync(BUILD_TEST) : []);
   await keys.type('Written by Plain Sight Desktop into the folder chosen in the system picker.');
   await pressControl('btn-save');
-  const fresh = await until(() => { const n = readdirSync(BUILD_TEST).filter((f) => !before.has(f)); return n.length ? n : null; }, 'a new file in Build_Test_1', 8000);
+  const fresh = await until(() => { const n = readdirSync(BUILD_TEST).filter((f) => !before.has(f)); return n.length ? n : null; }, 'a new file in the chosen folder', 8000);
   assert.equal(fresh.length, 1);
   assert.match(fresh[0], /^\d{4}-\d{2}-\d{2} \d{2}-\d{2}-\d{2}\.txt$/);
   assert.equal(readFileSync(path.join(BUILD_TEST, fresh[0]), 'utf8'), 'Written by Plain Sight Desktop into the folder chosen in the system picker.');
-  note('deliverable file: ' + path.join(BUILD_TEST, fresh[0]));
+  // The file stays as evidence; the folder the panel chose goes.
+  renameSync(path.join(BUILD_TEST, fresh[0]), path.join(EVIDENCE, 'downloads', 'chosen-folder ' + fresh[0]));
+  rmSync(BUILD_TEST, { recursive: true, force: true });
+  note('the written file is kept as evidence under downloads/, the chosen folder removed');
 });
 
 test('Cmd+Q quits the app', async () => {

@@ -24,7 +24,12 @@ export const DESKTOP = path.resolve(HERE, '..');
 export const ROOT = path.resolve(DESKTOP, '..');
 export const ID = 'com.pranavongole.plainsight';
 export const HOME = os.homedir();
-export const DOWNLOADS = path.join(HOME, 'Downloads');
+// Where the app's downloads land: the real Downloads folder for the release
+// app, or the folder named in PLAIN_SIGHT_E2E_DOWNLOADS, which the test build
+// writes into instead (folder.rs, e2e feature only). e2e.mjs names a folder
+// under the evidence directory before this module loads (e2e-downloads.mjs),
+// so a run of the test build never touches ~/Downloads (Mac_PS_010).
+export const DOWNLOADS = process.env.PLAIN_SIGHT_E2E_DOWNLOADS || path.join(HOME, 'Downloads');
 export const IDLE_MIN = Number(process.env.PLAIN_SIGHT_IDLE_MIN || 120);
 export const EVIDENCE = process.env.PLAIN_SIGHT_EVIDENCE || mkdtempSync(path.join(os.tmpdir(), 'plain-sight-test-'));
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -227,9 +232,10 @@ export function restoreAppData() {
 }
 
 // ---------------------------------------------------------------------------
-// Downloads: only files this run created, matched by name and time.
+// Downloads: only files this run created, matched by name and time: the
+// names Save makes, the encrypted file and the three plain formats.
 // ---------------------------------------------------------------------------
-const OURS = /^(untitled-draft|q3-planning-notes|manuscript-draft)-\d{8}-\d{4}( \(\d+\))?\.sight$|^\d{4}-\d{2}-\d{2} \d{2}-\d{2}-\d{2}( \(\d+\))?\.txt$/;
+const OURS = /^(untitled-draft|q3-planning-notes|manuscript-draft)-\d{8}-\d{4}( \(\d+\))?\.sight$|^\d{4}-\d{2}-\d{2} \d{2}-\d{2}-\d{2}( \(\d+\))?\.(txt|md|docx)$/;
 let downloadsBefore = new Set();
 export function markDownloads() { downloadsBefore = new Set(readdirSync(DOWNLOADS)); }
 export function newDownloads() {

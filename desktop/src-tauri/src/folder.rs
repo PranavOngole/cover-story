@@ -270,11 +270,22 @@ pub fn save_download<R: Runtime>(
         return Err("The file name is not one Save makes".to_owned());
     }
     let bytes = file_bytes(&name, &text).map_err(|e| format!("Could not save the file: {e}"))?;
-    let downloads = window
+    let downloads = downloads_dir(&window)?;
+    write_new(&downloads, &name, &bytes).map_err(|e| format!("Could not save the file: {e}"))
+}
+
+/// The folder a download goes into: the user's Downloads folder.
+fn downloads_dir<R: Runtime>(window: &WebviewWindow<R>) -> Result<PathBuf, String> {
+    // Test builds only: the end-to-end tests name a folder of their own, so a
+    // run never writes into the real Downloads folder (Mac_PS_010).
+    #[cfg(feature = "e2e")]
+    if let Some(dir) = std::env::var_os("PLAIN_SIGHT_E2E_DOWNLOADS") {
+        return Ok(PathBuf::from(dir));
+    }
+    window
         .path()
         .download_dir()
-        .map_err(|_| "The Downloads folder is not available".to_owned())?;
-    write_new(&downloads, &name, &bytes).map_err(|e| format!("Could not save the file: {e}"))
+        .map_err(|_| "The Downloads folder is not available".to_owned())
 }
 
 /// The plain files Save writes, by extension (index.html, PLAIN_FORMATS).

@@ -12,6 +12,9 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+// First: names the folder the test build writes downloads into, under the
+// evidence directory, before the harness reads it (Mac_PS_010).
+import './e2e-downloads.mjs';
 import {
   DESKTOP, DOWNLOADS, EVIDENCE, HOME, ID, NotRun, ROOT, alive, decryptRecord, drive, isCoverPrefix, newDownloads, note, novelText,
   run, sleep, spawnApp, stopApp, until
@@ -66,8 +69,10 @@ async function picture(name) {
   return path.join(PICTURES, name);
 }
 
+// Every launch names the probe folder and the folder downloads go into (the
+// test build's PLAIN_SIGHT_E2E_DOWNLOADS, folder.rs), never ~/Downloads.
 async function launch(env = {}) {
-  const child = spawnApp(EXE, { PLAIN_SIGHT_E2E_DIR: PROBE, ...env });
+  const child = spawnApp(EXE, { PLAIN_SIGHT_E2E_DIR: PROBE, PLAIN_SIGHT_E2E_DOWNLOADS: DOWNLOADS, ...env });
   app = { child, pid: child.pid };
   await until(() => documentWindows().length === 1, 'the app window', 20000);
   await until(async () => (await js('window.PlainSight && window.PlainSight.coverId()')) !== null, 'the cover to load', 15000);
@@ -183,6 +188,7 @@ test('the work document and the research paper covers load from the intro, with 
 });
 
 test('Save downloads an encrypted .sight file into Downloads under the page\'s name; it decrypts to the text', async () => {
+  assert.ok(DOWNLOADS.startsWith(EVIDENCE), 'the test build writes downloads under the evidence directory, not into ~/Downloads: ' + DOWNLOADS);
   await page.type('saved through the app');
   await page.click('btn-save');
   await page.password(PASSWORD);
@@ -255,14 +261,15 @@ test('the .md and .docx modes download the text as Markdown and as a Word docume
 });
 
 test('a Save the app cannot write says "Could not save" in both modes and writes nothing (DM-202)', async () => {
-  // A home whose Downloads folder cannot be written, as after "Don't Allow".
+  // A home whose Downloads folder cannot be written, as after "Don't Allow";
+  // the test build's downloads override points at that folder for this launch.
   const home = path.join(EVIDENCE, 'home-without-downloads');
   const blocked = path.join(home, 'Downloads');
   mkdirSync(blocked, { recursive: true });
   execFileSync('chmod', ['555', blocked]);
   await stopApp(app);
   try {
-    await launch({ HOME: home });
+    await launch({ HOME: home, PLAIN_SIGHT_E2E_DOWNLOADS: blocked });
     await page.press('Escape');
     await page.openIntro();
     await page.choose('save-mode', 'txt');

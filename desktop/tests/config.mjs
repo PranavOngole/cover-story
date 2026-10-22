@@ -238,6 +238,26 @@ test('the bundle is sealed with an ad-hoc signature until a Developer ID exists 
   assert.equal(conf.bundle.macOS && conf.bundle.macOS.signingIdentity, '-');
 });
 
+test('no GUI test writes into ~/Documents or ~/Downloads: the test build takes PLAIN_SIGHT_E2E_DOWNLOADS, named under the evidence directory (Mac_PS_010)', () => {
+  const tests = path.join(DESKTOP, 'tests');
+  const harness = read(tests, 'harness.mjs');
+  assert.match(harness, /^export const DOWNLOADS = process\.env\.PLAIN_SIGHT_E2E_DOWNLOADS \|\| path\.join\(HOME, 'Downloads'\);$/m, 'the harness follows the variable');
+  const e2e = read(tests, 'e2e.mjs');
+  const env = e2e.indexOf("import './e2e-downloads.mjs';");
+  assert.ok(env >= 0 && env < e2e.indexOf("from './harness.mjs';"), 'e2e.mjs names the folder before the harness loads');
+  assert.match(read(tests, 'e2e-downloads.mjs'), /PLAIN_SIGHT_E2E_DOWNLOADS \|\|= path\.join\(process\.env\.PLAIN_SIGHT_EVIDENCE, /, 'the folder is under the evidence directory');
+  assert.match(e2e, /PLAIN_SIGHT_E2E_DOWNLOADS: DOWNLOADS/, 'every launch hands the app the folder');
+  for (const file of ['app.mjs', 'e2e.mjs']) {
+    const text = read(tests, file);
+    assert.equal(/join\((HOME|os\.homedir\(\)), '(Documents|Downloads)'/.test(text), false, file + ' names no folder of the real home');
+  }
+  // The override exists in the test build only: the line before the read is its cfg.
+  const rs = read(TAURI, 'src', 'folder.rs').split('\n');
+  const at = rs.findIndex((l) => l.includes('var_os("PLAIN_SIGHT_E2E_DOWNLOADS")'));
+  assert.ok(at > 0, 'folder.rs reads the variable');
+  assert.equal(rs[at - 1].trim(), '#[cfg(feature = "e2e")]', 'and only in the e2e build');
+});
+
 test('the web deployment allowlist is unchanged (DR-10)', () => {
   const lines = read(ROOT, '.vercelignore').split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
   assert.deepEqual(lines, ['*', '!index.html', '!covers', '!covers/**']);
