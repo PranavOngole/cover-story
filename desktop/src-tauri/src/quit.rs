@@ -65,6 +65,11 @@ pub struct QuitState {
     phase: Phase,
     /// macOS asked to terminate and is waiting for an answer.
     terminate_pending: bool,
+    /// The number of the question asked last: each `begin` asks the next
+    /// one, and an answer names the question it is for, so that the stand-in
+    /// timer of a question that was cancelled cannot decide the question
+    /// after it (DISH-G-37).
+    question: u64,
 }
 
 impl Default for QuitState {
@@ -115,16 +120,25 @@ impl QuitState {
         QuitState {
             phase: Phase::Idle,
             terminate_pending: false,
+            question: 0,
         }
     }
 
-    /// Starts a quit. True only from idle: the caller then asks the page.
+    /// Starts a quit. True only from idle: the caller then asks the page the
+    /// next question, numbered by `question`.
     pub fn begin(&mut self) -> bool {
         if self.phase != Phase::Idle {
             return false;
         }
         self.phase = Phase::Asking;
+        self.question += 1;
         true
+    }
+
+    /// The number of the question open now, or asked last: the page's
+    /// answer and the stand-in timer carry it back to `unsaved`.
+    pub fn question(&self) -> u64 {
+        self.question
     }
 
     /// macOS asks whether the app may terminate now.
@@ -138,11 +152,13 @@ impl QuitState {
         }
     }
 
-    /// The page's answer whether a quit would lose text: true shows the
-    /// sheet, false runs the hook. None unless the question is open, so a
-    /// late or repeated answer changes nothing.
-    pub fn unsaved(&mut self, unsaved: bool) -> Option<Next> {
-        if self.phase != Phase::Asking {
+    /// The page's answer to question `question` whether a quit would lose
+    /// text: true shows the sheet, false runs the hook. None unless that
+    /// question is the one open, so a late or repeated answer changes
+    /// nothing, and neither does the stand-in timer of an earlier question
+    /// that was cancelled (DISH-G-37).
+    pub fn unsaved(&mut self, question: u64, unsaved: bool) -> Option<Next> {
+        if self.phase != Phase::Asking || question != self.question {
             return None;
         }
         if unsaved {
@@ -223,27 +239,33 @@ pub fn begin(app: &AppHandle) {
 }
 
 /// Asks the page whether a quit would lose text (D-48) and acts on the
-/// answer. Without a window there is nothing to lose; a page that stays
-/// silent for `ASK` counts the same, and its late answer is then ignored.
+/// answer. The question carries its number: the page's answer and the
+/// stand-in timer both name the question they were started for, so a timer
+/// that outlives its question (Cancel in the sheet, then a new quit within
+/// `ASK`) cannot decide the next one (DISH-G-37). Without a window there is
+/// nothing to lose; a page that stays silent for `ASK` counts the same, and
+/// its late answer is then ignored.
 fn ask(app: &AppHandle) {
+    let question = state().question();
     let asked = app.get_webview_window("main").and_then(|window| {
         window
-            .eval_with_callback(UNSAVED, |answer| answered(answer == "true"))
+            .eval_with_callback(UNSAVED, move |answer| answered(question, answer == "true"))
             .ok()
     });
     if asked.is_none() {
-        answered(false);
+        answered(question, false);
         return;
     }
-    std::thread::spawn(|| {
+    std::thread::spawn(move || {
         std::thread::sleep(ASK);
-        answered(false);
+        answered(question, false);
     });
 }
 
-/// The page's answer, or the time that stands in for it.
-fn answered(unsaved: bool) {
-    let next = state().unsaved(unsaved);
+/// The page's answer to the numbered question, or the time that stands in
+/// for it.
+fn answered(question: u64, unsaved: bool) {
+    let next = state().unsaved(question, unsaved);
     act(next);
 }
 
@@ -542,7 +564,7 @@ mod tests {
         assert!(quit.begin(), "the first begin asks the page");
         assert!(!quit.begin(), "a second close or Cmd+Q does not ask again");
         assert_eq!(
-            quit.unsaved(false),
+            quit.unsaved(quit.question(), false),
             Some(Next::Quit),
             "nothing to lose: the hook runs"
         );
@@ -564,7 +586,7 @@ mod tests {
         let mut quit = QuitState::new();
         quit.begin();
         assert_eq!(
-            quit.unsaved(true),
+            quit.unsaved(quit.question(), true),
             Some(Next::Confirm),
             "the sheet is shown"
         );
@@ -581,7 +603,7 @@ mod tests {
     fn cancel_stands_down_and_a_later_quit_asks_again() {
         let mut quit = QuitState::new();
         quit.begin();
-        quit.unsaved(true);
+        quit.unsaved(quit.question(), true);
         assert_eq!(
             quit.chosen(Choice::Cancel),
             Some(Next::Cancel { reply: false }),
@@ -589,7 +611,7 @@ mod tests {
         );
         assert_eq!(quit.finish(), None, "nothing ends the app");
         assert!(quit.begin(), "the next close asks the page again");
-        assert_eq!(quit.unsaved(true), Some(Next::Confirm));
+        assert_eq!(quit.unsaved(quit.question(), true), Some(Next::Confirm));
     }
 
     #[test]
@@ -600,7 +622,7 @@ mod tests {
             Answer::Later { begin: true },
             "the request starts the quit"
         );
-        assert_eq!(quit.unsaved(true), Some(Next::Confirm));
+        assert_eq!(quit.unsaved(quit.question(), true), Some(Next::Confirm));
         assert_eq!(
             quit.should_terminate(),
             Answer::Later { begin: false },
@@ -616,7 +638,7 @@ mod tests {
             Answer::Later { begin: true },
             "a later request asks the page again, with nothing left over"
         );
-        assert_eq!(quit.unsaved(false), Some(Next::Quit));
+        assert_eq!(quit.unsaved(quit.question(), false), Some(Next::Quit));
         assert_eq!(quit.finish(), Some(Ending::Reply));
     }
 
@@ -624,7 +646,7 @@ mod tests {
     fn a_terminate_request_with_nothing_to_lose_is_answered_when_the_page_is_done() {
         let mut quit = QuitState::new();
         assert_eq!(quit.should_terminate(), Answer::Later { begin: true });
-        assert_eq!(quit.unsaved(false), Some(Next::Quit));
+        assert_eq!(quit.unsaved(quit.question(), false), Some(Next::Quit));
         assert_eq!(quit.should_terminate(), Answer::Later { begin: false });
         assert_eq!(
             quit.finish(),
@@ -643,7 +665,7 @@ mod tests {
             Answer::Later { begin: false },
             "the page is not asked twice"
         );
-        assert_eq!(quit.unsaved(false), Some(Next::Quit));
+        assert_eq!(quit.unsaved(quit.question(), false), Some(Next::Quit));
         assert_eq!(quit.finish(), Some(Ending::Reply));
     }
 
@@ -651,7 +673,7 @@ mod tests {
     fn quit_in_the_sheet_answers_a_waiting_terminate_request_with_yes() {
         let mut quit = QuitState::new();
         quit.should_terminate();
-        quit.unsaved(true);
+        quit.unsaved(quit.question(), true);
         assert_eq!(quit.chosen(Choice::Quit), Some(Next::Quit));
         assert_eq!(quit.finish(), Some(Ending::Reply));
     }
@@ -660,7 +682,7 @@ mod tests {
     fn once_approved_the_terminate_that_follows_goes_ahead() {
         let mut quit = QuitState::new();
         quit.begin();
-        quit.unsaved(false);
+        quit.unsaved(quit.question(), false);
         assert_eq!(quit.finish(), Some(Ending::Terminate));
         assert_eq!(
             quit.should_terminate(),
@@ -673,7 +695,11 @@ mod tests {
     #[test]
     fn answers_out_of_turn_change_nothing() {
         let mut quit = QuitState::new();
-        assert_eq!(quit.unsaved(true), None, "no question is open");
+        assert_eq!(
+            quit.unsaved(quit.question(), true),
+            None,
+            "no question is open"
+        );
         assert_eq!(quit.chosen(Choice::Quit), None, "no sheet is up");
         assert_eq!(
             quit.finish(),
@@ -691,10 +717,14 @@ mod tests {
             None,
             "quit_ready while the page is asked is refused"
         );
-        assert_eq!(quit.unsaved(true), Some(Next::Confirm));
-        assert_eq!(quit.unsaved(true), None, "a late second answer is ignored");
+        assert_eq!(quit.unsaved(quit.question(), true), Some(Next::Confirm));
         assert_eq!(
-            quit.unsaved(false),
+            quit.unsaved(quit.question(), true),
+            None,
+            "a late second answer is ignored"
+        );
+        assert_eq!(
+            quit.unsaved(quit.question(), false),
             None,
             "so is the time standing in for it"
         );
@@ -704,9 +734,77 @@ mod tests {
         );
         assert_eq!(quit.chosen(Choice::Cancel), None, "the sheet is gone");
         assert!(quit.begin());
-        assert_eq!(quit.unsaved(false), Some(Next::Quit));
-        assert_eq!(quit.unsaved(true), None, "the hook already runs");
+        assert_eq!(quit.unsaved(quit.question(), false), Some(Next::Quit));
+        assert_eq!(
+            quit.unsaved(quit.question(), true),
+            None,
+            "the hook already runs"
+        );
         assert_eq!(quit.chosen(Choice::Cancel), None, "no sheet to cancel from");
+    }
+
+    /// DISH-G-37: Cancel in the sheet and a new quit within `ASK` of the
+    /// first question: the first question's stand-in timer fires while the
+    /// second question is open, and must not decide it. The second question
+    /// is decided by its own answer, whichever way it goes.
+    #[test]
+    fn a_stale_timer_answers_only_the_question_it_was_started_for() {
+        for second_answer in [true, false] {
+            let mut quit = QuitState::new();
+            assert!(quit.begin(), "question 1 starts its stand-in timer");
+            let first = quit.question();
+            assert_eq!(quit.unsaved(first, true), Some(Next::Confirm), "the sheet");
+            assert_eq!(
+                quit.chosen(Choice::Cancel),
+                Some(Next::Cancel { reply: false })
+            );
+            assert!(quit.begin(), "question 2, within ASK of question 1");
+            let second = quit.question();
+            assert_ne!(first, second, "each question has its own number");
+            assert_eq!(
+                quit.unsaved(first, false),
+                None,
+                "question 1's timer fires: its answer is ignored"
+            );
+            assert_eq!(quit.phase, Phase::Asking, "question 2 is still open");
+            let expected = if second_answer {
+                Next::Confirm
+            } else {
+                Next::Quit
+            };
+            assert_eq!(
+                quit.unsaved(second, second_answer),
+                Some(expected),
+                "question 2 is decided by its own answer"
+            );
+        }
+    }
+
+    /// The numbered path for one question: its own answer works as before,
+    /// a number from an earlier or a later question is ignored and leaves the
+    /// question open, and its own stand-in timer after the answer changes
+    /// nothing.
+    #[test]
+    fn the_current_questions_own_answer_still_works_and_other_numbers_are_ignored() {
+        let mut quit = QuitState::new();
+        assert_eq!(quit.question(), 0, "no question has been asked");
+        assert!(quit.begin());
+        let current = quit.question();
+        assert_eq!(current, 1, "the first question");
+        assert_eq!(quit.unsaved(current - 1, false), None, "an earlier number");
+        assert_eq!(quit.unsaved(current + 1, false), None, "a later number");
+        assert_eq!(quit.phase, Phase::Asking, "the question stays open");
+        assert_eq!(
+            quit.unsaved(current, false),
+            Some(Next::Quit),
+            "its own answer runs the hook"
+        );
+        assert_eq!(
+            quit.unsaved(current, false),
+            None,
+            "its own stand-in timer, late, changes nothing"
+        );
+        assert_eq!(quit.finish(), Some(Ending::Terminate));
     }
 
     #[test]
