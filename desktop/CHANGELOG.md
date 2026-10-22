@@ -50,6 +50,15 @@ Fixes from the code review of the Mac app and the App Store review sheet, on the
 
 The end-to-end tests written for these changes (the menu items, the window's restoration setting, the delegate probe) are written and not yet run.
 
+## Wave G, round 2, 21 October 2026: the quit sheet and the save panel (appstore-candidate, after the merge of the fixed web page in 6f8fa70)
+
+- The golden sample lives once, at the repository root (`tests/fixtures`, ledger D-43): the Rust writer reproduces `sample.docx` byte for byte, carriage returns, a U+000B and a U+FFFE included; `desktop/tests/fixtures` is gone.
+- In the app, Cmd+C with no peek is taken by the page unless a text field holds a selection, so the Edit menu's Copy never runs with nothing to copy and the clipboard keeps what it held (Mac_PS_006).
+- Closing the window, quitting, a quit from the Dock and a logout first ask "Quit without saving?" in a sheet when the page holds text and no vault keeps it: Cancel, the default button, keeps everything as it was and answers a terminate request with cancel; Quit goes on as before; with a vault open or nothing on the page there is no question (Mac_PS_005, APP_STORE_ISSUE_7, ledger D-48). The app asks the page through one more adapter call, `onUnsavedText`.
+- Save without a folder shows the system save panel, starting in Downloads with the page's proposed name, and writes the file where the panel put it (replacing a file only after the panel asked); Cancel says nothing; the Downloads entitlement is gone, so the app has exactly three (APP_STORE_ISSUE_10, ledger D-49). The test build takes `PLAIN_SIGHT_E2E_SAVE_AS` in place of the panel.
+
+The end-to-end and real-key tests for these changes are written and not yet run.
+
 ## Wave F, 21 October 2026: the App Sandbox, on the way to the Mac App Store (ea1d97f, 40c899b, 73c0735, 94eef07, merged in 630e61c)
 
 The Mac App Store is now the goal (ledger D-37). The app is signed with the macOS App Sandbox and exactly four entitlements: the sandbox itself, files the user picks in a panel, the Downloads folder and app-scoped bookmarks, and none for the network (`src-tauri/Entitlements.plist`; the config and bundle checks allow exactly these). The chosen folder is kept as a security-scoped bookmark in `folder.bookmark` (`src-tauri/src/bookmark.rs`); a plain path kept by an earlier build counts as no folder, so the page asks for the folder again. A container migration manifest moves the vault and the app's data folder into the app's container at the first sandboxed launch. The App Store category is Productivity, and `APPSTORE.md` lists the steps to the store. The test harness puts the app's data back folder by folder and ends a run with exit code 6 when it cannot (DM-227). Not yet seen in a running app: whether the page shows without a network entitlement, whether the vault arrives in the container, and the folder in the sandbox.
