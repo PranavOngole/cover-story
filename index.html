@@ -203,7 +203,9 @@
     font: 13px/1.5 var(--mono); padding: 8px;
     border: 1px solid var(--rule); border-radius: 6px; resize: vertical;
   }
-  .card input[type="password"] {
+  /* The two fields are password fields, or the masked text fields the page makes of them where the browser can mask one
+     (Web_PS_010); the only text inputs inside a card are those two, so both forms get the same look. */
+  .card input[type="password"], .card input[type="text"] {
     width: 100%; display: block; font: 16px var(--sans); padding: 8px 10px;
     border: 1px solid var(--rule); border-radius: 6px;
   }

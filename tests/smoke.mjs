@@ -3252,7 +3252,7 @@ test('without encryption, the 10-minute wipe leaves the intro\'s no-encryption n
 // ---------------------------------------------------------------------------
 test('the Open question for a plain note draws no password field: the stylesheet hides a hidden field, a password field or the masked text field a browser that can mask one gets, and the field is drawn again for the next password dialog (QA-F-01)', async () => {
   // Two pages: one where the field stays a password field (jsdom, Firefox), one where the page turned it into a masked text field (WebKit, Chromium).
-  for (const [options, type, drawn] of [[{}, 'password', 'block'], [{ cssSupports: true }, 'text', null]]) {
+  for (const [options, type, drawn] of [[{}, 'password', 'block'], [{ cssSupports: true }, 'text', 'block']]) {   // both forms share the field rule
     const p = await loadPage(options);
     try {
       assert.equal(p.$('#pw-input').getAttribute('type'), type, 'the field is a ' + type + ' field on this page');
@@ -3479,11 +3479,13 @@ test('the page writes the golden sample (tests/fixtures/sample.txt) as the Word 
   const sample = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(readFileSync(path.join(ROOT, 'tests', 'fixtures', 'sample.txt')));
   const expected = readFileSync(path.join(ROOT, 'tests', 'fixtures', 'sample.docx'));
   // The sample holds what the writer must get right: tabs, a run of two, blank lines, accents, Japanese, an emoji,
-  // markup, a CRLF, a lone CR, a U+000B and a U+FFFE (both left out of the document), and a long line.
+  // markup, a CRLF, a lone CR, the control characters U+0001, U+000B, U+000C and U+001F and the non-characters U+FFFE
+  // and U+FFFF (all six left out of the document, QA-G-25), and a long line.
   const CR = String.fromCharCode(13);
   const has = (s) => sample.includes(s);
   assert.ok(has('\t') && has('\t\t') && has('\n\n') && has(']]>') && has('&<>"\'') && has(CR + '\n') && /[^\r]\r[^\n]/.test(sample), 'tabs, blank lines, markup, CRLF and a lone CR');
-  assert.ok(has(String.fromCharCode(0x0B)) && has(String.fromCharCode(0xFFFE)), 'a U+000B and a U+FFFE');
+  const dropped = [0x01, 0x0B, 0x0C, 0x1F, 0xFFFE, 0xFFFF].map((cp) => String.fromCharCode(cp));
+  assert.ok(dropped.every((ch) => has(ch)), 'U+0001, U+000B, U+000C, U+001F, U+FFFE and U+FFFF (QA-G-25)');
   assert.ok(sample.normalize('NFD') !== sample && /\p{Script=Han}/u.test(sample) && /\p{Script=Hiragana}/u.test(sample) && Array.from(sample).some((c) => c.codePointAt(0) > 0xFFFF), 'accents, Japanese and an emoji');
   assert.ok(sample.split('\n').some((line) => line.length >= 300), 'a long line');
   const p = await loadPage({ storage: { 'plainSight.saveMode': 'docx', 'plainSight.introSeen': '1' } });
@@ -3504,7 +3506,7 @@ test('the page writes the golden sample (tests/fixtures/sample.txt) as the Word 
     const paragraphs = body.match(/<w:p\/>|<w:p>[\s\S]*?<\/w:p>/g) || [];
     const lines = sample.replace(/\r\n?/g, '\n').split('\n');
     assert.equal(paragraphs.length, lines.length, 'one paragraph per line, carriage returns included, the trailing line feed giving an empty last paragraph');
-    assert.ok(!body.includes(CR) && !body.includes(String.fromCharCode(0x0B)) && !body.includes(String.fromCharCode(0xFFFE)), 'no carriage return, U+000B or U+FFFE in the document');
+    assert.ok(!body.includes(CR) && dropped.every((ch) => !body.includes(ch)), 'no carriage return, U+0001, U+000B, U+000C, U+001F, U+FFFE or U+FFFF in the document');
     assert.equal((body.match(/<w:tab\/>/g) || []).length, (sample.match(/\t/g) || []).length, 'a Word tab for every tab');
     assert.equal((body.match(/<w:p\/>/g) || []).length, lines.filter((l) => l === '').length, 'an empty paragraph for every blank line');
     assert.deepEqual(p.errors, []);
@@ -4044,6 +4046,26 @@ test('device vault: the memory of a lock the device caused is forgotten by Esc a
     assert.equal(q.toast(), 'Saved copy opened');
     assert.deepEqual(q.errors, []);
   } finally { protoQ.setItem = setItemQ; q.close(); }
+});
+
+test('the masked text fields keep the page\'s styling: where the browser masks text fields, the Save dialog\'s field and the intro\'s phrase field are drawn as the password fields were, full width and in the page\'s font (a follow-up to Web_PS_010)', async () => {
+  // jsdom computes display from the stylesheet; width, font and border it does not resolve, so the rule's text (asserted last) carries those, and the WebKit probe (wk_pwstyle.mjs) the look.
+  for (const [options, type] of [[{ cssSupports: true }, 'text'], [{}, 'password']]) {
+    const p = await loadPage(options);
+    try {
+      assert.equal(p.$('#pw-input').getAttribute('type'), type);
+      assert.equal(p.$('#vault-phrase').getAttribute('type'), type);
+      assert.equal(p.w.getComputedStyle(p.$('#vault-phrase')).display, 'block', 'the phrase field on the intro is drawn as a block, as a ' + type + ' field');
+      p.start();
+      p.type('abc');
+      p.$('#btn-save').click();
+      assert.equal(p.$('#pw').hidden, false);
+      assert.equal(p.w.getComputedStyle(p.$('#pw-input')).display, 'block', 'the Save dialog\'s field is drawn as a block, as a ' + type + ' field');
+      p.press('Escape');
+      assert.deepEqual(p.errors, []);
+    } finally { p.close(); }
+  }
+  assert.match(HTML, /\.card input\[type="password"\], \.card input\[type="text"\] \{/, 'the field rule names the text field the page makes of a password field');
 });
 
 // ---------------------------------------------------------------------------
