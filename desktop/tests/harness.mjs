@@ -165,11 +165,38 @@ let backupDir = null;
 // not there before, so what was there before can never be cleared in place
 // (Mac_PS_011). Kept here and, for the record, as before.json in the backup.
 let existedBefore = [];
+// Where the run stands with the app's data: 'untouched' before the backup,
+// 'moving' while the folders are moved aside, 'aside' once the backup is
+// complete (the only state a restore works in), 'restored' after a complete
+// restore, when a second restore changes nothing (QA-G-24).
+let phase = 'untouched';
 const asideOf = (dir) => path.join(backupDir, Buffer.from(dir).toString('base64url'));
+// What a backup folder still holds, one line per folder: the place it came
+// from (its base64url name decoded), where it waits, and whether moved.json
+// lists it. For the run that refuses to start over an earlier backup, and
+// for a cleanup that must not run while the backup is incomplete.
+export function leftBehind(root = BACKUP_ROOT) {
+  const lines = [];
+  for (const run of existsSync(root) ? readdirSync(root) : []) {
+    const dir = path.join(root, run);
+    if (!statSync(dir).isDirectory()) { lines.push('a file, not a backup: ' + dir); continue; }
+    let moved = null;
+    try { moved = JSON.parse(readFileSync(path.join(dir, 'moved.json'), 'utf8')); } catch { moved = null; }
+    const names = readdirSync(dir).filter((n) => n !== 'moved.json' && n !== 'before.json');
+    for (const name of names) {
+      const from = Buffer.from(name, 'base64url').toString();
+      const listed = moved === null ? 'moved.json is missing' : moved.includes(from) ? 'listed in moved.json' : 'not listed in moved.json';
+      lines.push('put back ' + from + ' from ' + path.join(dir, name) + ' (' + listed + ')');
+    }
+    if (!names.length) lines.push('nothing to put back from ' + dir + ', which can be removed');
+  }
+  return lines;
+}
 export function backupAppData() {
   if (existsSync(BACKUP_ROOT) && readdirSync(BACKUP_ROOT).length) {
-    throw new Error('an earlier run left app data in ' + BACKUP_ROOT + '; put it back by hand before running again');
+    throw new Error('an earlier run left app data in ' + BACKUP_ROOT + '; put it back by hand before running again:\n  ' + leftBehind().join('\n  '));
   }
+  phase = 'moving';
   backupDir = path.join(BACKUP_ROOT, String(Date.now()));
   existedBefore = DATA_DIRS.filter((dir) => existsSync(dir));
   const moved = [];
@@ -189,6 +216,7 @@ export function backupAppData() {
       if (!readdirSync(BACKUP_ROOT).length) rmdirSync(BACKUP_ROOT);
       backupDir = null;
       existedBefore = [];
+      phase = 'untouched';
       throw new Error('could not move ' + dir + ' aside (' + (err.code || err.message) + '); everything was put back');
     }
     moved.push(dir);
@@ -196,6 +224,7 @@ export function backupAppData() {
     writeFileSync(path.join(backupDir, 'moved.json'), JSON.stringify(moved, null, 2));
   }
   if (!moved.length) backupDir = null;
+  phase = 'aside';
   note('app data moved aside: ' + JSON.stringify(moved));
 }
 const movedAside = () => (backupDir ? JSON.parse(readFileSync(path.join(backupDir, 'moved.json'), 'utf8')) : []);
@@ -203,6 +232,7 @@ const movedAside = () => (backupDir ? JSON.parse(readFileSync(path.join(backupDi
 // there now came after), or one that was not there before the run.
 const clearable = (dir, moved) => moved.includes(dir) || !existedBefore.includes(dir);
 export function clearTestData() {
+  if (phase !== 'aside') throw new Error('the app data is not moved aside (' + phase + '), so nothing is cleared');
   const moved = movedAside();
   for (const dir of DATA_DIRS) if (clearable(dir, moved)) rmSync(dir, { recursive: true, force: true });
 }
@@ -213,8 +243,16 @@ export function clearTestData() {
 // which then lists only that, and the error says where it is. The backup is
 // never deleted recursively, and a folder that was there before the run and
 // is not in the backup (one an earlier restore put back, say) is in its place
-// already: it is never cleared.
+// already: it is never cleared. Before the backup, and while it is incomplete,
+// nothing is cleared or put back: the run refuses and names what to put back
+// by hand and from where; after a complete restore a second call changes
+// nothing (QA-G-24).
 export function restoreAppData() {
+  if (phase === 'untouched') { note('nothing to restore: the app data was never moved aside'); return; }
+  if (phase === 'restored') { note('nothing to restore: the app data is back already'); return; }
+  if (phase === 'moving') {
+    throw new Error('the backup of the app data is incomplete, so nothing is cleared or put back by the run; put back by hand:\n  ' + leftBehind().join('\n  '));
+  }
   const moved = movedAside();
   const problems = [];
   const left = [];
@@ -246,20 +284,24 @@ export function restoreAppData() {
   if (problems.length) throw new Error(problems.join('; '));
   backupDir = null;
   existedBefore = [];
+  phase = 'restored';
   note('app data restored');
 }
 
-// The run's own safety, in this order: the app's data is moved aside first,
-// and only then do Ctrl+C and a kill run the cleanup. A signal during the
-// move itself ends the run at once with every folder where it is (in place,
-// or in the backup, which the next run refuses to start over), so the cleanup
-// can never clear a folder the run did not move (Mac_PS_011). Exported for
-// the harness checks, which run it against a fake home.
-export function backupThenWatchSignals(cleanup) {
-  backupAppData();
+// The run's own safety: Ctrl+C and a kill are watched from the start, before
+// the app's data is moved aside, so a signal during the move cannot end the
+// run by its default action with a folder half moved and the next run
+// refusing to start (QA-G-24). Node runs a signal handler only between turns
+// of the event loop and the backup is one synchronous stretch, so a signal
+// during it is taken after it, when the cleanup puts everything back; and
+// a cleanup that ever ran with the backup incomplete is refused by
+// restoreAppData, which clears nothing and names what to put back. Exported
+// for the harness checks, which run it against a fake home.
+export function watchSignalsThenBackup(cleanup) {
   for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
     process.on(signal, () => { note('stopped by ' + signal); cleanup().finally(() => process.exit(130)); });
   }
+  backupAppData();
 }
 
 // ---------------------------------------------------------------------------
@@ -346,8 +388,8 @@ export async function run(tests, { name, needUnlocked = false, before = () => {}
   if (reason) { console.log(`${name}: not started: ${reason}. Errors: 0`); process.exit(4); }
   if (!takeLock(name)) { console.log(`${name}: not started: another GUI test run holds ${LOCK}. Errors: 0`); process.exit(5); }
   requireUnlocked = needUnlocked;
-  // Ctrl+C or a kill after the backup still puts everything back: the app
-  // stops, its data and the Downloads folder are restored, the lock is released.
+  // Ctrl+C or a kill puts everything back: the app stops, its data and the
+  // Downloads folder are restored, the lock is released.
   let cleaned = false;
   let restored = true;
   const cleanup = async () => {
@@ -361,7 +403,7 @@ export async function run(tests, { name, needUnlocked = false, before = () => {}
   };
   markDownloads();
   runStartedAt = Date.now();
-  backupThenWatchSignals(cleanup);
+  watchSignalsThenBackup(cleanup);
   startGuard();
   let passed = 0, failed = 0, notRun = 0, stopped = null;
   try {
