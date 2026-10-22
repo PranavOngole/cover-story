@@ -1153,7 +1153,16 @@
           return;
         }
       }
-      storageSet(STORAGE.vault, JSON.stringify(record));
+      if (!storageSet(STORAGE.vault, JSON.stringify(record))) {
+        // The device refused the copy (storage full or blocked), so nothing was kept. The open vault locks, so the header
+        // stops saying the text is being saved; an older key's save is just dropped. Nothing bumps the generation: a save
+        // still queued, such as the one Esc asked for, may still try (QA-F-03).
+        const own = vaultOpen() && record.salt === bytesToBase64(vaultSalt);
+        if (own) vaultLock();
+        toast(own ? 'This device could not keep the saved copy; the vault is locked' : 'This device could not keep the saved copy');
+        if (!introEl.hidden) vaultStatusRefresh();   // the status follows the lock and the copy the device still holds
+        return;
+      }
       if (!introEl.hidden) vaultStatusRefresh();   // the intro follows this tab's own copy, so another tab's delete or clear redraws it later and an autosave does not; the box and a phrase being typed are left alone
     };
     writeChain = writeChain.then(run, run);
@@ -1729,11 +1738,17 @@
   function storageGet(key) {
     try { return localStorage.getItem(key); } catch (err) { return null; }
   }
+  // True when the value was stored (or removed); false when storage is blocked
+  // or full. The page still works without storage, nothing is remembered, and
+  // the vault's write path reports a refused copy (QA-F-03).
   function storageSet(key, value) {
     try {
       if (value) localStorage.setItem(key, value);
       else localStorage.removeItem(key);
-    } catch (err) { /* storage blocked: the page still works, nothing is remembered */ }
+      return true;
+    } catch (err) {
+      return false;
+    }
   }
 
   // ------------------------------------------------------------------

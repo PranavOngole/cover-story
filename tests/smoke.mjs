@@ -78,7 +78,7 @@ process.on('unhandledRejection', (reason) => {
   for (const errors of openErrors) errors.push(text);
 });
 
-async function loadPage({ random = () => 1, storage = {}, inject = true, folder = null, slowEncrypt = 0, failDerive = 0, slowDerive = 0, noSubtle = false, userAgent = undefined, brave = false } = {}) {
+async function loadPage({ random = () => 1, storage = {}, inject = true, folder = null, slowEncrypt = 0, failDerive = 0, slowDerive = 0, noSubtle = false, userAgent = undefined, brave = false, storageQuota = 0 } = {}) {
   const errors = [];
   openErrors.add(errors);
   const downloads = [];
@@ -110,6 +110,19 @@ async function loadPage({ random = () => 1, storage = {}, inject = true, folder 
         configurable: true
       });
       for (const [k, v] of Object.entries(storage)) window.localStorage.setItem(k, v);
+      // With storageQuota set, a write that would take the total of the keys and
+      // values past that many characters is refused with the error a browser
+      // gives at its quota (the values above are seeded before the limit applies).
+      if (storageQuota) {
+        const proto = window.Storage.prototype;
+        const setItem = proto.setItem;
+        proto.setItem = function (key, value) {
+          let total = String(key).length + String(value).length;
+          for (let i = 0; i < this.length; i++) { const k = this.key(i); if (k !== String(key)) total += k.length + this.getItem(k).length; }
+          if (total > storageQuota) throw new window.DOMException('The quota has been exceeded.', 'QuotaExceededError');
+          return setItem.call(this, key, value);
+        };
+      }
       // A fake File System Access API: a directory picker that hands back a
       // folder whose files are recorded in folder.written.
       if (folder) {
@@ -3069,6 +3082,114 @@ test('Esc pressed while a plain note is still being read wins: the note never la
     await sleep(500);
     assert.equal(p.toast(), 'Opened');
     assert.equal(await p.readReal(), 'NOTE BODY');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('device vault: a save the device refuses locks the vault and says so, instead of a header that keeps saying the text is kept; an open intro follows (QA-F-03, Web_PS_006)', async () => {
+  const p = await loadPage();
+  try {
+    p.start();
+    p.type('kept words');
+    await p.vaultOn('correct horse battery staple');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    const before = p.storageDump()['plainSight.vault'];
+    assert.ok(before && p.d.body.classList.contains('vault-open'));
+    // From now on the device refuses the vault's writes: storage full, or site data blocked.
+    const proto = p.w.Storage.prototype;
+    const setItem = proto.setItem;
+    proto.setItem = function (key, value) { if (key === 'plainSight.vault') throw new p.w.DOMException('The quota has been exceeded.', 'QuotaExceededError'); return setItem.call(this, key, value); };
+    p.type(' and more');                     // an autosave is due
+    p.$('#btn-help').click();                // the intro is open when the refusal comes
+    assert.match(p.$('#vault-status').textContent, /^The vault is open and saving as you type/);
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    assert.ok(!p.d.body.classList.contains('vault-open'), 'the vault locked: the header is grey again');
+    assert.equal(p.toast(), 'This device could not keep the saved copy; the vault is locked');
+    assert.equal(p.storageDump()['plainSight.vault'], before, 'the earlier copy stands');
+    assert.match(p.$('#vault-status').textContent, /^A saved copy is on this device/, 'the open intro follows the lock and the copy still on the device');
+    assert.equal(p.$('#vault-on').checked, true, 'the box is left as it was');
+    p.start();
+    assert.equal(await p.readReal(), 'kept words and more', 'the text on the page stays');
+    p.type(' x');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    assert.equal(p.storageDump()['plainSight.vault'], before, 'nothing pretends to save after the lock');
+    assert.ok(!p.d.body.classList.contains('vault-open'));
+    // A new vault whose first save is refused is not left open either, and the intro shows no copy and nothing pending.
+    p.$('#btn-help').click();
+    p.$('#vault-on').checked = false;
+    p.start();                               // the old copy is deleted (a removal is not a write)
+    assert.equal(p.storageDump()['plainSight.vault'], undefined);
+    p.type('fresh words');
+    await p.vaultOn('a brand new phrase here');
+    await sleep(500);
+    assert.ok(!p.d.body.classList.contains('vault-open'), 'the first save was refused, so the vault is not open');
+    assert.equal(p.toast(), 'This device could not keep the saved copy; the vault is locked');
+    assert.equal(p.storageDump()['plainSight.vault'], undefined, 'no copy');
+    p.$('#btn-help').click();
+    assert.equal(p.$('#vault-on').checked, false, 'nothing stored, nothing open, nothing pending');
+    assert.match(p.$('#vault-status').textContent, /To come back to your text later/);
+    p.start();
+    assert.equal(await p.readReal(), 'kept words and more xfresh words', 'the text on the page was never touched');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+  // The save Esc makes under a vault it has just locked: refused too, and the page says so without claiming a lock it did not make.
+  const q = await loadPage();
+  try {
+    q.start();
+    q.type('saved once');
+    await q.vaultOn('correct horse battery staple');
+    const first = q.storageDump()['plainSight.vault'];
+    assert.ok(first);
+    const proto = q.w.Storage.prototype;
+    const setItem = proto.setItem;
+    proto.setItem = function (key, value) { if (key === 'plainSight.vault') throw new q.w.DOMException('The quota has been exceeded.', 'QuotaExceededError'); return setItem.call(this, key, value); };
+    q.type(' then Esc');
+    q.press('Escape');                       // locks and asks for the save of everything typed
+    await sleep(500);
+    assert.equal(q.toast(), 'This device could not keep the saved copy');
+    assert.equal(q.storageDump()['plainSight.vault'], first, 'the copy on the device is the earlier one');
+    assert.ok(!q.d.body.classList.contains('vault-open'));
+    assert.equal(await q.readReal(), '');
+    assert.deepEqual(q.errors, []);
+  } finally { q.close(); }
+});
+
+test('device vault: a note larger than the device will store, opened with the vault on, locks the vault and says so; the earlier copy still unlocks, and a note that fits is kept (QA-F-03)', async () => {
+  const p = await loadPage({ storageQuota: 6000 });
+  try {
+    p.start();
+    p.type('old words');
+    await p.vaultOn('correct horse battery staple');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    const small = p.storageDump()['plainSight.vault'];
+    assert.ok(small, 'the small copy fits the quota');
+    chooseFile(p, new p.w.File(['w'.repeat(5000)], 'big.txt', { type: 'text/plain' }));
+    await p.settle();
+    p.$('#pw-ok').click();                   // the note replaces the page
+    await p.settle();
+    assert.equal(await p.readReal(), 'w'.repeat(5000));
+    await sleep(VAULT_SAVE_DELAY_MS + 400);  // its autosave is over the quota
+    assert.ok(!p.d.body.classList.contains('vault-open'), 'locked');
+    assert.equal(p.toast(), 'This device could not keep the saved copy; the vault is locked');
+    assert.equal(p.storageDump()['plainSight.vault'], small, 'the stored copy is still the small one');
+    assert.equal(await p.readReal(), 'w'.repeat(5000), 'the note stays on the page');
+    // A later visit: the phrase brings back the old words, which is what the device holds.
+    const q = await loadPage({ storage: p.storageDump(), storageQuota: 6000 });
+    try {
+      q.type('correct horse battery staple');
+      q.unlockChord();
+      await sleep(500);
+      assert.ok(q.d.body.classList.contains('vault-open'));
+      assert.equal(await q.readReal(), 'old words');
+      // A note that fits is kept as before.
+      chooseFile(q, new q.w.File(['a note that fits'], 'small.txt', { type: 'text/plain' }));
+      await q.settle();
+      q.$('#pw-ok').click();
+      await sleep(VAULT_SAVE_DELAY_MS + 400);
+      assert.ok(q.d.body.classList.contains('vault-open'), 'still open');
+      assert.equal(await decryptVault(JSON.parse(q.storageDump()['plainSight.vault']), 'correct horse battery staple'), 'a note that fits');
+      assert.deepEqual(q.errors, []);
+    } finally { q.close(); }
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
