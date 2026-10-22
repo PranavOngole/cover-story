@@ -3390,6 +3390,36 @@ test('the Save button says what Save will do: the download format in force, or t
   } finally { q.close(); }
 });
 
+// WCAG 2 relative luminance and contrast ratio of two #rrggbb colours.
+function contrastRatio(a, b) {
+  const lum = (hex) => {
+    const [r, g, bl] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+    return 0.2126 * r + 0.7152 * g + 0.0722 * bl;
+  };
+  const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+test('the note text reads at 4.5:1 or better on the card and on the paper, and the folder-format radios have a group name (QA-F-09)', async () => {
+  const note = HTML.match(/--note: (#[0-9a-f]{6});/);
+  assert.ok(note, 'the note colour is a token of its own');
+  assert.match(HTML, /\.note \{ color: var\(--note\);/, 'the note text uses it');
+  assert.ok(contrastRatio(note[1], '#ffffff') >= 4.5, note[1] + ' on the white card: ' + contrastRatio(note[1], '#ffffff').toFixed(2));
+  assert.ok(contrastRatio(note[1], '#fbfaf7') >= 4.5, note[1] + ' on the paper: ' + contrastRatio(note[1], '#fbfaf7').toFixed(2));
+  assert.match(HTML, /--muted: #8a8a85;/, 'the header grey, the only tell of an open vault against the ink, is not what changed');
+  const p = await loadPage({ folder: fakeFolder('Notes') });
+  try {
+    const group = p.$('#folder-format');
+    assert.equal(group.getAttribute('role'), 'group');
+    const label = p.d.getElementById(group.getAttribute('aria-labelledby') || '');
+    assert.ok(label && group.contains(label), 'the group is named by an element inside it');
+    assert.equal(label.textContent, 'Files in the folder are');
+    assert.equal(group.querySelectorAll('input[name="folder-format"]').length, 3, 'the three radios are in the group');
+    assert.ok(label.classList.contains('note'), 'the name is note text, so the contrast above applies to it');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
 // ---------------------------------------------------------------------------
 // Run
 // ---------------------------------------------------------------------------

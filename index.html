@@ -21,6 +21,7 @@
     --paper: #fbfaf7;
     --ink: #2a2a2a;
     --muted: #8a8a85;
+    --note: #72726d;     /* note text: 4.5:1 or better on the card and the paper (QA-F-09); the header keeps --muted, its tell against the ink */
     --rule: #e6e3dc;
     --accent: #3a5a8c;
     --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -207,7 +208,7 @@
   .row { display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap; margin-top: 16px; }
   .btn { font: inherit; padding: 8px 16px; border-radius: 6px; border: 1px solid var(--rule); background: #fff; cursor: pointer; color: var(--ink); }
   .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-  .note { color: var(--muted); font-size: 13px; }
+  .note { color: var(--note); font-size: 13px; }
   .card .note { margin-top: 6px; }
   /* The only sign that the device vault is open: the header text in ink, not grey. */
   body.vault-open #header-meta { color: var(--ink); }
@@ -330,8 +331,8 @@
         <label class="check"><input type="radio" name="save-mode" value="docx"> <span>Download a Word <code>.docx</code> file named by the moment, no password</span></label>
       </div>
       <!-- What Save writes into a chosen folder. Kept in localStorage. -->
-      <div id="folder-format" class="row">
-        <span class="note">Files in the folder are</span>
+      <div id="folder-format" class="row" role="group" aria-labelledby="folder-format-label">
+        <span class="note" id="folder-format-label">Files in the folder are</span>
         <label class="check"><input type="radio" name="folder-format" value="txt" checked> <span><code>.txt</code></span></label>
         <label class="check"><input type="radio" name="folder-format" value="md"> <span><code>.md</code></span></label>
         <label class="check"><input type="radio" name="folder-format" value="docx"> <span><code>.docx</code></span></label>
