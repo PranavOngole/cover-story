@@ -3233,6 +3233,30 @@ test('Backspace removes one character, not one UTF-16 unit: after an emoji nothi
   } finally { p.close(); }
 });
 
+test('a carriage return in the text becomes a paragraph break in the Word document, never a raw character in its XML (QA-F-05)', async () => {
+  const p = await loadPage({ storage: { 'plainSight.saveMode': 'docx', 'plainSight.introSeen': '1' } });
+  try {
+    const CR = String.fromCharCode(13);
+    const text = 'one' + CR + 'two' + CR + '\n' + 'three\n' + CR + 'five';   // a lone CR, a CRLF, and a CR after a line feed: only a hand-made .sight can carry these
+    chooseFile(p, makeCoverFile(p.w, await encryptVaultRecord(text, 'a phrase for the file')));
+    await p.settle();
+    await p.submitPassword('a phrase for the file');
+    await p.settle(600);
+    assert.equal(p.toast(), 'Opened');
+    assert.equal(await p.readReal(), text, 'the encrypted file carries the carriage returns as they are');
+    p.$('#btn-save').click();
+    await p.settle();
+    assert.equal(p.downloads.length, 1);
+    const bytes = Buffer.from(await p.downloads[0].blob.arrayBuffer());
+    assert.ok(!bytes.includes(13), 'no carriage return byte anywhere in the archive');
+    const body = readStoredZip(bytes)[2].text;
+    const para = (s) => (s ? '<w:p><w:r><w:t xml:space="preserve">' + s + '</w:t></w:r></w:p>' : '<w:p/>');
+    assert.ok(body.includes('<w:body>' + para('one') + para('two') + para('three') + para('') + para('five') + '</w:body>'), body);
+    assert.equal(await p.readReal(), text, 'the page keeps the text as it is');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
 // ---------------------------------------------------------------------------
 // Run
 // ---------------------------------------------------------------------------

@@ -1357,12 +1357,15 @@
   // A Word document holding the text, one paragraph per line and a Word tab
   // for each tab, with no metadata (no author, no dates, no application
   // name): the three parts a .docx needs, in a zip archive whose entries are
-  // stored, not compressed. Characters XML cannot hold are left out.
+  // stored, not compressed. A carriage return, alone or before a line feed,
+  // ends a paragraph like a line feed (QA-F-05). Characters XML cannot hold
+  // are left out. The Mac app's writer makes the same bytes; the golden sample
+  // in tests/fixtures holds both to it.
   function docxBytes(text) {
     const esc = (t) => t.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g, '')
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
       .replace(/\t/g, '</w:t><w:tab/><w:t xml:space="preserve">');
-    const paragraphs = text.split('\n').map((line) => (line ? '<w:p><w:r><w:t xml:space="preserve">' + esc(line) + '</w:t></w:r></w:p>' : '<w:p/>')).join('');
+    const paragraphs = text.replace(/\r\n?/g, '\n').split('\n').map((line) => (line ? '<w:p><w:r><w:t xml:space="preserve">' + esc(line) + '</w:t></w:r></w:p>' : '<w:p/>')).join('');
     const head = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
     return zipStored([
       ['[Content_Types].xml', head + '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>'],
