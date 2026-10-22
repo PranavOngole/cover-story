@@ -559,6 +559,12 @@ test('the web view holds Writing Tools off (none, -1) where macOS has them', asy
   assert.equal(value, -1);
 });
 
+test('the app\'s delegate answers applicationShouldTerminate:, so a quit request from macOS waits for the page (Mac_PS_007)', async () => {
+  // quit.rs adds the method to tao's delegate class at start and says on
+  // stderr when it cannot; this reads the result back from AppKit.
+  assert.equal(await ask({ delegateResponds: true }), true);
+});
+
 test('a minimized window and a hidden app give the page a hidden document, which is what starts its ten-minute wipe', async () => {
   // While the screen is locked macOS already counts the window as not visible,
   // so the change can only be seen on an unlocked screen.

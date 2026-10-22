@@ -13,7 +13,9 @@
 //! (macOS shows Accessibility no windows while the screen is locked, so the
 //! runner cannot press the button itself; it answers before it acts, since the
 //! app may be gone after), `{"id": n, "windowTitle": true}` answers its title,
-//! `{"id": n, "writingTools": true}` the web view's Writing Tools setting, and
+//! `{"id": n, "writingTools": true}` the web view's Writing Tools setting,
+//! `{"id": n, "delegateResponds": true}` whether the app's delegate answers
+//! applicationShouldTerminate: (quit.rs), and
 //! `{"id": n, "window": "minimize"}` (or "unminimize", "hide", "show")
 //! minimizes it or hides the app as the yellow button and Cmd+H do. The Quit
 //! item and the Dock's quit need no probe: the runner presses the real item
@@ -22,8 +24,9 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use objc2::runtime::AnyObject;
-use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSImage, NSWindow};
+use objc2::runtime::{AnyObject, NSObjectProtocol};
+use objc2::{sel, MainThreadMarker};
+use objc2_app_kit::{NSApplication, NSBitmapImageFileType, NSBitmapImageRep, NSImage, NSWindow};
 use objc2_foundation::{NSDictionary, NSError, NSString};
 use objc2_web_kit::WKWebView;
 use serde_json::{json, Value};
@@ -82,6 +85,19 @@ pub fn watch(app: AppHandle) {
                     None
                 };
                 respond(&answer, json!({ "ok": true, "value": value }));
+            });
+        } else if req["delegateResponds"].as_bool() == Some(true) {
+            // Whether NSApp's delegate has applicationShouldTerminate:, which
+            // quit.rs adds at start; read on the main thread, where AppKit is.
+            on_main_run_loop(move || {
+                let Some(mtm) = MainThreadMarker::new() else {
+                    return;
+                };
+                let app = NSApplication::sharedApplication(mtm);
+                let responds = app.delegate().is_some_and(|delegate| {
+                    delegate.respondsToSelector(sel!(applicationShouldTerminate:))
+                });
+                respond(&answer, json!({ "ok": true, "value": responds }));
             });
         } else if let Some(action) = req["window"].as_str() {
             let done = match action {

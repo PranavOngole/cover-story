@@ -113,7 +113,7 @@ test('the crates the app is built from hold no network crate and no Tauri plugin
 
 test('the binary carries no test hook (the e2e feature is not in it)', () => {
   const bin = readFileSync(BIN);
-  for (const marker of ['PLAIN_SIGHT_E2E', 'windowTitle', 'unknown quit']) assert.equal(bin.indexOf(marker), -1, marker);
+  for (const marker of ['PLAIN_SIGHT_E2E', 'windowTitle', 'delegateResponds', 'unknown quit']) assert.equal(bin.indexOf(marker), -1, marker);
 });
 
 test('the page files embedded in the binary are exactly index.html and the three covers (DR-08)', () => {
