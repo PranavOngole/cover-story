@@ -50,7 +50,7 @@ async function open() {
 // Each way out runs the page's Esc first and ends when the adapter says the
 // page is done (quit_ready), which is never sooner than 0.7 s: the adapter
 // waits that long for WebKit to commit the page's last write (adapter.js). The
-// app's own safety timer ends it after 3 s. So an end between 0.6 s and 2.5 s
+// app's own safety timer ends it after 4 s. So an end between 0.6 s and 2.5 s
 // shows the way out went through the page and the page answered; an end at
 // once would mean the page's Esc was skipped.
 async function ended(how) {

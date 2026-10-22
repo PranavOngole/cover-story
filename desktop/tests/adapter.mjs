@@ -124,7 +124,7 @@ test('quitting waits for the page\'s callback, then for the storage to answer, t
   } finally { a.close(); }
 });
 
-test('a page callback that never finishes gets 1.8 s, and the quit still ends inside the app\'s 3 s safety timer', async () => {
+test('a page callback that never finishes gets 1.8 s, and the quit still ends inside the app\'s 4 s safety timer', async () => {
   const a = load();
   try {
     a.native.onQuit(() => new Promise(() => {}));
@@ -184,6 +184,22 @@ test('without a callback, or with anything but a function, the app may quit afte
     await a.window.__plainSightQuit();
     assert.equal(ran, true, 'a non-function does not replace the callback');
   } finally { a.close(); }
+});
+
+// The quit's longest path is the three waits in a row, measured by WebKit's
+// timers, which run late on a loaded Mac; the app's safety timer is a precise
+// thread sleep that ends the app regardless. Read from both files as text,
+// so that a change to either side is caught here (D-42, Mac_PS_008).
+test('the adapter\'s three waits leave the app\'s safety timer a full second of margin (D-42)', () => {
+  const quitRs = readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src-tauri', 'src', 'quit.rs'), 'utf8');
+  const safety = quitRs.match(/^const SAFETY: Duration = Duration::from_secs\((\d+)\);$/m);
+  assert.ok(safety, 'quit.rs names its safety timer in whole seconds');
+  const hook = ADAPTER.slice(ADAPTER.indexOf("fixed('__plainSightQuit'"), ADAPTER.indexOf('// A right click'));
+  assert.ok(hook.length > 0, 'the quit hook was found in adapter.js');
+  const waits = [...hook.matchAll(/wait\((\d+)\)/g)].map((m) => Number(m[1]));
+  assert.equal(waits.length, 3, 'the page callback, the storage answer and the commit wait: ' + waits.join(', '));
+  const longest = waits.reduce((a, b) => a + b, 0);
+  assert.ok(longest + 1000 <= Number(safety[1]) * 1000, 'the waits take ' + longest + ' ms at most, which leaves less than 1000 ms before the ' + safety[1] + ' s safety timer');
 });
 
 test('a quit_ready the app refuses (it is not quitting) is swallowed', async () => {

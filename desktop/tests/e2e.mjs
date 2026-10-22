@@ -634,7 +634,7 @@ for (const [how, quit] of QUIT_PATHS) {
     const ms = Date.now() - t0;
     note(how + ': the app ended ' + ms + ' ms after the request');
     // Through the page's quit (never sooner than its 0.7 s commit wait), and
-    // ended by the page's answer, not the 3 s safety timer.
+    // ended by the page's answer, not the 4 s safety timer.
     assert.ok(ms >= 600 && ms < 2500, how + ': ended after ' + ms + ' ms');
     await launch();
     await page.type(PHRASE);

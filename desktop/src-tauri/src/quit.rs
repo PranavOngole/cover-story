@@ -2,7 +2,7 @@
 //! of the app first runs the page's quit hook, window.__plainSightQuit
 //! (adapter.js): it awaits the callback the page registered with onQuit, which
 //! is Esc's wipe plus the vault's last write, and then calls quit_ready. The app
-//! ends after that, or after a 3-second safety timer, and always through
+//! ends after that, or after a 4-second safety timer, and always through
 //! AppKit's normal termination, so that WebKit sees the app end.
 //!
 //! The ways out:
@@ -18,8 +18,12 @@ use std::time::Duration;
 
 use tauri::{AppHandle, Manager};
 
-/// How long the page gets before the app ends anyway.
-const SAFETY: Duration = Duration::from_secs(3);
+/// How long the page gets before the app ends anyway: the adapter's longest
+/// path (1.8 s for the page's callback, 0.4 s for the storage answer, 0.7 s
+/// for WebKit's commit) and a full second of margin for a loaded Mac, where
+/// WebKit's timers run late while this one is a precise sleep (D-42,
+/// Mac_PS_008). tests/adapter.mjs holds the two files to that sum.
+const SAFETY: Duration = Duration::from_secs(4);
 
 /// Runs the page's hook; does nothing if the adapter is missing.
 const HOOK: &str = "window.__plainSightQuit && window.__plainSightQuit()";

@@ -38,7 +38,7 @@
   // (QA-C-01). A storage estimate goes the same way as the write and is
   // answered after it, so its answer (or 0.4 s) means the write has arrived;
   // then the commit gets 0.7 s, and the app is told it may end. All of it stays
-  // inside the app's own 3 s safety timer (quit.rs). A failing callback must
+  // inside the app's own 4 s safety timer (quit.rs, D-42). A failing callback must
   // not keep the app open, and quit_ready is refused unless the app is really
   // quitting.
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
