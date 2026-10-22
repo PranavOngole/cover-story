@@ -3257,6 +3257,100 @@ test('a carriage return in the text becomes a paragraph break in the Word docume
   } finally { p.close(); }
 });
 
+test('the page writes the golden sample (tests/fixtures/sample.txt) as the Word document in tests/fixtures/sample.docx, byte for byte, through Open of an encrypted file that carries its carriage returns (QA-F-06)', async () => {
+  const sample = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(readFileSync(path.join(ROOT, 'tests', 'fixtures', 'sample.txt')));
+  const expected = readFileSync(path.join(ROOT, 'tests', 'fixtures', 'sample.docx'));
+  // The sample holds what the writer must get right: tabs, a run of two, blank lines, accents, Japanese, an emoji,
+  // markup, a CRLF, a lone CR, a U+000B and a U+FFFE (both left out of the document), and a long line.
+  const CR = String.fromCharCode(13);
+  const has = (s) => sample.includes(s);
+  assert.ok(has('\t') && has('\t\t') && has('\n\n') && has(']]>') && has('&<>"\'') && has(CR + '\n') && /[^\r]\r[^\n]/.test(sample), 'tabs, blank lines, markup, CRLF and a lone CR');
+  assert.ok(has(String.fromCharCode(0x0B)) && has(String.fromCharCode(0xFFFE)), 'a U+000B and a U+FFFE');
+  assert.ok(sample.normalize('NFD') !== sample && /\p{Script=Han}/u.test(sample) && /\p{Script=Hiragana}/u.test(sample) && Array.from(sample).some((c) => c.codePointAt(0) > 0xFFFF), 'accents, Japanese and an emoji');
+  assert.ok(sample.split('\n').some((line) => line.length >= 300), 'a long line');
+  const p = await loadPage({ storage: { 'plainSight.saveMode': 'docx', 'plainSight.introSeen': '1' } });
+  try {
+    chooseFile(p, makeCoverFile(p.w, await encryptVaultRecord(sample, 'a phrase for the sample')));
+    await p.settle();
+    await p.submitPassword('a phrase for the sample');
+    await p.settle(600);
+    assert.equal(p.toast(), 'Opened');
+    assert.equal(await p.readReal(), sample, 'the encrypted file carries the sample exactly, carriage returns included');
+    p.$('#btn-save').click();
+    await p.settle();
+    assert.equal(p.downloads.length, 1);
+    const bytes = Buffer.from(await p.downloads[0].blob.arrayBuffer());
+    assert.ok(bytes.equals(expected), 'the same bytes as tests/fixtures/sample.docx (' + bytes.length + ' and ' + expected.length + ' bytes)');
+    // What the document holds, read back by the independent zip reader.
+    const body = readStoredZip(bytes)[2].text;
+    const paragraphs = body.match(/<w:p\/>|<w:p>[\s\S]*?<\/w:p>/g) || [];
+    const lines = sample.replace(/\r\n?/g, '\n').split('\n');
+    assert.equal(paragraphs.length, lines.length, 'one paragraph per line, carriage returns included, the trailing line feed giving an empty last paragraph');
+    assert.ok(!body.includes(CR) && !body.includes(String.fromCharCode(0x0B)) && !body.includes(String.fromCharCode(0xFFFE)), 'no carriage return, U+000B or U+FFFE in the document');
+    assert.equal((body.match(/<w:tab\/>/g) || []).length, (sample.match(/\t/g) || []).length, 'a Word tab for every tab');
+    assert.equal((body.match(/<w:p\/>/g) || []).length, lines.filter((l) => l === '').length, 'an empty paragraph for every blank line');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('Open reads a note named .TXT or .MD, and a lone carriage return in a note becomes a line break (QA-F-06)', async () => {
+  const p = await loadPage();
+  try {
+    p.start();
+    const CR = String.fromCharCode(13);
+    chooseFile(p, new p.w.File(['a' + CR + 'b' + CR + 'c'], 'OLD.TXT', { type: 'text/plain' }));
+    await p.settle();
+    assert.equal(p.toast(), 'Opened', 'a .TXT name is a plain note');
+    assert.equal(await p.readReal(), 'a\nb\nc', 'lone carriage returns become line breaks');
+    assert.equal(p.coverLength(), 5);
+    chooseFile(p, new p.w.File(['# Notes'], 'Notes.MD', { type: 'text/markdown' }));
+    await p.settle();
+    p.$('#pw-ok').click();
+    await p.settle();
+    assert.equal(p.toast(), 'Opened', 'a .MD name is a plain note');
+    assert.equal(await p.readReal(), '# Notes');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('a stored format is checked against the list itself: constructor, __proto__ and toString are not formats (QA-F-06)', async () => {
+  for (const word of ['constructor', '__proto__', 'toString']) {
+    const p = await loadPage({ storage: { 'plainSight.saveMode': word, 'plainSight.folderFormat': word }, folder: fakeFolder('Notes') });
+    try {
+      assert.equal(p.$('input[name="save-mode"][value="sight"]').checked, true, word + ': the download choice falls back to the encrypted file');
+      assert.equal(p.$('#folder-status').textContent, 'Save downloads an encrypted .sight file.', word);
+      assert.equal(p.$('input[name="folder-format"][value="txt"]').checked, true, word + ': the folder format falls back to .txt');
+      p.$('#btn-folder').click();
+      await p.settle();
+      assert.equal(p.$('#folder-status').textContent, 'Save writes a plain text file into the folder "Notes".', word);
+      p.$('#btn-folder-forget').click();
+      await p.settle();
+      p.start();
+      p.type('abc');
+      p.$('#btn-save').click();
+      assert.equal(p.$('#pw').hidden, false, word + ': Save asks for a password');
+      assert.equal(p.downloads.length, 0, word + ': nothing downloaded without one');
+      p.press('Escape');
+      assert.deepEqual(p.errors, [], word);
+    } finally { p.close(); }
+  }
+});
+
+test('another tab changing the folder format redraws an open intro (QA-F-06)', async () => {
+  const p = await loadPage({ folder: fakeFolder('Notes') });
+  try {
+    p.$('#btn-folder').click();
+    await p.settle();
+    assert.equal(p.$('input[name="folder-format"][value="txt"]').checked, true);
+    assert.equal(p.$('#folder-status').textContent, 'Save writes a plain text file into the folder "Notes".');
+    p.w.localStorage.setItem('plainSight.folderFormat', 'md');
+    p.w.dispatchEvent(new p.w.StorageEvent('storage', { key: 'plainSight.folderFormat', oldValue: null, newValue: 'md' }));
+    assert.equal(p.$('input[name="folder-format"][value="md"]').checked, true, 'the radio follows the other tab');
+    assert.equal(p.$('#folder-status').textContent, 'Save writes a Markdown file into the folder "Notes".', 'and the status line with it');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
 // ---------------------------------------------------------------------------
 // Run
 // ---------------------------------------------------------------------------
