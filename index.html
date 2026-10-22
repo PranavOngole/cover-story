@@ -1550,6 +1550,7 @@
     if (!file) return;
     if (/\.(txt|md)$/i.test(file.name)) { await openPlain(file); return; }
     if (/\.docx$/i.test(file.name)) { toast('Open reads .sight, .txt and .md files'); return; }
+    if (!cryptoAvailable()) { toast(NO_CRYPTO_NOTICE); return; }   // only a .sight file needs encryption; a plain note opened above (QA-F-11)
     let parsed;
     try {
       parsed = JSON.parse(await file.text());
@@ -1808,7 +1809,7 @@
     window.addEventListener('pagehide', () => { if (vaultOpen()) vaultSaveNow(); });
 
     saveBtn.addEventListener('click', onSave);
-    $('#btn-open').addEventListener('click', () => { blurActive(); if (!cryptoAvailable()) { toast(NO_CRYPTO_NOTICE); return; } fileInput.click(); });
+    $('#btn-open').addEventListener('click', () => { blurActive(); fileInput.click(); });   // the panel opens even without encryption: a plain note needs none (QA-F-11)
     fileInput.addEventListener('change', onFileChosen);
     $('#btn-help').addEventListener('click', () => { blurActive(); openIntro(); });
     $('#btn-start').addEventListener('click', startWriting);

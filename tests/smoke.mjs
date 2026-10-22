@@ -2394,7 +2394,7 @@ test('device vault: without encryption, Start and Esc on the intro leave a saved
   } finally { p.close(); }
 });
 
-test('without encryption, Save and Open say so instead of asking for a password or opening a file', async () => {
+test('without encryption, Save says so instead of asking for a password, and Open refuses a .sight file after the panel instead of the panel itself', async () => {
   const p = await loadPage({ noSubtle: true, storage: { 'plainSight.introSeen': '1' } });
   try {
     assert.match(p.toast(), /no encryption/, 'a return visit sees the notice');
@@ -2408,8 +2408,13 @@ test('without encryption, Save and Open say so instead of asking for a password 
     p.$('#file-input').click = () => { picked = true; };
     p.$('#toast').textContent = '';
     p.$('#btn-open').click();
-    assert.match(p.toast(), /no encryption/);
-    assert.equal(picked, false, 'no file picker');
+    assert.equal(picked, true, 'the file panel opens: a plain note needs no encryption (QA-F-11)');
+    assert.equal(p.toast(), '', 'no notice before a file is chosen');
+    chooseFile(p, makeCoverFile(p.w, await encryptVaultRecord('secret', 'a phrase for the file')));
+    await p.settle();
+    assert.match(p.toast(), /no encryption/, 'a .sight file is refused with the notice');
+    assert.equal(p.$('#pw').hidden, true, 'no password dialog for it');
+    assert.equal(await p.readReal(), 'words', 'nothing changed');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
@@ -3416,6 +3421,33 @@ test('the note text reads at 4.5:1 or better on the card and on the paper, and t
     assert.equal(label.textContent, 'Files in the folder are');
     assert.equal(group.querySelectorAll('input[name="folder-format"]').length, 3, 'the three radios are in the group');
     assert.ok(label.classList.contains('note'), 'the name is note text, so the contrast above applies to it');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('without encryption a plain .txt or .md note still opens, with the question when there is text on the page; the plain downloads still work (QA-F-11)', async () => {
+  const p = await loadPage({ noSubtle: true, storage: { 'plainSight.introSeen': '1', 'plainSight.saveMode': 'md' } });
+  try {
+    let picked = 0;
+    p.$('#file-input').click = () => { picked += 1; };
+    p.$('#toast').textContent = '';
+    p.$('#btn-open').click();
+    assert.equal(picked, 1, 'the file panel opens');
+    chooseFile(p, new p.w.File(['a plain note'], 'note.txt', { type: 'text/plain' }));
+    await p.settle();
+    assert.equal(p.toast(), 'Opened');
+    assert.equal(await p.readReal(), 'a plain note');
+    chooseFile(p, new p.w.File(['# second'], 'second.md', { type: 'text/markdown' }));
+    await p.settle();
+    assert.equal(p.$('#pw').hidden, false, 'text on the page: the question');
+    assert.equal(p.$('#pw-input').hidden, true);
+    p.$('#pw-ok').click();
+    await p.settle();
+    assert.equal(await p.readReal(), '# second');
+    p.$('#btn-save').click();
+    await p.settle();
+    assert.equal(p.downloads.length, 1, 'a plain download needs no encryption either');
+    assert.equal(await p.downloads[0].blob.text(), '# second');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
