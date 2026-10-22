@@ -1,14 +1,34 @@
 # Plain Sight
 
-A single static web page where typing anything makes the screen show a plausible document being written, while the real keystrokes go into a hidden buffer. Press a chord to peek at what you actually wrote, copy it, clear it, save it as a password-protected file, or keep an encrypted copy on your own device for next time.
+Write in private where everyone can see your screen.
 
-Nothing you type leaves this page. There is no server-side code, no account, no analytics and no third-party script. The page's own Content Security Policy (`default-src 'none'`) makes the browser refuse any fetch, XHR, beacon or web socket, so even a bug could not send anything. The only requests the page makes are for its own two files, `index.html` and `covers/<id>.js`, from the same origin, and neither carries anything you type. If you turn on the device vault, what stays on your machine is encrypted.
+Type anything and the screen shows a believable document being written: a novel, a work document or a research paper. Your real words go into a hidden buffer that never touches the network. A chord shows them to you, a key erases them, and when you save, you save ciphertext.
+
+## The promise, and how it is kept
+
+Most privacy claims ask for trust. These ask for a terminal.
+
+| Claim | How it is kept | Check it yourself |
+|---|---|---|
+| Nothing you type leaves the page. Not a byte. | The page makes no request after it loads: no fetch, no XHR, no beacon, no WebSocket, no form submission, no analytics, no account. The browser enforces it: the page's Content Security Policy is `default-src 'none'`, so even a bug could not phone home. | `grep -c -E "fetch\(\|XMLHttpRequest\|sendBeacon\|WebSocket" index.html` prints `0`. Open the browser's network panel and type for a minute: no requests. |
+| Nobody else is in the room. | No server-side code, no cookies, no third-party script, no font or image from anywhere else. The deployment is exactly four files, this page and the three covers, by allowlist. | `curl -sI https://cover-story-taupe.vercel.app/` shows no `set-cookie`; `cat .vercelignore` is the allowlist. |
+| Your text is one variable in memory. | It lives in a closure. It is written into the page only while you peek and removed when the peek ends. Nothing on `window` returns it. | `grep -n "let real" index.html`; `npm test` includes a check that local storage never holds it. |
+| Saving means encrypting. | AES-256-GCM with a key from your password by PBKDF2-SHA-256 at 310,000 rounds and a random 16-byte salt, a random 12-byte IV, all through the browser's WebCrypto with a non-extractable key. The file is a short JSON record you can read. | Save, open the `.sight` file in a text editor, and compare it with the format below. |
+| The device vault stores ciphertext only. | The optional copy in your browser's storage is the same record under a phrase of 12 characters or more; the key exists only in memory while the vault is open. | `npm test` runs the vault round trips with right and wrong phrases. |
+| A hostile network sees one page load and nothing more. | One load over TLS 1.3 behind HSTS, then silence: there is no keystroke timing to watch because nothing is sent. The observer learns the hostname and the size of the load, never a word. | `curl -sI https://cover-story-taupe.vercel.app/ \| grep -i strict`. |
+| You can read every line. | One HTML file and three cover files, no framework, no build step, no runtime dependency, MIT. | `wc -l index.html covers/*.js`. |
+
+What it does not do is listed just as plainly in the threat model below: it cannot stop a keylogger, a compromised machine, a browser extension or someone reading your fingers.
+
+## Who it is for
+
+People who write where someone can see the screen: a newsroom, an open office, a train, a shared flat, a classroom. A journalist drafting a note that is not ready to be seen, a person keeping a journal they do not want to explain, anyone who wants a scratchpad that is nobody's business. The watcher sees a document being written, and that is all.
 
 Live: https://cover-story-taupe.vercel.app
 
 Demo GIF: not recorded yet. (Pranav: record a 10 to 15 second screen capture of typing, pressing Cmd+Shift+G to peek, and pressing Esc, convert it to a GIF, save it as `docs/demo.gif`, add the image here, and delete this paragraph.)
 
-Plain Sight was called Cover Story until 20 October 2026. Files saved under the old name still open.
+Plain Sight was called Cover Story until 20 October 2026. Files saved under the old name still open. A Mac app built around the same page is in progress on the `desktop` branch; it makes no network connection at all.
 
 ## The three versions
 
@@ -43,7 +63,7 @@ Ctrl is Cmd on a Mac. Either key works on every platform.
 | Copy | While peeking, press Ctrl+C. Your real text goes to the clipboard. |
 | Clear | Press Esc. The hidden buffer and the screen are erased. If the device vault is open it is saved first and then locked; its encrypted copy stays. The page also clears itself if its tab has been hidden for more than 10 minutes while the buffer is non-empty. |
 | Save | The Save button asks for a password and downloads a `.sight` file. If you have chosen a folder on the intro screen, it writes a plain file into that folder instead, as `.txt`, `.md` or `.docx` (Word), whichever you picked there. If you picked a plain download on the intro screen (`.txt`, `.md` or `.docx`), it downloads that file named by the moment, with no password. |
-| Open | The Open button reads a `.sight` file, asks for its password and replaces the hidden buffer with its contents. It also reads a plain `.txt` or `.md` note, asking first if there is text on the page. Either way the screen is rebuilt to the same length and writing goes on from there. A `.docx` cannot be opened. |
+| Open | The Open button reads a `.sight` file, asks for its password and replaces the hidden buffer with its contents. It also reads a plain `.txt` or `.md` note, asking first if there is text on the page. Either way the screen is rebuilt to the same length and writing goes on from there. Esc pressed while a note is still being read cancels it. On an address without encryption a plain note still opens; only a `.sight` file needs it. A `.docx` cannot be opened. |
 | Keep on this device | On the intro screen, tick "Keep my text on this device" and choose a phrase of 12 characters or more. From then on the page keeps an encrypted copy of your text in this browser. See the device vault below. |
 | Unlock | On a later visit, type your phrase on the blank page, then hold Ctrl, press E, then Enter. The right phrase brings your text back. A wrong phrase does nothing at all. |
 | Save to a folder | On the intro screen, "Choose a folder on this computer" (Chrome, Edge and other Chromium browsers; Brave after turning a setting on). From then on Save writes a plain file named by the moment you press it, for example `2026-10-20 14-55-03.txt`, into that folder: `.txt`, `.md` or a Word `.docx`, as picked under "Files in the folder are". "Stop using the folder" brings the download back. |
@@ -73,11 +93,11 @@ Two tabs of the page in the same browser share one copy: each tab saves on its o
 
 ### Browser support
 
-| Browser | Type, peek, copy, clear, vault | Encrypted `.sight` download | Plain `.txt` download | Write straight into a folder | Checked on this version |
+| Browser | Type, peek, copy, clear, vault | Encrypted `.sight` download | Plain download (`.txt`, `.md`, `.docx`) | Write straight into a folder | Checked on this version |
 |---|---|---|---|---|---|
 | Chrome, Edge, Chromium | by design | by design | by design | by design | not yet; nothing has run in these browsers on this version, and the folder column has only ever run against the test suite's simulated folder |
 | Brave | by design | by design | by design | after turning on `brave://flags/#file-system-access-api` and relaunching; the page shows this | the folder button was seen by Pranav on 1.2.x; the save itself and this version not yet |
-| Safari | by design | by design | by design, with a warning: Safari opens downloaded text files in TextEdit by itself unless "Open safe files after downloading" is off (Settings, General), which would show your text on screen; Safari can also ask where each file goes (File download location: Ask for each download) | no, the browser has no folder access | headless WebKit (Safari's engine) on every version; the automatic opening of downloads is a Safari setting that headless runs cannot show |
+| Safari | by design | by design | by design, with a warning: Safari opens downloaded text files by itself unless "Open safe files after downloading" is off (Settings, General), which would show your text on screen for a `.txt` or `.md` file, and a `.docx` may open too (not yet tried); Safari can also ask where each file goes (File download location: Ask for each download) | no, the browser has no folder access | headless WebKit (Safari's engine) on every version; on this version on 21 October 2026 with QA-01's scripts wk_save, wk_open, wk_open2, wk_a11y, wk_surrogate, wk_net and wk_folder: Save in `.txt`, `.md`, `.docx` and `.sight`, Open of plain notes and of a `.sight`, the vault with notes it can and cannot store, Backspace after an emoji, the accessibility tree, and a network trace that showed only the page and its cover module; the automatic opening of downloads is a Safari setting that headless runs cannot show |
 | Firefox | by design | by design | by design, and Firefox can ask where each file goes (Settings, General, Downloads) | no, the browser has no folder access | not yet |
 
 The page detects whether folder access exists and shows the matching note in "Where Save writes" on the intro screen. The browser family is read only to pick the wording of that note; nothing else depends on it.
@@ -86,7 +106,7 @@ The page detects whether folder access exists and shows the matching note in "Wh
 
 In browsers with the File System Access API (Chrome, Edge and other Chromium browsers, and Brave once its setting is on) the intro screen offers "Choose a folder on this computer". The page keeps the folder handle in IndexedDB and asks the browser for write permission when it needs it. With a folder chosen, Save writes your real text into a new file named by the moment of the click, `YYYY-MM-DD HH-MM-SS.txt` (or `.md`, or `.docx` for a Word document, as picked on the intro screen; a counter goes before the extension if that name is already taken), and shows the name in a toast; nothing is encrypted and no password is asked. The text written is the text on the page when you pressed Save, even if you press Esc while the browser asks for permission. Choosing or forgetting a folder in one tab reaches your other open tabs. Anyone who can open that folder can read those files. In other browsers the button is hidden and Save downloads instead: an encrypted `.sight` file by default, or, if you pick one on the intro screen, a plain `.txt`, `.md` or `.docx` file named by the moment with no password. Both choices are kept in `localStorage`; the download choice works in every browser.
 
-A `.docx` from Save is a minimal Word document that the page writes itself: one paragraph per line of your text, a Word tab for each tab, and no metadata (no author, no dates, no application name; every part of the archive is dated 1 January 1980). macOS's `textutil` (the text system TextEdit uses) and LibreOffice read the text back exactly; Microsoft Word and Pages have not been tried yet. A `.md` file is your text exactly as typed.
+A `.docx` from Save is a minimal Word document that the page writes itself: one paragraph per line of your text, a Word tab for each tab, and no metadata (no author, no dates, no application name; every part of the archive is dated 1 January 1980). macOS's `textutil` (the text system TextEdit uses) and LibreOffice give the text back unchanged, apart from one final line break that each adds (LibreOffice also writes a byte-order mark); Microsoft Word and Pages have not been tried yet. A carriage return in the text ends a paragraph like a line feed. The document the page writes from `tests/fixtures/sample.txt` is kept as `tests/fixtures/sample.docx`; the test suite checks the page's bytes against it, and the Mac app's writer is held to the same two files. A `.md` file is your text exactly as typed.
 
 ### Save file format
 
@@ -142,6 +162,18 @@ Corporate IT may treat a page like this as an exfiltration or monitoring-evasion
 - Saving into a folder needs the File System Access API, which Chromium browsers offer (Brave behind a setting) and Safari and Firefox do not; those two get the plain `.txt` download instead. The folder path was checked here with a simulated folder in the test suite; the plain download was checked in headless WebKit; real-browser runs on this version are listed in the browser table.
 - With the vault on, the page saves 1.5 seconds after the last keystroke and again when the tab is hidden, on Esc and on the way out of the page. Closing or reloading the tab within about a second of typing can still lose those last keystrokes from the copy, because the browser may not wait for the encryption to finish.
 - Tested headless in WebKit (Safari's engine): no console errors, all three covers, the chords, the vault, save and open, and no horizontal overflow at 390px. Current Chrome, Edge and Firefox use the same standard APIs (WebCrypto, ES modules, the Clipboard API with a fallback) and are expected to work, but they have not been checked on this version.
+
+## Being safest
+
+- Prefer the Mac app (the `desktop` branch) on shared machines and untrusted networks: it makes no network connection, and no browser extension can reach it.
+- Use the encrypted save or the vault. A plain `.txt` is readable by anyone with the folder, and macOS indexes it for Spotlight and may sync it to iCloud.
+- Press Esc when you step away. The peek chord is public, so anyone at your keyboard can use it.
+- On a shared network, open the page from an https link or bookmark, never click through a certificate warning, and clear your clipboard after a copy.
+- Use a browser profile without extensions. An extension with page access can read anything on the page.
+
+## Planned hardening
+
+Logged on 21 October 2026, in this order: an App Sandbox with no network permission for the Mac app, so macOS itself refuses every connection; Secure Keyboard Entry and a capture-proof window while the real text is on screen in the app; a clipboard that clears itself after a copy; an idle lock that wipes the screen and locks the vault, in the app also when the Mac locks; a higher PBKDF2 round count once the vault carries the count with its key; the security headers served by the host; and encrypted, plainly named files for folder saves. None of these exists yet; each will appear in the changelog when it does.
 
 ## Desktop app (Mac)
 
