@@ -7,6 +7,8 @@
     "app:dev": "tauri dev --no-dev-server",
     "app:build": "tauri build",
     "test:app": "node tests/app.mjs",
+    "test:rust": "npm run copy && cargo test --manifest-path src-tauri/Cargo.toml",
+    "lint:rust": "npm run copy && cargo fmt --check --manifest-path src-tauri/Cargo.toml && cargo clippy --all-targets --manifest-path src-tauri/Cargo.toml -- -D warnings && cargo clippy --all-targets --features e2e --manifest-path src-tauri/Cargo.toml -- -D warnings",
     "build:e2e": "npm run copy && cargo build --release --features e2e --target-dir src-tauri/target/e2e --manifest-path src-tauri/Cargo.toml",
     "test:e2e": "node tests/e2e.mjs",
     "test:bundle": "node tests/bundle.mjs",
