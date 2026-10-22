@@ -274,7 +274,7 @@ test('no GUI test writes into ~/Documents or ~/Downloads: the test build takes P
 
 test('the web deployment allowlist is unchanged (DR-10)', () => {
   const lines = read(ROOT, '.vercelignore').split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
-  assert.deepEqual(lines, ['*', '!index.html', '!covers', '!covers/**']);
+  assert.deepEqual(lines, ['*', '!index.html', '!covers', '!covers/**', '!vercel.json']);
 });
 
 let passed = 0;
