@@ -73,7 +73,7 @@ fn main() {
                 Some(configuration) => builder.with_webview_configuration(configuration),
                 None => builder,
             };
-            builder
+            let window = builder
                 // After Tauri's own scripts, before the page, main frame only.
                 .initialization_script(ADAPTER)
                 .title("Untitled draft")
@@ -104,12 +104,31 @@ fn main() {
                 // may download nothing (DM-202).
                 .on_download(|_, _| false)
                 .build()?;
+            #[cfg(target_os = "macos")]
+            not_restorable(&window);
             #[cfg(feature = "e2e")]
             e2e::watch(app.handle().clone());
             Ok(())
         })
         .run(tauri::generate_context!())
         .expect("Plain Sight could not start");
+}
+
+/// macOS keeps a restorable window's state, and a picture of it, under
+/// Saved Application State to put the window back after a relaunch; this
+/// window shows the real text while peeking, so it is marked not restorable
+/// and macOS keeps nothing of it (Apple, `NSWindow` `isRestorable`: "Set this
+/// property to true if you want the window to be preserved or false if you do
+/// not want it preserved"). D-45, `Mac_PS_015`. The test build answers a
+/// `windowRestorable` probe with the value AppKit holds.
+#[cfg(target_os = "macos")]
+fn not_restorable(window: &tauri::WebviewWindow) {
+    if let Ok(ns_window) = window.ns_window() {
+        // SAFETY: Tauri's pointer to the window's NSWindow, used on the main
+        // thread, where setup runs.
+        let ns_window: &objc2_app_kit::NSWindow = unsafe { &*ns_window.cast() };
+        ns_window.setRestorable(false);
+    }
 }
 
 /// The web view's configuration, made here because Apple's Writing Tools can

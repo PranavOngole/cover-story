@@ -19,14 +19,14 @@ rfd = { version = "=0.17.2", default-features = false }
 # The { name } object the folder commands return. Already used by Tauri.
 serde = { version = "1", features = ["derive"] }
 
-# macOS: AppKit and WebKit calls for quitting like Esc (quit.rs) and for the
-# web view's configuration (main.rs), and Foundation's bookmarks for the
-# remembered folder (bookmark.rs). The versions are the ones Tauri already
-# uses, so nothing new is downloaded.
+# macOS: AppKit and WebKit calls for quitting like Esc (quit.rs), for the
+# web view's configuration and the window's restoration setting (main.rs), and
+# Foundation's bookmarks for the remembered folder (bookmark.rs). The versions
+# are the ones Tauri already uses, so nothing new is downloaded.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 block2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSWindow", "NSWindowRestoration"] }
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFRunLoop", "block2"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSData", "NSDictionary", "NSError", "NSString", "NSURL"] }
 objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "WKWebViewConfiguration"] }
@@ -43,7 +43,6 @@ e2e = [
   "objc2-app-kit/NSBitmapImageRep",
   "objc2-app-kit/NSImage",
   "objc2-app-kit/NSImageRep",
-  "objc2-app-kit/NSWindow",
   "objc2-web-kit/WKSnapshotConfiguration",
   "objc2-web-kit/WKWebView",
   "objc2-web-kit/block2",

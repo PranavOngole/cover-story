@@ -10,7 +10,7 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 // First: names the folder the test build writes downloads into, under the
 // evidence directory, before the harness reads it (Mac_PS_010).
@@ -652,6 +652,57 @@ for (const [how, quit] of QUIT_PATHS) {
     assert.equal(await page.peekText(), before + words, 'the copy holds every keystroke typed before ' + how);
   });
 }
+
+// ---------------------------------------------------------------------------
+// Wave G: the window is not restorable (D-45, Mac_PS_015). macOS keeps a
+// restorable window's state, and a picture of it, under Saved Application
+// State, written at key times (Apple, Mac App Programming Guide, User
+// Interface Preservation: "changes are coalesced and written at key times,
+// such as when the user switches to another app or logs out") and at a quit.
+// The folder is named after the bundle identifier; the test build is a bare
+// binary without one, and macOS names its other data after the process
+// (Library/WebKit/plain-sight), so both names are watched and every folder
+// that names the app is listed for the record.
+// ---------------------------------------------------------------------------
+const SAVED_STATE = path.join(HOME, 'Library', 'Saved Application State');
+const savedStateFolders = () => (existsSync(SAVED_STATE) ? readdirSync(SAVED_STATE) : [])
+  .filter((n) => n === ID + '.savedState' || n === path.basename(EXE) + '.savedState' || /plain.?sight/i.test(n));
+function assertNoWindowState(when) {
+  const folders = savedStateFolders();
+  const listing = folders.map((f) => [f, readdirSync(path.join(SAVED_STATE, f)).map((n) => n + ' (' + statSync(path.join(SAVED_STATE, f, n)).size + ' bytes)')]);
+  note('saved state folders ' + when + ': ' + JSON.stringify(listing));
+  for (const [folder, files] of listing) {
+    // A restorable window leaves windows.plist with an entry per window and
+    // data files holding its state and picture; none of that may be here.
+    assert.deepEqual(files.filter((f) => !f.startsWith('windows.plist')), [], when + ': ' + folder + ' holds window data: ' + files.join(', '));
+    if (files.length) {
+      const listed = JSON.parse(execFileSync('plutil', ['-convert', 'json', '-o', '-', path.join(SAVED_STATE, folder, 'windows.plist')], { encoding: 'utf8' }));
+      assert.deepEqual(listed, [], when + ': ' + folder + '/windows.plist lists a window: ' + JSON.stringify(listed).slice(0, 300));
+    }
+  }
+}
+
+test('the window is marked not restorable, and macOS keeps no window state or picture after a forced end while peeking, nor after a quit (D-45)', async () => {
+  assert.equal(await ask({ windowRestorable: true }), false, 'NSWindow isRestorable is false');
+  await page.press('Escape');
+  await page.type('words on screen while the app is ended by force');
+  await page.press('G', { meta: true, shift: true });
+  assert.equal(await page.shown('real'), true, 'peeking');
+  await sleep(3000);   // time for a periodic save of window state, if macOS does one
+  process.kill(app.pid, 'SIGKILL');
+  await until(() => !alive(app.pid), 'the app to be gone', 8000);
+  await sleep(1000);
+  assertNoWindowState('after SIGKILL while peeking');
+  await launch();
+  await page.press('Escape');
+  await page.type('words on screen before a quit');
+  await page.press('G', { meta: true, shift: true });
+  await ask({ close: true });   // the quit's Esc ends the peek, then the app ends; a restorable window's state is written then
+  await until(() => !alive(app.pid), 'the app to end after the close', 8000);
+  await sleep(1000);
+  assertNoWindowState('after a quit');
+  await launch();
+});
 
 // ---------------------------------------------------------------------------
 // Wave G: File > Open..., File > Save... and Help > Plain Sight Help press

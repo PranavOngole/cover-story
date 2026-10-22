@@ -15,7 +15,8 @@
 //! app may be gone after), `{"id": n, "windowTitle": true}` answers its title,
 //! `{"id": n, "writingTools": true}` the web view's Writing Tools setting,
 //! `{"id": n, "delegateResponds": true}` whether the app's delegate answers
-//! applicationShouldTerminate: (quit.rs), and
+//! applicationShouldTerminate: (quit.rs), `{"id": n, "windowRestorable": true}`
+//! whether macOS may keep the window's state (main.rs sets it off), and
 //! `{"id": n, "window": "minimize"}` (or "unminimize", "hide", "show")
 //! minimizes it or hides the app as the yellow button and Cmd+H do. The Quit
 //! item and the Dock's quit need no probe: the runner presses the real item
@@ -98,6 +99,18 @@ pub fn watch(app: AppHandle) {
                     delegate.respondsToSelector(sel!(applicationShouldTerminate:))
                 });
                 respond(&answer, json!({ "ok": true, "value": responds }));
+            });
+        } else if req["windowRestorable"].as_bool() == Some(true) {
+            // NSWindow's isRestorable as AppKit holds it (main.rs sets it off).
+            on_main_run_loop(move || {
+                if let Ok(ns_window) = window.ns_window() {
+                    // SAFETY: Tauri's pointer to the window's NSWindow, on the main thread.
+                    let ns_window: &NSWindow = unsafe { &*ns_window.cast() };
+                    respond(
+                        &answer,
+                        json!({ "ok": true, "value": ns_window.isRestorable() }),
+                    );
+                }
             });
         } else if let Some(action) = req["window"].as_str() {
             let done = match action {
