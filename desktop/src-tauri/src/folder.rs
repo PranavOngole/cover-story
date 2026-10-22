@@ -991,6 +991,27 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// The list is pinned (QA-F-07): a denylist-shaped guard would let an
+    /// added extension through every other test.
+    #[test]
+    fn the_folder_formats_are_exactly_txt_md_and_docx() {
+        assert_eq!(PLAIN_EXTENSIONS.as_slice(), [".txt", ".md", ".docx"]);
+        let dir = scratch("exact-formats");
+        let chosen = dir.join("Notes");
+        fs::create_dir(&chosen).unwrap();
+        let (folder, _) = load(&dir.join("data"));
+        folder.remember(chosen.clone()).unwrap();
+        for ext in [".sh", ".TXT", ".docx ", "..docx"] {
+            assert_eq!(
+                folder.write(BASE, ext, "text").unwrap_err(),
+                "Save writes only .txt, .md and .docx files into the folder",
+                "{ext:?} must be refused"
+            );
+        }
+        assert_eq!(fs::read_dir(&chosen).unwrap().count(), 0, "nothing written");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn a_docx_is_made_from_the_text_and_every_other_file_is_the_text() {
         let text = "line one\n\tline two";
