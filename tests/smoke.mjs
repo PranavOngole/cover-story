@@ -3706,6 +3706,288 @@ test('a long unbroken file name wraps inside the Open question instead of runnin
 });
 
 // ---------------------------------------------------------------------------
+// Fixes after QA-01's Wave G web report (QA-G-01 to QA-G-07, QA-G-09)
+// ---------------------------------------------------------------------------
+test('the "Files in the folder are" row is not drawn where folder access does not exist: a hidden element is never drawn, whatever its display rule (QA-G-01)', async () => {
+  const p = await loadPage();   // no showDirectoryPicker, as in Safari and Firefox
+  try {
+    assert.equal(typeof p.w.showDirectoryPicker, 'undefined');
+    const row = p.$('#folder-format');
+    assert.equal(row.hidden, true, 'the page hides the row');
+    assert.equal(p.w.getComputedStyle(row).display, 'none', 'and it is not drawn');
+    for (const el of p.d.querySelectorAll('[hidden]')) assert.equal(p.w.getComputedStyle(el).display, 'none', (el.id || el.tagName) + ' is hidden and not drawn');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+  const q = await loadPage({ folder: fakeFolder('Notes') });
+  try {
+    const row = q.$('#folder-format');
+    assert.equal(row.hidden, false, 'with folder access the row is offered');
+    assert.equal(q.w.getComputedStyle(row).display, 'flex', 'and drawn as the row it is');
+    assert.match(HTML, /\[hidden\] \{ display: none !important; \}/, 'the rule that keeps every hidden element off the screen is in the stylesheet');
+    assert.deepEqual(q.errors, []);
+  } finally { q.close(); }
+});
+
+test('a file whose name is none of .sight, .txt or .md is answered "Open reads .sight, .txt and .md files", as a .docx is, never "not a .sight file"; a .sight or .cover file still goes to its password (QA-G-03)', async () => {
+  const p = await loadPage();
+  try {
+    p.start();
+    for (const name of ['todo.log', 'notes.text', 'readme.markdown', 'notes.txt.bak', 'note.txt ', 'noextension', 'data.json']) {
+      chooseFile(p, new p.w.File(['plain words'], name, { type: 'text/plain' }));
+      await p.settle();
+      assert.equal(p.$('#pw').hidden, true, name + ': no dialog');
+      assert.equal(p.toast(), 'Open reads .sight, .txt and .md files', name);
+      assert.equal(await p.readReal(), '', name + ': nothing opened');
+    }
+    chooseFile(p, new p.w.File(['not json'], 'broken.sight', { type: 'application/json' }));   // a .sight that is not one is still told so
+    await p.settle();
+    assert.equal(p.toast(), 'That is not a .sight file');
+    const record = await encryptVaultRecord('old words', 'file password');
+    for (const name of ['saved.sight', 'old-name.cover', 'UPPER.SIGHT']) {
+      chooseFile(p, new p.w.File([record], name, { type: 'application/json' }));
+      await p.settle();
+      assert.equal(p.$('#pw').hidden, false, name + ': asks for its password');
+      p.press('Escape');
+      await p.settle();
+    }
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('device vault: when the saved copy is gone from the device under the page (site data cleared, no storage event) the vault locks and says so (QA-G-04)', async () => {
+  const p = await loadPage();
+  try {
+    p.start();
+    p.type('keep ');
+    await p.vaultOn('correct horse battery staple');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    assert.ok(p.storageDump()['plainSight.vault'], 'a copy is stored');
+    p.w.localStorage.clear();                // the same document: no storage event for it
+    p.$('#toast').textContent = '';
+    p.type('x');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    assert.ok(!p.d.body.classList.contains('vault-open'), 'locked');
+    assert.equal(p.toast(), 'The saved copy is gone from this device; the vault is locked');
+    assert.equal(p.storageDump()['plainSight.vault'], undefined, 'nothing was written back');
+    assert.equal(await p.readReal(), 'keep x', 'the text stays on the page');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('Esc pressed while a .sight file is still being read wins: no password question appears afterwards and nothing opens, as for a plain note (QA-G-05)', async () => {
+  const p = await loadPage();
+  try {
+    p.start();
+    p.type('file contents');
+    p.$('#btn-save').click();
+    await p.submitPassword('file password');
+    await p.settle(400);
+    const json = await p.downloads[0].blob.text();
+    p.press('Escape');
+    p.type('keep');
+    const read = p.w.Blob.prototype.text;
+    p.w.Blob.prototype.text = function () { return new Promise((resolve) => setTimeout(() => resolve(read.call(this)), 300)); };   // a slow disk or share
+    chooseFile(p, makeCoverFile(p.w, json));
+    await sleep(100);
+    p.press('Escape');                       // the panic key, while the read is still in flight
+    assert.equal(await p.readReal(), '', 'wiped at once');
+    await sleep(500);                        // the read finishes after the wipe
+    assert.equal(p.$('#pw').hidden, true, 'no password question appears after the wipe');
+    assert.equal(p.toast(), 'Open cancelled');
+    assert.equal(await p.readReal(), '');
+    p.w.Blob.prototype.text = read;
+    chooseFile(p, makeCoverFile(p.w, json));   // without the Esc the same file asks for its password
+    await p.settle();
+    assert.equal(p.$('#pw').hidden, false);
+    await p.submitPassword('file password');
+    await p.settle();
+    assert.equal(await p.readReal(), 'file contents');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('the Open question is described by its hint for a screen reader: aria-describedby names the line that says the page will be replaced (QA-G-06)', async () => {
+  const p = await loadPage();
+  try {
+    p.start();
+    p.type('words');
+    chooseFile(p, new p.w.File(['other'], 'note.txt', { type: 'text/plain' }));
+    await p.settle();
+    const dialog = p.$('#pw');
+    assert.equal(dialog.hidden, false);
+    const described = p.d.getElementById(dialog.getAttribute('aria-describedby') || '');
+    assert.ok(described && dialog.contains(described), 'the dialog is described by an element inside it');
+    assert.equal(described.textContent, 'Opening replaces what is on the page now.');
+    p.$('#pw-cancel').click();
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('device vault: after a lock because the device refused the copy, the phrase on the intro reopens the vault without duplicating the text: the page text stays as it is, becomes the copy if the device now accepts it, and the toast says so; if the device still refuses, the vault locks again and says so (QA-G-02)', async () => {
+  const p = await loadPage();
+  const proto = p.w.Storage.prototype;
+  const setItem = proto.setItem;
+  try {
+    p.start();
+    p.type('first words ');
+    await p.vaultOn('correct horse battery staple');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    assert.ok(p.storageDump()['plainSight.vault']);
+    let refuse = true;                       // from now on the device refuses the vault's writes
+    proto.setItem = function (key, value) { if (refuse && key === 'plainSight.vault') throw new p.w.DOMException('The quota has been exceeded.', 'QuotaExceededError'); return setItem.call(this, key, value); };
+    p.type('more words after the device filled');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    assert.ok(!p.d.body.classList.contains('vault-open'), 'locked by the refusal');
+    assert.equal(p.toast(), 'The copy could not be kept on this device: storage is full or blocked');
+    p.type(' and still more');
+    const onPage = await p.readReal();
+    assert.equal(onPage, 'first words more words after the device filled and still more');
+    // The device still refuses: the phrase opens the vault, the page text is kept, and the save is refused again, honestly.
+    p.$('#btn-help').click();
+    assert.match(p.$('#vault-status').textContent, /^A saved copy is on this device/);
+    p.$('#vault-phrase').value = 'correct horse battery staple';
+    p.start();
+    await sleep(900);
+    assert.equal(await p.readReal(), onPage, 'the page text is unchanged: no duplicated start');
+    assert.ok(!p.d.body.classList.contains('vault-open'), 'the device still refuses, so the vault locked again');
+    assert.equal(p.toast(), 'The copy could not be kept on this device: storage is full or blocked');
+    assert.equal(await decryptVault(JSON.parse(p.storageDump()['plainSight.vault']), 'correct horse battery staple'), 'first words ', 'the earlier copy stands');
+    // Room again: the phrase reopens the vault, the page text is kept and becomes the copy.
+    refuse = false;
+    p.$('#btn-help').click();
+    p.$('#vault-phrase').value = 'correct horse battery staple';
+    p.start();
+    await sleep(900);
+    assert.ok(p.d.body.classList.contains('vault-open'), 'the vault is open again');
+    assert.equal(await p.readReal(), onPage, 'the page text is unchanged: no duplicated start');
+    assert.equal(p.toast(), 'Vault opened; the text on the page is kept');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    assert.equal(await decryptVault(JSON.parse(p.storageDump()['plainSight.vault']), 'correct horse battery staple'), onPage, 'the page text is now the copy');
+    p.type(' more');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    assert.equal(await decryptVault(JSON.parse(p.storageDump()['plainSight.vault']), 'correct horse battery staple'), onPage + ' more', 'and saving goes on');
+    assert.deepEqual(p.errors, []);
+  } finally { proto.setItem = setItem; p.close(); }
+});
+
+test('device vault: the intro path without such a lock is unchanged: Esc then the phrase on the intro puts the saved text before what was typed since; and after a lock the device caused, Esc then the phrase and the chord on the blank page bring back the earlier copy without the unsaved tail (QA-G-02, V4)', async () => {
+  const p = await loadPage();
+  const proto = p.w.Storage.prototype;
+  const setItem = proto.setItem;
+  try {
+    p.start();
+    p.type('saved part. ');
+    await p.vaultOn('correct horse battery staple');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    p.press('Escape');                       // locks, the copy stays; the page is blank
+    await sleep(300);                        // the save Esc asked for lands
+    p.type('typed before ');
+    p.$('#btn-help').click();
+    p.$('#vault-phrase').value = 'correct horse battery staple';
+    p.start();
+    await sleep(900);
+    assert.ok(p.d.body.classList.contains('vault-open'));
+    assert.equal(await p.readReal(), 'saved part. typed before ', 'the intro path after Esc still puts the saved text first');
+    assert.equal(p.toast(), 'Saved copy opened');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);  // that text is saved
+    let refuse = true;
+    proto.setItem = function (key, value) { if (refuse && key === 'plainSight.vault') throw new p.w.DOMException('The quota has been exceeded.', 'QuotaExceededError'); return setItem.call(this, key, value); };
+    p.type('UNSAVED tail');
+    await sleep(VAULT_SAVE_DELAY_MS + 400);
+    assert.ok(!p.d.body.classList.contains('vault-open'), 'locked by the refusal');
+    p.press('Escape');
+    await sleep(300);
+    assert.equal(await p.readReal(), '', 'Esc wipes the page, the unsaved tail with it');
+    refuse = false;
+    p.type('correct horse battery staple');
+    p.unlockChord();
+    await sleep(900);
+    assert.ok(p.d.body.classList.contains('vault-open'));
+    assert.equal(await p.readReal(), 'saved part. typed before ', 'the chord brings back the earlier copy only');
+    assert.deepEqual(p.errors, []);
+  } finally { proto.setItem = setItem; p.close(); }
+});
+
+test('device vault: an older key\'s save refused by the device does not lock the newer vault it no longer belongs to (QA-G-09: Q3a, Q3b)', async () => {
+  const p = await loadPage({ slowEncrypt: (n) => (n === 1 ? 1200 : 0) });   // the second encryption, the hidden-tab save under the first key, takes 1200 ms
+  const proto = p.w.Storage.prototype;
+  const setItem = proto.setItem;
+  try {
+    p.start();
+    p.type('first key ');
+    await p.vaultOn('correct horse battery staple');   // encryption 0: the first key's first write
+    await sleep(400);
+    const salt1 = JSON.parse(p.storageDump()['plainSight.vault']).salt;
+    proto.setItem = function (key, value) { if (key === 'plainSight.vault' && JSON.parse(value).salt === salt1) throw new p.w.DOMException('The quota has been exceeded.', 'QuotaExceededError'); return setItem.call(this, key, value); };   // the device refuses the first key's records only
+    let hidden = false;
+    Object.defineProperty(p.d, 'hidden', { get: () => hidden, configurable: true });
+    hidden = true;
+    p.d.dispatchEvent(new p.w.Event('visibilitychange'));   // the save on hide: the first key's write, slow to encrypt, is now in flight
+    hidden = false;
+    p.d.dispatchEvent(new p.w.Event('visibilitychange'));
+    p.$('#btn-help').click();                // meanwhile a new phrase re-keys the vault; its first write queues behind the slow one
+    p.$('#vault-phrase').value = 'a brand new phrase here';
+    p.start();
+    await sleep(1200 + 800);
+    assert.ok(p.d.body.classList.contains('vault-open'), 'the newer vault stays open: the refused save was an older key\'s');
+    assert.equal(p.toast(), 'The copy could not be kept on this device: storage is full or blocked', 'the refusal is still reported');
+    const saved = JSON.parse(p.storageDump()['plainSight.vault']);
+    assert.notEqual(saved.salt, salt1, 'the stored copy is the new key\'s');
+    assert.equal(await decryptVault(saved, 'a brand new phrase here'), 'first key ');
+    assert.deepEqual(p.errors, []);
+  } finally { proto.setItem = setItem; p.close(); }
+});
+
+test('Backspace and the key test at the code point boundaries: U+10000 is one astral character, two fullwidth letters and U+FFFE U+FFFF are two characters each, and a key string of two emoji is not one key (QA-G-09: Q4a to Q4d)', async () => {
+  const p = await loadPage();
+  try {
+    p.start();
+    const key = (k) => p.d.dispatchEvent(new p.w.KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }));
+    const first = String.fromCodePoint(0x10000);
+    key('a'); key(first);
+    assert.equal(await p.readReal(), 'a' + first, 'U+10000, the first astral code point, is typed as one character (Q4b)');
+    p.press('Backspace');
+    assert.equal(await p.readReal(), 'a', 'Backspace removes the whole of U+10000 (Q4a)');
+    const ff = String.fromCharCode(0xFF21) + String.fromCharCode(0xFF22);
+    key(ff[0]); key(ff[1]);
+    assert.equal(await p.readReal(), 'a' + ff);
+    p.press('Backspace');
+    assert.equal(await p.readReal(), 'a' + ff[0], 'after two fullwidth letters Backspace removes one (Q4d)');
+    const nonchars = String.fromCharCode(0xFFFE) + String.fromCharCode(0xFFFF);
+    key(nonchars[0]); key(nonchars[1]);
+    assert.equal(await p.readReal(), 'a' + ff[0] + nonchars);
+    p.press('Backspace');
+    assert.equal(await p.readReal(), 'a' + ff[0] + nonchars[0], 'after U+FFFE U+FFFF Backspace removes one (Q4d)');
+    key(String.fromCodePoint(0x1F600) + String.fromCodePoint(0x1F601));
+    assert.equal(await p.readReal(), 'a' + ff[0] + nonchars[0], 'a key string of two emoji is not one character and is not typed (Q4c)');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('another tab choosing or forgetting the folder puts no title on Save or Open, and an intro opened afterwards names the folder (QA-G-09: Q11)', async () => {
+  const p = await loadPage({ folder: fakeFolder('Notes') });
+  try {
+    p.$('#btn-folder').click();              // the handle is in IndexedDB, as another tab's choice would leave it
+    await p.settle();
+    p.start();
+    const noTitle = (when) => { for (const sel of ['#btn-save', '#btn-open']) assert.equal(p.$(sel).hasAttribute('title'), false, sel + ' carries no title ' + when); };
+    noTitle('after this tab chose the folder');
+    p.$('#btn-help').click();
+    assert.equal(p.$('#folder-status').textContent, 'Save writes a plain text file into the folder "Notes".', 'the intro names the folder');
+    p.start();
+    // Another tab's change reaches this tab while its intro is closed. jsdom has no IndexedDB, so the handle reloaded here is
+    // always none, as after the other tab forgot the folder; the choice case with a handle present is WebKit's to show.
+    p.w.dispatchEvent(new p.w.StorageEvent('storage', { key: 'plainSight.folderVersion', oldValue: '1', newValue: '2' }));
+    await p.settle();
+    noTitle('after another tab\'s folder change arrived');
+    p.$('#btn-help').click();
+    assert.equal(p.$('#folder-status').textContent, 'Save downloads an encrypted .sight file.', 'the intro opened afterwards shows the state the other tab left');
+    noTitle('with the intro open again');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+// ---------------------------------------------------------------------------
 // Run
 // ---------------------------------------------------------------------------
 let passed = 0;

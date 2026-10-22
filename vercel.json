@@ -5,7 +5,7 @@
       "headers": [
         {
           "key": "Content-Security-Policy",
-          "value": "default-src 'none'; script-src 'self' 'sha256-dcA+Wfxskje158db2MW4/zJHSBXLugvV4aDjEeOF8co=' 'sha256-eq/ohLBFwS3580Abx+e45Pcmnu233C4F7nhDQYDReAE='; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+          "value": "default-src 'none'; script-src 'self' 'sha256-ttOdAjy4IS8KsqxBztrKKFMkxaJiMeJlkNat+xbEBsU=' 'sha256-eq/ohLBFwS3580Abx+e45Pcmnu233C4F7nhDQYDReAE='; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
         },
         {
           "key": "X-Frame-Options",
