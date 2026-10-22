@@ -594,8 +594,9 @@ test('the menu bar is the app\'s own and holds only standard items', async () =>
   for (const want of ['About Plain Sight', 'Services', 'Hide Plain Sight', 'Hide Others', 'Show All', 'Quit Plain Sight']) {
     assert.ok(items['Plain Sight'].includes(want), 'the app menu has ' + want);
   }
-  assert.ok(items.File.includes('Close Window'));
+  assert.deepEqual(items.File, ['Open...', 'Save...', 'Close Window'], 'the File menu of a document app (D-44)');
   for (const want of ['Undo', 'Redo', 'Cut', 'Copy', 'Paste', 'Select All']) assert.ok(items.Edit.includes(want), 'Edit has ' + want);
+  assert.ok(items.Help.includes('Plain Sight Help'), 'the Help menu has the help item (D-44): ' + items.Help.join(', '));
   const all = Object.values(items).flat().join(' | ');
   assert.equal(/peek|vault|hidden|reload|inspect|debug|developer|devtools/i.test(all), false, 'nothing names the trick or a browser tool: ' + all);
 });
@@ -651,6 +652,58 @@ for (const [how, quit] of QUIT_PATHS) {
     assert.equal(await page.peekText(), before + words, 'the copy holds every keystroke typed before ' + how);
   });
 }
+
+// ---------------------------------------------------------------------------
+// Wave G: File > Open..., File > Save... and Help > Plain Sight Help press
+// the page's own buttons, and do nothing while a dialog is open (D-44,
+// Mac_PS_013). The items are pressed in the real menu bar through
+// Accessibility, as the quit tests press the Quit item.
+// ---------------------------------------------------------------------------
+test('File > Save... with text on the page asks for the password, and over that dialog the Help item does nothing', async () => {
+  await page.press('Escape');
+  await page.type('words for the File menu');
+  drive('menu', app.pid, 'File', 'Save...');
+  await until(() => page.shown('pw'), 'the password dialog from File > Save...', 8000);
+  drive('menu', app.pid, 'Help', 'Plain Sight Help');
+  await sleep(1000);
+  assert.equal(await page.shown('intro'), false, 'Help does nothing while the password dialog is up');
+  assert.equal(await page.shown('pw'), true, 'the password dialog is still up');
+  await page.press('Escape');
+  await until(async () => !(await page.shown('pw')), 'the password dialog to close');
+  assert.equal(await page.peekText(), 'words for the File menu', 'the text is untouched');
+  await picture('g01-save-item.png');
+});
+
+test('Help > Plain Sight Help opens the intro, and over it File > Save... does nothing', async () => {
+  drive('menu', app.pid, 'Help', 'Plain Sight Help');
+  await until(() => page.shown('intro'), 'the intro from the Help item', 8000);
+  drive('menu', app.pid, 'File', 'Save...');
+  await sleep(1000);
+  assert.equal(await page.shown('pw'), false, 'Save... does nothing while the intro is up');
+  assert.equal(await page.shown('intro'), true);
+  await picture('g02-help-item.png');
+  await page.start();
+});
+
+// The Open panel is app-modal (DM-226), so this runs last, cancels the panel
+// through Accessibility and reports not run while the screen is locked, when
+// macOS shows Accessibility no windows and the panel could not be cancelled.
+const openPanelOnScreen = () => drive('cgwindows', app.pid).windows.some((w) => w.onscreen && w.layer === 8);
+test('File > Open... opens the system open panel, which the test cancels', async () => {
+  if (!drive('windows', app.pid).windows.length) throw new NotRun('macOS shows Accessibility no windows while the screen is locked, so the panel could not be cancelled');
+  await page.press('Escape');
+  drive('menu', app.pid, 'File', 'Open...');
+  await until(openPanelOnScreen, 'the open panel (a window at level 8)', 10000);
+  note('windows with the open panel: ' + JSON.stringify(drive('cgwindows', app.pid).windows.filter((w) => w.onscreen)));
+  try {
+    for (let i = 0; i < 4 && openPanelOnScreen(); i++) {
+      try { drive('panel-button', app.pid, 'Cancel'); } catch (err) { note('cancel: ' + err.message); }
+      await sleep(1000);
+    }
+  } finally {
+    assert.equal(openPanelOnScreen(), false, 'the panel is gone');
+  }
+});
 
 await run(tests, {
   name: 'e2e',

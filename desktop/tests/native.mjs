@@ -459,6 +459,56 @@ test('in the app a .md or .docx download reaches the app as text, named by the m
   }
 });
 
+// The menu items File > Open..., File > Save... and Help > Plain Sight Help
+// run menu.rs's PRESS script in the page (D-44). The script is read from
+// menu.rs as text and run here as the app runs it, so the guard tested is the
+// one the app holds.
+const PRESS = (() => {
+  const rs = readFileSync(path.join(ROOT, 'desktop/src-tauri/src/menu.rs'), 'utf8');
+  const m = rs.match(/^const PRESS: &str = r#"(.*)"#;$/m);
+  if (!m) throw new Error('menu.rs holds no PRESS script');
+  return (button) => m[1].replace('BUTTON', button);
+})();
+
+test('the menu items press the page\'s buttons only while no dialog is open: Save... asks for the password, Help opens the intro, Open... opens the file chooser (D-44)', async () => {
+  const native = fakeNative();
+  const p = await loadPage({ native });   // a first visit: the intro is open
+  try {
+    await p.settle();
+    let chooser = 0;
+    p.$('#file-input').click = () => { chooser += 1; };   // the system panel, which jsdom has not got
+    assert.equal(p.$('#intro').hidden, false, 'the intro is open');
+    assert.equal(p.w.eval(PRESS('btn-save')), false, 'Save... does nothing over the intro');
+    assert.equal(p.w.eval(PRESS('btn-open')), false, 'Open... does nothing over the intro');
+    assert.equal(p.w.eval(PRESS('btn-help')), false, 'Help does nothing over the intro');
+    await p.settle();
+    assert.equal(p.$('#pw').hidden, true, 'no password dialog');
+    assert.equal(chooser, 0, 'no file chooser');
+    p.start();
+    p.type('words to save');
+    assert.equal(p.w.eval(PRESS('btn-save')), true, 'Save... presses the Save button');
+    await p.settle();
+    assert.equal(p.$('#pw').hidden, false, 'the password dialog is up');
+    assert.equal(p.w.eval(PRESS('btn-help')), false, 'Help does nothing over the password dialog');
+    assert.equal(p.w.eval(PRESS('btn-open')), false, 'Open... does nothing over the password dialog');
+    assert.equal(p.w.eval(PRESS('btn-save')), false, 'Save... does nothing over the password dialog');
+    await p.settle();
+    assert.equal(p.$('#intro').hidden, true, 'the intro stayed closed');
+    assert.equal(chooser, 0);
+    p.press('Escape');   // closes the password dialog
+    await p.settle();
+    assert.equal(p.$('#pw').hidden, true);
+    assert.equal(p.w.eval(PRESS('btn-help')), true, 'Help opens the intro');
+    await p.settle();
+    assert.equal(p.$('#intro').hidden, false, 'the intro is up');
+    p.start();
+    assert.equal(p.w.eval(PRESS('btn-open')), true, 'Open... presses the Open button');
+    assert.equal(chooser, 1, 'which opens the file chooser');
+    assert.equal(await p.real(), 'words to save', 'the text is untouched');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
 test('the page makes, byte for byte, the Word document the app is held to (tests/fixtures, docx.rs)', async () => {
   const sample = readFileSync(path.join(ROOT, 'desktop/tests/fixtures/sample.txt'), 'utf8');
   const expected = readFileSync(path.join(ROOT, 'desktop/tests/fixtures/sample.docx'));

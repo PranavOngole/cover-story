@@ -9,7 +9,8 @@
 // commands through the adapter in desktop/adapter.js: five for Save
 // (folder.rs) and one to say it is ready to quit (quit.rs). Closing the window and quitting
 // both work like Esc first (quit.rs), the window's title follows the page, and
-// the menu bar is the app's own (menu.rs). The app runs in the macOS App
+// the menu bar is the app's own (menu.rs), whose File and Help items press the
+// page's own buttons. The app runs in the macOS App
 // Sandbox with four entitlements (Entitlements.plist), so the chosen folder is
 // remembered as a security-scoped bookmark (bookmark.rs).
 
@@ -45,8 +46,12 @@ fn main() {
         ])
         .menu(menu::build)
         .on_menu_event(|app, event| {
-            if event.id() == menu::QUIT {
+            let item: &str = event.id().as_ref();
+            if item == menu::QUIT {
                 quit::begin(app);
+            } else {
+                // Open..., Save... and the help item press the page's buttons (D-44).
+                menu::press(app, item);
             }
         })
         // Closing the window quits the app (D-21), after the page's quit hook.
