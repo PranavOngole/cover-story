@@ -3048,6 +3048,31 @@ test('the Open question for a plain note draws no password field: the stylesheet
   } finally { p.close(); }
 });
 
+test('Esc pressed while a plain note is still being read wins: the note never lands and nothing says Opened (QA-F-02)', async () => {
+  const p = await loadPage();
+  try {
+    p.start();
+    p.type('my words');
+    const read = p.w.Blob.prototype.text;
+    p.w.Blob.prototype.text = function () { return new Promise((resolve) => setTimeout(() => resolve(read.call(this)), 300)); };   // a slow disk or share
+    chooseFile(p, new p.w.File(['NOTE BODY'], 'slow.txt', { type: 'text/plain' }));
+    await sleep(100);
+    p.press('Escape');                       // the panic key, while the read is still in flight
+    assert.equal(await p.readReal(), '', 'wiped at once');
+    await sleep(500);                        // the read finishes after the wipe
+    assert.equal(p.$('#pw').hidden, true, 'no question appears after the wipe');
+    assert.equal(await p.readReal(), '', 'the note did not land after Esc');
+    assert.equal(p.coverText(), '');
+    assert.equal(p.toast(), 'Open cancelled');
+    // Without the Esc the same slow read lands.
+    chooseFile(p, new p.w.File(['NOTE BODY'], 'slow.txt', { type: 'text/plain' }));
+    await sleep(500);
+    assert.equal(p.toast(), 'Opened');
+    assert.equal(await p.readReal(), 'NOTE BODY');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
 // ---------------------------------------------------------------------------
 // Run
 // ---------------------------------------------------------------------------

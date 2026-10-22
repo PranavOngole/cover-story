@@ -1542,6 +1542,7 @@
   // hidden text; the cover is rebuilt to its length, so writing goes on from
   // there. Text already on the page is replaced only after a confirmation.
   async function openPlain(file) {
+    const wipes = wipeCount;   // Esc while the file is still being read cancels the Open, as it does while a key derives (QA-F-02)
     let text;
     try {
       text = (await file.text()).replace(/\r\n?/g, '\n');
@@ -1549,6 +1550,7 @@
       toast('Could not read the file');
       return;
     }
+    if (wipes !== wipeCount) { toast('Open cancelled'); return; }
     if (real) {
       const ok = await askPassword('Open ' + file.name + '?', 'Opening replaces what is on the page now.', 'Open', false);
       if (ok === null) return;
