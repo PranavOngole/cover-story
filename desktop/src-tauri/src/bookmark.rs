@@ -274,6 +274,33 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// What QA-F-14 found: Foundation makes no bookmark of a symbolic link
+    /// to a folder, only of the folder itself. folder.rs follows the link
+    /// before it asks for the bookmark.
+    #[test]
+    fn a_symbolic_link_gets_no_bookmark_but_the_folder_it_points_to_does() {
+        let dir = scratch("symlink");
+        let target = dir.join("Notes for the test");
+        let link = dir.join("Link to the notes");
+        fs::create_dir(&target).unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let refused = System.create(&link).unwrap_err();
+        assert!(
+            refused.contains("Link to the notes") && refused.ends_with("be opened."),
+            "the link itself is refused by name: {refused}"
+        );
+        let followed = link.canonicalize().unwrap();
+        assert_eq!(followed, target.canonicalize().unwrap());
+        let opened = System.open(&System.create(&followed).unwrap()).unwrap();
+        assert_eq!(opened.path.canonicalize().unwrap(), followed);
+        assert_eq!(
+            System.name(&System.create(&followed).unwrap()).as_deref(),
+            Some("Notes for the test")
+        );
+        drop(opened);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn a_plain_path_is_not_a_bookmark_and_a_missing_folder_has_none() {
         let dir = scratch("plain");

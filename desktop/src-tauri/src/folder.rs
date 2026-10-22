@@ -106,6 +106,10 @@ impl Folder {
             .ok_or("The app's data folder is not available")?;
         let mut current = self.lock()?;
         let failed = |e: String| format!("Could not remember the folder: {e}");
+        // The panel may hand back a symbolic link to a folder, and the system
+        // makes no bookmark of a link (QA-F-14, bookmark.rs), so the link is
+        // followed first: the folder kept is the one it points to.
+        let path = path.canonicalize().map_err(|e| failed(e.to_string()))?;
         let bookmark = self.bookmarks.create(&path).map_err(failed)?;
         let opened = self.bookmarks.open(&bookmark).map_err(failed)?;
         store(file, opened.renewed.as_deref().unwrap_or(&bookmark))
@@ -453,13 +457,14 @@ mod tests {
 
     const BASE: &str = "2026-10-20 14-55-03";
 
-    /// A fresh, empty directory for one test.
+    /// A fresh, empty directory for one test, by its canonical path, which is
+    /// what the app keeps of a chosen folder.
     fn scratch(tag: &str) -> PathBuf {
         let dir =
             std::env::temp_dir().join(format!("plain-sight-unit-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        dir
+        dir.canonicalize().unwrap()
     }
 
     /// A stand-in for the system's bookmarks, which logs each folder opened
@@ -724,6 +729,52 @@ mod tests {
         assert_eq!(
             fs::read_to_string(chosen.join(format!("{BASE}.txt"))).unwrap(),
             "text"
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The panel may hand back a symbolic link to a folder, and a bookmark of
+    /// the link itself does not open (QA-F-14, bookmark.rs), so the link is
+    /// followed before the bookmark is made: the folder kept is the target.
+    #[test]
+    fn a_symbolic_link_to_a_folder_is_followed_before_its_bookmark_is_made() {
+        let dir = scratch("symlink");
+        let data = dir.join("data");
+        let target = dir.join("Target");
+        let link = dir.join("Link");
+        fs::create_dir(&target).unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let (folder, fake) = load(&data);
+        let shown = folder.remember(link.clone()).unwrap();
+        assert_eq!(
+            shown.name, "Target",
+            "the folder shown is the one the link points to"
+        );
+        assert_eq!(
+            fs::read(data.join(BOOKMARK)).unwrap(),
+            fake.create(&target).unwrap(),
+            "the bookmark is the target's"
+        );
+        assert_eq!(fake.log(), ["open Target"]);
+        assert_eq!(
+            folder.write(BASE, ".txt", "through the link").unwrap(),
+            format!("{BASE}.txt")
+        );
+        assert_eq!(
+            fs::read_to_string(target.join(format!("{BASE}.txt"))).unwrap(),
+            "through the link"
+        );
+        let dangling = dir.join("Dangling");
+        std::os::unix::fs::symlink(dir.join("not there"), &dangling).unwrap();
+        let failed = folder.remember(dangling).map(|s| s.name).unwrap_err();
+        assert!(
+            failed.starts_with("Could not remember the folder"),
+            "a link to nothing is refused: {failed}"
+        );
+        assert_eq!(
+            shown_name(&folder).as_deref(),
+            Some("Target"),
+            "and nothing changed"
         );
         fs::remove_dir_all(&dir).unwrap();
     }
