@@ -1,9 +1,0 @@
-A sample note for the Word document test
-	A line that starts with a tab
-a	b		c and a tab at the end	
-Markup stays text: & < > " ' &amp; <w:p/>
-Control characters dropped:[]
-Characters XML cannot hold dropped:[￾￿]
-Unicode: café, 日本語, emoji 😀
-
-A line after an empty one

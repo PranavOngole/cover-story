@@ -509,15 +509,33 @@ test('the menu items press the page\'s buttons only while no dialog is open: Sav
   } finally { p.close(); }
 });
 
-test('the page makes, byte for byte, the Word document the app is held to (tests/fixtures, docx.rs)', async () => {
-  const sample = readFileSync(path.join(ROOT, 'desktop/tests/fixtures/sample.txt'), 'utf8');
-  const expected = readFileSync(path.join(ROOT, 'desktop/tests/fixtures/sample.docx'));
+// A .sight file of the text, in the page's own format, so that a text with
+// carriage returns reaches the page unchanged (Open of a plain note turns
+// them into line feeds; the web suite opens the sample the same way).
+async function sightFile(w, text, password) {
+  const salt = webcrypto.getRandomValues(new Uint8Array(16));
+  const iv = webcrypto.getRandomValues(new Uint8Array(12));
+  const base = await webcrypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveKey']);
+  const key = await webcrypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations: 310000, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, false, ['encrypt']);
+  const data = new Uint8Array(await webcrypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(text)));
+  const b64 = (u) => Buffer.from(u).toString('base64');
+  const record = { format: 'plain-sight', version: 1, cipher: 'AES-256-GCM', kdf: 'PBKDF2-SHA-256', iterations: 310000, salt: b64(salt), iv: b64(iv), data: b64(data) };
+  return new w.File([JSON.stringify(record)], 'sample.sight', { type: 'application/json' });
+}
+
+test('the page makes, byte for byte, the Word document the app is held to (tests/fixtures at the root, docx.rs)', async () => {
+  const sample = readFileSync(path.join(ROOT, 'tests/fixtures/sample.txt'), 'utf8');
+  const expected = readFileSync(path.join(ROOT, 'tests/fixtures/sample.docx'));
+  assert.ok(sample.includes('\r\n') && /[^\r]\r[^\n]/.test(sample) && sample.includes('\u000b') && sample.includes('\ufffe'), 'the sample holds a CRLF, a lone CR, a U+000B and a U+FFFE');
   const p = await loadPage({ storage: { 'plainSight.introSeen': '1', 'plainSight.saveMode': 'docx' } });
   try {
     await p.settle();
-    chooseFile(p, new p.w.File([sample], 'sample.txt', { type: 'text/plain' }));
+    chooseFile(p, await sightFile(p.w, sample, 'a phrase for the sample'));
     await p.settle();
-    assert.equal(await p.real(), sample, 'the sample opened as it is');
+    p.$('#pw-input').value = 'a phrase for the sample';
+    p.$('#pw-ok').click();
+    await p.settle(800);   // the key derives from the password
+    assert.equal(await p.real(), sample, 'the encrypted file carries the sample exactly, carriage returns included');
     p.$('#btn-save').click();
     await p.settle();
     assert.equal(p.downloads.length, 1);

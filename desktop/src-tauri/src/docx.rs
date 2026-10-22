@@ -2,7 +2,8 @@
 //! app its text, never a file, so the app's commands never write bytes that
 //! the page made; the app makes the document itself, byte for byte the one
 //! the page's own writer makes in a browser (index.html, docxBytes). The
-//! test at the end holds both to one sample (desktop/tests/fixtures).
+//! test at the end holds both to one sample (tests/fixtures at the
+//! repository root, shared with the web suite; ledger D-43).
 
 /// The three parts a .docx needs, before the document's text.
 const CONTENT_TYPES: &str = concat!(
@@ -141,10 +142,11 @@ mod tests {
 
     #[test]
     fn the_app_makes_the_same_document_as_the_page() {
-        // sample.docx is what the page's own writer made from sample.txt;
+        // sample.docx is what the page's own writer made from sample.txt
+        // (tests/fixtures at the repository root, shared with the web suite);
         // desktop/tests/native.mjs checks the page against the same file.
-        let text = include_str!("../../tests/fixtures/sample.txt");
-        let page = include_bytes!("../../tests/fixtures/sample.docx");
+        let text = include_str!("../../../tests/fixtures/sample.txt");
+        let page = include_bytes!("../../../tests/fixtures/sample.docx");
         assert_eq!(docx(text).unwrap(), page.to_vec());
     }
 
